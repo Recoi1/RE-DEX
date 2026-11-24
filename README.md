@@ -2,6 +2,10 @@
   <img src="assets/readme-logo.png" alt="RE:DEX" width="600">
 </p>
 
+<p align="center">
+  <a href="https://playredex.mooo.com/status/"><img src="https://playredex.mooo.com/progress.svg" alt="RE:DEX progress" width="800"></a>
+</p>
+
 **RE:DEX** turns Pokémon X and Y (Nintendo 3DS) into a native PC game with a shared online world: X and Y players walk Kalos together and see each other's trainers, in the outfits they made. Written in Rust.
 
 - **Native, not emulated.** The game's ARM11 code is translated ahead of time to C and built on your PC from **your own** decrypted dump on first launch. This repository contains no Nintendo code or assets.
