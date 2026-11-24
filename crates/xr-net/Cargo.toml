@@ -6,13 +6,23 @@ version.workspace = true
 # puts steam_api64.dll next to redex.exe
 build = "../redex-world/build.rs"
 
+[features]
+# FakeFriends (XR_FAKE_FRIENDS): the MP test harness's stand-in for Steam friends; never in a release
+mp-tests = []
+
 [dependencies]
 getrandom = "0.3"
 log.workspace = true
 redex-proto = { path = "../redex-proto" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = "1"
 sha2 = "0.10"
 steamworks = "=0.13.1"
+# already under steamworks: RequestFriendRichPresence, which the wrapper leaves out (friends.rs refresh)
+steamworks-sys = "=0.13.0"
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+webpki-roots = "1"
 windows-sys = { version = "0.59", features = ["Win32_System_LibraryLoader", "Win32_System_Console"] }
 
 [dev-dependencies]
-redex-world = { path = "../redex-world" }
+redex-world = { path = "../redex-world", features = ["central"] }

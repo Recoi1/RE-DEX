@@ -296,12 +296,12 @@ impl Title {
         &self.image.data()[start..start + ExHeader::HASHED_SIZE]
     }
 
-    /// lays the mod in dir over the RomFS, returns what it changed if it changed anything
-    pub fn lay_mods(&mut self, dir: &Path) -> Result<Option<layered::Changes>, FsError> {
+    /// lays the mods in dirs over the RomFS, in order (a later one's file wins), returns what they changed if they changed anything
+    pub fn lay_mods(&mut self, dirs: &[&Path]) -> Result<Option<layered::Changes>, FsError> {
         let Some(romfs) = &self.romfs else {
             return Ok(None);
         };
-        let layered = layered::Layered::new(romfs, self.image.data(), dir)?;
+        let layered = layered::Layered::stack(romfs, self.image.data(), dirs)?;
         let changes = layered.as_ref().map(|layered| layered.changes);
         self.layered = layered.map(std::sync::Arc::new);
         Ok(changes)

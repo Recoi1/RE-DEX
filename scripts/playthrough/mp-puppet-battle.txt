@@ -1,4 +1,4 @@
-# 100% save (plan 4 Task 4 fix round 1), run with XR_FAKE_PEERS: wild-battle.txt's way to the Route 2 grass (Fly to
+# 100% save, run with XR_FAKE_PEERS: wild-battle.txt's way to the Route 2 grass (Fly to
 # Aquacorde, up into the grass) with puppets on screen, then back and forth in the grass with `autobattle` (each wild
 # battle is fought with the bottom-left move while the script's clock waits). DllField goes and comes back with each
 # battle: the puppets stay at most 8 and every one in the pool is known (no orphans). The grass walk does not depend on

@@ -1,6 +1,6 @@
 //! CRO modules in xgame.dll (`xr_recomp::dll`): a tiny code.bin and two modules generated, compiled with the real
 //! `lookup.c`, and run through `xr_place_module`/`xr_unplace_module`/`xr_lookup` (needs clang, from env.ps1).
-//! Plan 3 Review Focus 1-3: a module placed at a second base still runs right; code.bin calls into a module through
+//! A module placed at a second base still runs right; code.bin calls into a module through
 //! a function pointer and the module calls code.bin through its import thunk, both natively (the interpreter
 //! callback fails the run); a module unloaded and another placed at the same address never yields the old one's
 //! functions. Also: a code.bin helper that returns flags to a module caller stores them (thunk flag demands).

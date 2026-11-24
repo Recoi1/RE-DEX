@@ -1,5 +1,5 @@
 //! Who is where. Pure state plus per-session outboxes; no sockets, so it tests without a network.
-use redex_proto::{MAX_FACING, MAX_MAP, MAX_MODE, Msg, Pos, Region, TITLES, title_info};
+use redex_proto::{MAX_FACING, MAX_MAP, MAX_MODE, Msg, PlayerId, Pos, Region, TITLES, title_info};
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -91,14 +91,28 @@ pub(crate) fn allow(q: &mut VecDeque<Instant>, max: usize, window: Duration, now
     true
 }
 
-/// Who a login key is: a verified SteamID64 (top bit set, see server.rs) or a dev id.
-fn who(id: u128) -> String {
-    if id >> 127 == 1 { format!("steam:{}", id as u64) } else { format!("dev:{id:032x}") }
+/// Login keys: a dev id has the top bit clear, a verified SteamID64 is `STEAM_KEY | id`, an account id is
+/// `ACCOUNT_KEY | id`. The tags never overlap, so no kind of login can stand for another (and Steam keys, and so their
+/// account files, stay what they were before accounts existed).
+pub const STEAM_KEY: u128 = 1 << 127;
+pub const ACCOUNT_KEY: u128 = 3 << 126;
+
+/// Who a login key is, as peers see it.
+pub fn player_id(key: u128) -> PlayerId {
+    match key >> 126 {
+        0b10 => PlayerId::Steam(key as u64),
+        0b11 => PlayerId::Account(key as u64),
+        _ => PlayerId::Dev,
+    }
 }
 
-/// The SteamID64 a login key carries, 0 for a dev id (no Steam account to befriend).
-fn steam_of(id: u128) -> u64 {
-    if id >> 127 == 1 { id as u64 } else { 0 }
+/// Who a login key is, for reports.
+fn who(key: u128) -> String {
+    match player_id(key) {
+        PlayerId::Dev => format!("dev:{key:032x}"),
+        PlayerId::Steam(id) => format!("steam:{id}"),
+        PlayerId::Account(id) => format!("account:{id}"),
+    }
 }
 
 fn json(s: &str) -> String {
@@ -225,11 +239,11 @@ impl World {
         me.last_pos = None;
         me.pending = None;
         me.push(Msg::Entered { map, channel: ch as u16, repeat: false });
-        let mine = Msg::Peer { session: sid, name: me.name.clone(), game, title: me.title, appearance: me.appearance.clone(), steam: steam_of(me.id) };
+        let mine = Msg::Peer { session: sid, name: me.name.clone(), game, title: me.title, appearance: me.appearance.clone(), who: player_id(me.id) };
         for m in mates {
             let o = self.sessions.get_mut(&m).expect("room member exists");
             o.push(mine.clone());
-            let theirs = Msg::Peer { session: m, name: o.name.clone(), game, title: o.title, appearance: o.appearance.clone(), steam: steam_of(o.id) };
+            let theirs = Msg::Peer { session: m, name: o.name.clone(), game, title: o.title, appearance: o.appearance.clone(), who: player_id(o.id) };
             let last = o.last_pos.clone();
             let me = self.sessions.get_mut(&sid).expect("checked above");
             me.push(theirs);
@@ -389,9 +403,9 @@ impl World {
     /// A report as one `reports.jsonl` line, or `None` (dropped) when over the cap, about oneself or an unknown session.
     /// Metadata only: who, when, why, and the last 30 s of both players' positions and the target's last whispers.
     /// The trails are what the clients sent (only their speed was checked), so the line says `"trails":"client-claimed"`.
-    pub fn report(&mut self, sid: u32, target: u32, steam_id: u64, reason: u8, note: &str, now: Instant) -> Option<String> {
+    pub fn report(&mut self, sid: u32, target: u32, target_who: PlayerId, reason: u8, note: &str, now: Instant) -> Option<String> {
         // the session must still be the account the reporter means (a session id is reused across server restarts)
-        if self.sessions.get(&target).is_none_or(|t| steam_of(t.id) != steam_id) {
+        if self.sessions.get(&target).is_none_or(|t| player_id(t.id) != target_who) {
             return None;
         }
         let me = self.sessions.get_mut(&sid)?;
@@ -410,8 +424,8 @@ impl World {
             .map(|(t, to, text)| format!("{{\"ago_ms\":{},\"to\":{},\"text\":{}}}", ago(t), json(to), json(text))).collect();
         let unix = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
         Some(format!(
-            "{{\"time\":{unix},\"reporter\":{},\"reporter_session\":{sid},\"reporter_name\":{},\"target\":{},\"target_steam_id\":{steam_id},\"target_session\":{target},\"target_name\":{},\"reason\":{reason},\"note\":{},\"trails\":\"client-claimed\",\"reporter_trail\":[{}],\"target_trail\":[{}],\"target_whispers\":[{}]}}",
-            json(&who(a.id)), json(&a.name), json(&who(b.id)), json(&b.name), json(note), trail(a), trail(b), whispers.join(",")
+            "{{\"time\":{unix},\"reporter\":{},\"reporter_session\":{sid},\"reporter_name\":{},\"target\":{},\"target_steam_id\":{},\"target_session\":{target},\"target_name\":{},\"reason\":{reason},\"note\":{},\"trails\":\"client-claimed\",\"reporter_trail\":[{}],\"target_trail\":[{}],\"target_whispers\":[{}]}}",
+            json(&who(a.id)), json(&a.name), json(&who(b.id)), target_who.steam(), json(&b.name), json(note), trail(a), trail(b), whispers.join(",")
         ))
     }
 
@@ -634,17 +648,27 @@ mod tests {
         assert!(rb.try_iter().count() <= OUTBOX_CAP);
     }
 
-    /// A Steam login's peers see its SteamID64 (for "Add friend"); a dev id shows 0, never its key.
+    /// A Steam login's peers see its SteamID64 (for "Add friend"), an account login its account id; a dev id shows
+    /// only that it is one, never its key.
     #[test]
-    fn peers_carry_the_steam_id_of_a_steam_login_only() {
+    fn peers_carry_the_verified_player_id() {
         let mut w = World::default();
-        let steam = 1u128 << 127 | 76_561_197_960_287_930;
+        let steam = STEAM_KEY | 76_561_197_960_287_930;
         let (s, rs) = add(&mut w, steam);
         let (d, rd) = add(&mut w, 0x1234);
-        enter(&mut w, s, 4);
-        enter(&mut w, d, 4);
-        assert!(drain(&rd).iter().any(|m| matches!(m, Msg::Peer { session, steam: 76_561_197_960_287_930, .. } if *session == s)));
-        assert!(drain(&rs).iter().any(|m| matches!(m, Msg::Peer { session, steam: 0, .. } if *session == d)));
+        let (a, ra) = add(&mut w, ACCOUNT_KEY | 42);
+        for p in [s, d, a] {
+            enter(&mut w, p, 4);
+        }
+        let (rd, rs, ra) = (drain(&rd), drain(&rs), drain(&ra));
+        assert!(rd.iter().any(|m| matches!(m, Msg::Peer { session, who: PlayerId::Steam(76_561_197_960_287_930), .. } if *session == s)));
+        assert!(rs.iter().any(|m| matches!(m, Msg::Peer { session, who: PlayerId::Dev, .. } if *session == d)));
+        assert!(rs.iter().any(|m| matches!(m, Msg::Peer { session, who: PlayerId::Account(42), .. } if *session == a)));
+        assert!(ra.iter().any(|m| matches!(m, Msg::Peer { session, who: PlayerId::Steam(_), .. } if *session == s)));
+        // the three kinds of key never collide, whatever the id
+        assert_eq!(player_id(STEAM_KEY | u128::from(u64::MAX)), PlayerId::Steam(u64::MAX));
+        assert_eq!(player_id(ACCOUNT_KEY | u128::from(u64::MAX)), PlayerId::Account(u64::MAX));
+        assert_eq!(player_id(u128::MAX >> 1), PlayerId::Dev);
     }
 
     #[test]
@@ -686,12 +710,12 @@ mod tests {
         w.whisper(a, a, "me".into(), t0 + Duration::from_secs(12));
         assert!(drain(&rb).is_empty());
         // a report naming another account than the session's is dropped (and costs nothing of the cap)
-        assert!(w.report(a, b, 765, 1, "wrong account", t0).is_none());
-        let n = (0..5).filter(|k| w.report(a, b, 0, 1, "n", t0 + Duration::from_secs(*k)).is_some()).count();
+        assert!(w.report(a, b, PlayerId::Steam(765), 1, "wrong account", t0).is_none());
+        let n = (0..5).filter(|k| w.report(a, b, PlayerId::Dev, 1, "n", t0 + Duration::from_secs(*k)).is_some()).count();
         assert_eq!(n, 3, "3 reports a minute");
-        assert!(w.report(a, b, 0, 1, "n", t0 + Duration::from_secs(61)).is_some());
-        assert!(w.report(a, 777, 0, 1, "unknown", t0 + Duration::from_secs(300)).is_none() && w.report(a, a, 0, 1, "self", t0 + Duration::from_secs(300)).is_none());
-        assert!(w.report(a, b, 0, 9, "bad reason", t0 + Duration::from_secs(200)).is_none());
+        assert!(w.report(a, b, PlayerId::Dev, 1, "n", t0 + Duration::from_secs(61)).is_some());
+        assert!(w.report(a, 777, PlayerId::Dev, 1, "unknown", t0 + Duration::from_secs(300)).is_none() && w.report(a, a, PlayerId::Dev, 1, "self", t0 + Duration::from_secs(300)).is_none());
+        assert!(w.report(a, b, PlayerId::Dev, 9, "bad reason", t0 + Duration::from_secs(200)).is_none());
     }
 
     /// A whisper reaches a player on the sender's map and channel, or one who whispered the sender in the last
@@ -768,7 +792,7 @@ mod tests {
         w.pos(a, Pos { x: -9000.0, ..pos(2) }, t0 + Duration::from_secs(1));
         assert!(drain(&rb).iter().any(|m| matches!(m, Msg::PeerPos { .. })));
         // a report says the trails are what the clients claimed
-        let line = w.report(b, a, 0, 1, "", t0 + Duration::from_secs(2)).unwrap();
+        let line = w.report(b, a, PlayerId::Dev, 1, "", t0 + Duration::from_secs(2)).unwrap();
         assert!(line.contains("\"trails\":\"client-claimed\""), "{line}");
     }
 

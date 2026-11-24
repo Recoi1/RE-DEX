@@ -1,0 +1,22 @@
+# The account API over HTTPS. The world-ticket check is for the world servers only, on the internal network: never here.
+{$ACCOUNTS_HOST} {
+	# passwords are typed on this host's pages: HTTPS only, remembered for a year
+	header Strict-Transport-Security "max-age=31536000"
+	handle /internal/* {
+		respond 404
+	}
+	reverse_proxy backend:8080
+}
+
+# Caddy gets and renews the world's certificate; the world reads it from Caddy's data volume (TLS on port 7777).
+{$WORLD_HOST} {
+	respond "RE:DEX world: join it from the game (tls:{$WORLD_HOST}:7777)" 200
+}
+
+# The public status page and progress card (static files from deploy/status/render.py). Never cached, so the card in
+# the README shows the current state.
+{$STATUS_HOST} {
+	root * /srv/status
+	header Cache-Control "no-cache, no-store, must-revalidate"
+	file_server
+}

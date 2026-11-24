@@ -1,5 +1,5 @@
 # expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
-# Credits run, segment 1 of 6. Start: a copy of the 100% save edited by tools/save6/pk6_box.py
+# Credits run, segment 1 of 6. Start: a copy of the 100% save edited by tools/save6/pk6_box.py:
 # box 30 slots 3-6 (Aegislash, Milotic, Arcanine, Electivire) moved to box 31 slots 1-4 at Lv 100.
 # The PC in the Laverre City Pokemon Center: withdraw them (the PC opens on box 31); walk out, Fly to the Pokemon
 # League (league.txt from here on, 2100 frames later), the lobby and the Elite Four hall to the right wall by Malva's

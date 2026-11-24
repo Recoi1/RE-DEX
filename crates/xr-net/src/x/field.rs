@@ -1,4 +1,4 @@
-//! X's field move models, read side (plan 4 Task 1). Layouts and evidence: docs/re/x-field-move-models.md.
+//! X's field move models, read side. Layouts and evidence: docs/re/x-field-move-models.md.
 //!
 //! Everything is reached from DllField's data segment (CRO segment 2), whose address the caller takes from the
 //! loader (it moves with the module), through pointers. Nothing here writes game memory.
@@ -75,7 +75,7 @@ pub const MS_FASHION: u32 = 0x30;
 /// MyStatus: the trainer name (save 0x14048), 13 UTF-16 units, zero-padded.
 pub const MS_NAME: u32 = 0x48;
 /// MyStatus: the nickname the player's friends use (save 0x14062, 13 UTF-16 units): the intro copies the typed name
-/// here, and the friends' nickname scene later replaces it (the 100% save's trainer gets a nickname there).
+/// here, and the friends' nickname scene later replaces it (the 100% save's trainer name gets a nickname there).
 pub const MS_NICKNAME: u32 = 0x62;
 
 /// Player field object + this: u32 pointer to the field camera block (the manager's +0x18 holds it too).
@@ -166,7 +166,7 @@ pub const CUT_MOVE: f32 = 54.0;
 /// ... or whose turn breaks from its last turn by more than this many degrees (following the player it never turns).
 pub const CUT_TURN: f32 = 8.0;
 
-/// The field camera from change to change, for frame interpolation's cut hint (research doc section 3 M3): a cut is a
+/// The field camera from change to change, for frame interpolation's cut hint: a cut is a
 /// change that breaks from the camera's own motion (like the draw matcher's jumps), so a scripted camera panning or
 /// turning fast at a steady pace is no cut; one starting at full speed from standing is one, once.
 #[derive(Debug, Default, Clone)]

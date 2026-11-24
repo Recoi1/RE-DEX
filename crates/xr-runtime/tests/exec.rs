@@ -443,7 +443,7 @@ static void entry(XrCpu* c) {{
     assert!(r.log.contains("starts at 0x00100A00 (interpreted)"), "{}", r.log);
 }
 
-/// The real game to its first GPU command list (M1): needs XR_CCI and XR_DATA (with build/x-usa-v0.2.0/xgame.dll),
+/// The real game to its first GPU command list: needs XR_CCI and XR_DATA (with build/x-usa-v0.2.0/xgame.dll),
 /// skips without them. Runs in a data dir of its own (own_data).
 #[test]
 fn boot_x_to_first_command_list() {
@@ -548,6 +548,24 @@ fn scripted_new_game() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
+/// The new game out of the front door (scripts/playthrough/new-game-town.txt): the neighbours' cutscene lights the
+/// town. Its directional lights have distance attenuation on, which once read the table at the fragment's distance
+/// and left everything but the characters and the sky black. Every expect must match, and at `serena-shauna` the
+/// lower third of the top screen (the street) is not black.
+#[test]
+fn the_neighbours_cutscene_lights_the_town() {
+    let Some((data, cci)) = own_data("neighbours_cutscene") else { return };
+    let Some(cps) = run_script(&data, &cci, &format!("{SCRIPTS}/new-game-town.txt")) else { return };
+    assert!(cps.contains("checkpoint serena-shauna"), "{cps}");
+    let top = rgba(&data.join("logs/top-cp-serena-shauna.png"));
+    let (width, height) = (400, 240);
+    assert_eq!(top.len(), width * height * 4);
+    let street = &top[width * height * 2 / 3 * 4..];
+    let dark = street.chunks(4).filter(|p| p[..3].iter().all(|&c| c < 16)).count();
+    assert!(dark * 10 < street.len() / 4, "{dark} of {} street pixels are black", street.len() / 4);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
 /// The same script twice, in two data dirs, gives the same screen hashes (a --script run is deterministic).
 #[test]
 fn script_runs_repeat() {
@@ -561,7 +579,7 @@ fn script_runs_repeat() {
     let _ = std::fs::remove_dir_all(&b);
 }
 
-/// Task 3b fix: redex.exe delay-loads steam_api64.dll. A copy of redex.exe alone in a folder (no DLL there or on PATH)
+/// redex.exe delay-loads steam_api64.dll. A copy of redex.exe alone in a folder (no DLL there or on PATH)
 /// plays short.txt with every expect matching, and with --world it says "Start Steam to play online" instead of dying.
 #[test]
 fn plays_offline_without_the_steam_dll() {
@@ -588,7 +606,7 @@ fn plays_offline_without_the_steam_dll() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// plan 4 Task 3b: --world with Steam closed (XR_NO_STEAM=1 takes that path without closing the player's Steam) says
+/// --world with Steam closed (XR_NO_STEAM=1 takes that path without closing the player's Steam) says
 /// "Start Steam to play online" and plays offline exactly as without --world: short.txt's expects all match.
 #[test]
 fn world_without_steam_plays_offline_unchanged() {
@@ -652,7 +670,7 @@ fn with_100pct_save(data: &std::path::Path, test: &str) -> bool {
     true
 }
 
-/// xr-net's field accessors (plan 4 Task 1) follow a scripted walk from the 100% save: the map id changes at the
+/// xr-net's field accessors follow a scripted walk from the 100% save: the map id changes at the
 /// Pokemon Center door, the facing follows the d-pad, the mode is Run while B is held. The script has no screen
 /// hashes, so it runs on any renderer.
 #[test]
@@ -681,7 +699,7 @@ fn field_accessors_follow_a_walk() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// start-screen plan 1 Task 1: a state saved between frames (XR_STATE_SAVE_AT=N:PATH) and loaded by a new process
+/// a state saved between frames (XR_STATE_SAVE_AT=N:PATH) and loaded by a new process
 /// (XR_STATE_LOAD=PATH) runs on exactly like the run it came from. The field walk (100% save) straight to frame N+600
 /// (its last checkpoint, `run`), and loaded at N and run the 600 frames left: the same last hash and RAM digest.
 #[test]
@@ -719,7 +737,7 @@ fn state_round_trip_matches_straight_run() {
     let _ = std::fs::remove_file(&state);
 }
 
-/// start-screen plan 2 Task 1: after XR_STATE_LOAD the main loop's frame is interpreted, and its call to the per-frame
+/// after XR_STATE_LOAD the main loop's frame is interpreted, and its call to the per-frame
 /// hook's address still runs the hook: a fake peer (XR_FAKE_PEERS) becomes a puppet in the 600 frames after the load.
 #[test]
 #[ignore]
@@ -737,7 +755,7 @@ fn hooks_fire_after_a_state_load() {
     let _ = std::fs::remove_file(&state);
 }
 
-/// start-screen plan 2 Task 1: a save state names the xgame.dll that made it (its SHA-256 after the magic); one whose
+/// a save state names the xgame.dll that made it (its SHA-256 after the magic); one whose
 /// fingerprint differs is refused before anything loads.
 #[test]
 #[ignore]
@@ -759,7 +777,7 @@ fn a_state_from_another_dll_is_refused() {
     let _ = std::fs::remove_file(&state);
 }
 
-/// plan 5 Task 1 (scripts/playthrough/mp-field-modes.txt, 100% save): the live appearance is the save's gender and
+/// scripts/playthrough/mp-field-modes.txt, 100% save: the live appearance is the save's gender and
 /// fashion (MyStatus, save 0x14005 and 0x14030) and passes the game's ranges; the mode follows walk, run and the bike
 /// (Y, then the bike on the item wheel); and the camera puts the player's feet on the player's sprite within 4 px. The
 /// sprite is found where two screens a turn on the spot apart differ (nothing else moves near the player then). No
@@ -807,7 +825,7 @@ fn field_appearance_bike_and_camera() {
     println!("camera: player at {at:?}, sprite middle x {mid}, y {top}..{bottom}, nearest sprite pixel {nearest:.1} px");
     assert!(nearest <= 4.0, "the projected feet {at:?} are {nearest:.1} px from the sprite (middle x {mid}, y {top}..{bottom})");
     assert!((at[0] - mid).abs() <= 4.0, "{at:?} not on the sprite's middle x {mid}");
-    // the feet, not just any point of the sprite (Task 4 anchors names from it): in the sprite's lowest quarter and
+    // the feet, not just any point of the sprite (the names are anchored from it): in the sprite's lowest quarter and
     // within 12 px of its bottom (the bottom rows include the shadow under the feet)
     assert!(at[1] >= top + 0.75 * (bottom - top) && (at[1] - bottom).abs() <= 12.0, "{at:?} not at the sprite's feet: y {top}..{bottom}");
     let _ = std::fs::remove_dir_all(&data);
@@ -857,7 +875,7 @@ fn field_line<'a>(log: &'a str, cp: &str) -> &'a str {
     log.lines().find(|l| l.starts_with(&format!("field {cp}: "))).unwrap_or_else(|| panic!("no field line for {cp}\n{log}"))
 }
 
-/// plan 4 Task 4: two made-up remote players (XR_FAKE_PEERS, no server) become puppets in the Pokemon Center through
+/// two made-up remote players (XR_FAKE_PEERS, no server) become puppets in the Pokemon Center through
 /// the game's own Create, walk (positions change between checkpoints), are gone with the pool the game empties at the
 /// door, appear again outside on the new map, and are deleted when the feed stops (XR_FAKE_TO).
 #[test]
@@ -882,7 +900,7 @@ fn puppets_follow_a_fake_feed() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// Review Focus 3: 30 remote players, more than the game can hold. At most MAX_PUPPETS (8) are shown (17 exhausted the
+/// 30 remote players, more than the game can hold. At most MAX_PUPPETS (8) are shown (17 exhausted the
 /// field heap in the Pokemon Center and hung the game), the rest are not, the zone's NPCs are all there, and the game
 /// neither hangs nor faults: the player still walks out of the door.
 #[test]
@@ -900,7 +918,7 @@ fn puppet_overflow_keeps_room_for_the_game() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// Review Focus 2: a puppet standing on the tile left of the player. Facing it and pressing A starts nothing, and the
+/// a puppet standing on the tile left of the player. Facing it and pressing A starts nothing, and the
 /// player walks left through it (past its tile, x 8649) as if it were not there.
 #[test]
 fn puppets_do_not_block_or_talk() {
@@ -915,9 +933,9 @@ fn puppets_do_not_block_or_talk() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// Review Focus 1: a save made with two puppets in the room. At the save, StoreAll's block with the puppets in the
+/// a save made with two puppets in the room. At the save, StoreAll's block with the puppets in the
 /// pool equals the block without them, byte for byte (XR_PUPPET_SAVECHECK); the file holds no puppet entry; and the
-/// save loads with the room's 8 NPCs and the player only, as the original does. Since plan 5 Task 3 the two wear an
+/// save loads with the room's 8 NPCs and the player only, as the original does. Since the outfits came the two wear an
 /// outfit (Red's: the model's +0x998, which the save entry's +0x9C would hold) and ride the bike.
 #[test]
 fn a_save_with_puppets_reloads_clean() {
@@ -964,7 +982,7 @@ fn heap_at(log: &str, cp: &str) -> Vec<(u32, u32)> {
     }).collect()
 }
 
-/// plan 5 Task 3, with a fake feed: one remote player in the Laverre Pokemon Center changes outfit and mode every 400
+/// With a fake feed: one remote player in the Laverre Pokemon Center changes outfit and mode every 400
 /// frames. Red's outfit walking: a dressed puppet (an outfit slot more than the local player's); the girl on the bike:
 /// the girl model is not loaded in this room, so the stand-in boy wears the plain look; bytes that fail the ranges
 /// on skates: the plain boy; Red surfing: no puppet (until surf is traced) and his outfit released; Red running:
@@ -995,7 +1013,7 @@ fn puppets_wear_outfits_and_modes() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// plan 5 Task 3: 50 outfit changes mid-map (Red, the pyjamas, Red, ...; XR_FAKE_EVERY=200 frames: a change, a second of respawn gap and the parts loading, each change a
+/// 50 outfit changes mid-map (Red, the pyjamas, Red, ...; XR_FAKE_EVERY=200 frames: a change, a second of respawn gap and the parts loading, each change a
 /// Delete and a Create under the spawn gap and the heap gate). Afterwards, in Red's outfit again, the pool's slots, the
 /// dress-up slots and both model heaps are as they were before the changes; once he leaves, the pool and the dress-up
 /// slots are as before any puppet.
@@ -1020,7 +1038,7 @@ fn fifty_outfit_swaps_leak_nothing() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// plan 5 Task 3 fix round 1, the twin: a puppet in the local player's exact outfit (the save trainer's, the 100% save's). Its
+/// The twin: a puppet in the local player's exact outfit (the save trainer's, the 100% save's). Its
 /// parameter carries PUPPET_MARK, so it has a dress-up slot of its own beside the player's (2 slots, one outfit).
 /// Then the local player's outfit changes (XR_SET_FASHION writes Red's into MyStatus) and the game builds the player
 /// in it at the door, in a new model system: no hang, the twin is there again outside in the save trainer's outfit, and once it
@@ -1052,7 +1070,7 @@ fn a_twin_survives_the_local_players_change_of_clothes() {
     let _ = std::fs::remove_dir_all(&base.0);
 }
 
-/// plan 5 Task 3 fix round 2: a dressed puppet across a wild battle. At the field close the game takes every model's
+/// a dressed puppet across a wild battle. At the field close the game takes every model's
 /// draw binding down and then frees every dress-up slot (ReleaseAll), with no puppet tick in between; xr-net never
 /// deletes a dressed puppet whose outfit's slot is gone or unloading: back on the field it asks for the outfit again,
 /// and the puppet is shown dressed. Every Delete logs its outfit's slot state, and none ran over freed parts. Once the
@@ -1087,7 +1105,7 @@ fn a_dressed_puppet_survives_a_battle_without_a_delete_over_freed_parts() {
     let _ = std::fs::remove_dir_all(&base.0);
 }
 
-/// plan 5 Task 5: eight peers, each in an outfit of its own (the looks list goes one further per peer: only the
+/// eight peers, each in an outfit of its own (the looks list goes one further per peer: only the
 /// dress-up slots the game leaves free get dressed (3), the rest wear the plain look), present before a wild battle and
 /// after it. Back on the field there are eight puppets again, none was deleted over freed parts, and once the player
 /// left the pool, the dress-up slots and both model heaps equal the same script's run without any puppet.
@@ -1124,12 +1142,12 @@ fn eight_dressed_peers_survive_a_battle_clean() {
     let _ = std::fs::remove_dir_all(&base.0);
 }
 
-/// Fix round 1: puppets across wild battles (DllField unloads and comes back). After each, the pool holds at most 8
+/// puppets across wild battles (DllField unloads and comes back). After each, the pool holds at most 8
 /// puppets and every one is known to xr-net: none is left behind beside new ones (which at 17 hung the game).
 #[test]
 fn puppets_survive_battles_without_orphans() {
     // (plain: dressed puppets shift the game's timing and the script meets one wild battle instead of two; a dressed
-    // run across a battle is in the plan 5 Task 3 report, fix round 1)
+    // run across a battle is in docs/re/x-field-move-models.md)
     let Some((data, log)) = puppet_run("puppets_battle", None, "mp-puppet-battle.txt", &[("XR_FAKE_PEERS", "10")]) else { return };
     assert!(log.matches("DllBattle placed").count() >= 2, "no battle happened: {log}");
     for l in log.lines().filter(|l| l.starts_with("dress ") || l.starts_with("heap ") || l.starts_with("field ") || l.contains("puppets forgotten") || l.contains("left the outfit") || l.contains("released the outfit")) {
@@ -1144,7 +1162,7 @@ fn puppets_survive_battles_without_orphans() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// Fix round 1, the heap worst case: 30 players and a Fly tour through six cities. Each city shows 8 puppets, the
+/// the heap worst case: 30 players and a Fly tour through six cities. Each city shows 8 puppets, the
 /// field's model heaps each keep a free block of more than HEAP_KEEP (128 KB), and the game runs to the end.
 #[test]
 fn puppet_heap_holds_on_a_fly_tour() {
@@ -1161,7 +1179,7 @@ fn puppet_heap_holds_on_a_fly_tour() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// plan 4 Task 4 over the network: a Y player (girl) stands two tiles right of the walk script's player on map 200,
+/// Over the network: a Y player (girl) stands two tiles right of the walk script's player on map 200,
 /// through an in-process world server. The game shows them as a puppet (the boy model: the girl's is not loaded on
 /// this map), and deletes it within 2 s of them leaving.
 #[test]
@@ -1215,7 +1233,7 @@ fn a_world_peer_becomes_a_puppet() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// plan 4 Task 3: a headless run with --world reports the player to a world server as the walk script moves it. An
+/// a headless run with --world reports the player to a world server as the walk script moves it. An
 /// observer client waits on map 200 (outside the Pokemon Center) and sees the game's player arrive under its --name,
 /// walk and run. Then the server is dropped mid-run: the game goes on to its last frame, and its frames take no longer
 /// offline than online (XR_FRAMETIMES; the net thread owns the socket, the frame only hands state over).
@@ -1335,9 +1353,9 @@ fn title_screen_renders() {
     let _ = std::fs::remove_dir_all(data);
 }
 
-/// start-screen plan 2 Task 2: `--make-preview boy|girl` makes the bedroom save state for each gender (headless,
+/// `--make-preview boy|girl` makes the bedroom save state for each gender (headless,
 /// deterministic, from scripts/preview/), logs to preview.log, prints only `progress N/6520`; each state then loads and
-/// runs 60 frames. Final review I1: with a player's real save in `<data>/user` (the 100% save, which would boot into
+/// runs 60 frames. with a player's real save in `<data>/user` (the 100% save, which would boot into
 /// Continue) the states are still made, in a folder of their own under `<data>/preview/<build>/`, and the save is not touched.
 #[test]
 #[ignore]
@@ -1404,7 +1422,7 @@ fn save_frame(f: &xr_frontend::start::preview::Frame, name: &str) {
     e.write_header().unwrap().write_image_data(&f.rgba).unwrap();
 }
 
-/// start-screen plan 2 Task 5: `redex --preview STATE` from the boy's bedroom state streams head-to-toe crops on
+/// `redex --preview STATE` from the boy's bedroom state streams head-to-toe crops on
 /// stdout: the state's own look (seq 0) first, then a look sent on stdin (seq 1, other pixels), a turn by `face left`,
 /// and an exit 0 once stdin closes. XR_PREVIEW_BOY names a boy state made with XR_DATA's xgame.dll (else one is made
 /// here, about 60 s); XR_PREVIEW_SHOTS=DIR saves the frames compared as PNGs. Prints the wall time per change.
@@ -1489,7 +1507,7 @@ fn the_preview_child_changes_look_and_turns() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// start-screen plan 2 Task 5 fix round 1: a girl's look changed in place is drawn as the game draws her own.
+/// a girl's look changed in place is drawn as the game draws her own.
 /// - The default girl outfit (long hair, style 2, under the hat) keeps her long hair down her back: at least a quarter of
 ///   the pale blonde pixels of her own pyjama look (both facing right), and almost none in the top 40 rows. Loaded with
 ///   the NPC part set (header byte 3 = 0) her hair was a brown plank: 7 % of them.
@@ -1610,7 +1628,7 @@ fn a_girls_look_changed_in_place_is_drawn_as_her_own() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// start-screen plan 2 Task 10: the start screen's side against the real children. `Cards` finds no boy state, makes it
+/// the start screen's side against the real children. `Cards` finds no boy state, makes it
 /// with `--make-preview`, starts `--preview` on it and writes the card of Red's outfit, facing the front: the studio's
 /// 360x480 on its backdrop (the studio view), and not the state's own pyjamas. About 90 s.
 #[test]
@@ -1773,7 +1791,7 @@ fn the_studio_spins_a_whole_model_with_alpha() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-// ---- start-screen plan 2 Task 7: the character's look in the game --------------------------------------------------
+// ---- the character's look in the game --------------------------------------------------
 
 /// A playthrough script cut after `checkpoint <cp>` and without its expects (another look draws other pixels).
 fn script_until(name: &str, script: &str, cp: &str) -> std::path::PathBuf {
@@ -1826,7 +1844,7 @@ fn hex(b: &[u8]) -> String {
 /// The character whose look differs from the 100% save's boy (skin, hair and eyes).
 const CONTINUE_LOOK: xr_net::x::look::Look = xr_net::x::look::Look { gender: 0, skin: 2, hair_style: 3, hair_colour: 1, eyes: 2 };
 
-/// start-screen plan 2 Task 7: Continue as a character wears the character's look: the log says it was applied, and the
+/// Continue as a character wears the character's look: the log says it was applied, and the
 /// field reads it at the Pokemon Center's first checkpoint.
 #[test]
 #[ignore]
@@ -1843,7 +1861,7 @@ fn continue_wears_the_character_look() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// start-screen plan 2 Task 13 (Done 5): the 100% save imported as the start screen does (`Store::import`) is copied,
+/// the 100% save imported as the start screen does (`Store::import`) is copied,
 /// never touched (its SHA-256 the same after the import and after a game played on the copy), and the launch backs
 /// the copy up first: `<character>/backups/<title>/` holds the save as it was before the game ran.
 #[test]
@@ -1875,7 +1893,7 @@ fn an_imported_save_is_never_touched_and_backed_up_before_play() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// start-screen plan 2 Task 13 (Done 2): the creator's picture of a look (the preview child's studio view, front)
+/// the creator's picture of a look (the preview child's studio view, front)
 /// and the game's own picture of the same look: a girl as a new game to first control in the bedroom, a boy on the
 /// 100% save (Continue) outside the Pokemon Center, facing the camera. Saves XR_PREVIEW_SHOTS/redex-preview-child-vs-game-<gender>.png and
 /// .../redex-game-vs-creator-<gender>.png (skips without XR_PREVIEW_SHOTS) for the side-by-side compare.
@@ -1924,9 +1942,9 @@ fn creator_preview_and_the_game_agree() {
     }
 }
 
-/// start-screen plan 2 Task 7: a new game (new-game.txt picks the boy and types "Red") as a girl character named Mira
+/// a new game (new-game.txt picks the boy and types "Red") as a girl character named Mira
 /// is Mira the girl: at first control MyStatus says so and the player's model is the girl's. Keeps the top screen
-/// there as redex_character_new_game_top.png in the temp dir (Task 13's compare).
+/// there as redex_character_new_game_top.png in the temp dir (for comparing).
 #[test]
 #[ignore]
 fn new_game_takes_the_character() {
@@ -1936,6 +1954,12 @@ fn new_game_takes_the_character() {
     let script = script_until("character_new_game", "new-game.txt", "control");
     let log = character_run(&data, &cci, "x-usa-v0.2.0", id, &script, &[("XR_SLOTS", "1")]);
     let line = |kind: &str| log.lines().find(|l| l.starts_with(&format!("{kind} control: "))).unwrap_or_else(|| panic!("no {kind} line\n{log}")).to_string();
+    // the intro asked nothing: its questions, the name entry and the confirm were answered with the character
+    for skipped in ["intro: the questions skipped: a girl", "intro: the name entry skipped: Mira", "intro: the confirm skipped (yes)"] {
+        assert!(log.contains(skipped), "no {skipped:?}\n{log}");
+    }
+    let loaded = std::fs::read_to_string(data.join("logs/loadcro.csv")).unwrap();
+    assert!(!loaded.contains("DllStrInput"), "the name entry was loaded\n{loaded}");
     assert!(line("appearance").contains(": gender 1 "), "{}", line("appearance"));
     assert!(line("trainer").ends_with(": name \"Mira\""), "{}", line("trainer"));
     assert!(line("slots").split_whitespace().any(|s| s == "255/1"), "the player (255) is not model 1: {}", line("slots"));
@@ -1948,7 +1972,7 @@ fn new_game_takes_the_character() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// start-screen plan 2 Task 7 (Done 3): a look the game changes in X (XR_SET_FASHION stands in for a boutique) is kept
+/// a look the game changes in X (XR_SET_FASHION stands in for a boutique) is kept
 /// in characters.json, and Y played as the same character wears it. Y as in the pair tests (XR_CCI_Y, XR_DATA_Y,
 /// XR_SAVE_Y; skips without them): its user folder with the 100% save in Y's title folder.
 #[test]
@@ -2001,9 +2025,9 @@ fn a_boutique_change_reaches_the_other_game() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-// ---- start-screen plan 2 Task 9: characters on the account ----------------------------------------------------------
+// ---- characters on the account ----------------------------------------------------------
 
-/// start-screen plan 2 Task 9, the X+Y pair: a character made on X (in X's characters.json, no save yet) goes to the
+/// The X+Y pair: a character made on X (in X's characters.json, no save yet) goes to the
 /// account when X logs in to the world; Y on another PC (its own data folder, no characters.json) logged in as the same
 /// player (the dev id copied over) gets it into its characters.json. Y as in the pair tests (XR_CCI_Y, XR_DATA_Y;
 /// skips without them).
@@ -2057,4 +2081,58 @@ fn a_character_made_on_x_shows_on_y_after_login() {
     let _ = std::fs::remove_dir_all(&data);
     let _ = std::fs::remove_dir_all(&data_y);
     let _ = std::fs::remove_dir_all(&accounts);
+}
+
+// ---- friends, mp-tests builds: fake Steam friends --------------------------------------------------------------------
+
+/// A headless run with fake friends (XR_FAKE_FRIENDS, XR_FAKE_FRIEND_SAYS at script frames): its log.
+#[cfg(feature = "mp-tests")]
+fn friends_run(name: &str, says: &str, mods: bool) -> Option<(std::path::PathBuf, String)> {
+    let (data, cci) = own_data(name)?;
+    if mods {
+        // a mod that changes the game: a RomFS file added (any change counts)
+        let romfs = data.join("mods/0004000000055D00/romfs");
+        std::fs::create_dir_all(&romfs).unwrap();
+        std::fs::write(romfs.join("friends-test.bin"), b"mod").unwrap();
+    }
+    let o = Command::new(env!("CARGO_BIN_EXE_redex"))
+        .arg("--cci").arg(&cci).arg("--build").arg(data.join("build/x-usa-v0.2.0"))
+        .args(["--headless", "--frames", "300"])
+        .env("XR_FAKE_FRIENDS", "76561197960287934:Serena:In Kalos;76561197960287935:Calem")
+        .env("XR_FAKE_FRIEND_SAYS", says)
+        .env("XR_MP_FRIEND_REPLY", "on my way")
+        .env("XR_NO_STEAM", "1")
+        .output().unwrap();
+    let log = std::fs::read_to_string(data.join("logs/latest.log")).unwrap_or_else(|_| String::from_utf8_lossy(&o.stderr).into_owned());
+    assert_eq!(o.status.code(), Some(0), "the run did not play on to its end\n{log}");
+    assert!(!log.contains("panic"), "{log}");
+    Some((data, log))
+}
+
+/// A fake friend's chat arrives (a stranger's and an unknown kind are dropped) and the reply goes out (`sent`).
+#[cfg(feature = "mp-tests")]
+#[test]
+fn a_fake_friends_chat_arrives_and_is_answered() {
+    let says = "100:76561197960287934:chat:hello from Serena;110:76561197960287999:chat:spam;120:76561197960287934:poke";
+    let Some((data, log)) = friends_run("friends_chat", says, false) else { return };
+    assert!(log.contains("friends: chat from 76561197960287934: hello from Serena"), "{log}");
+    assert!(log.contains("friends: reply to 76561197960287934: sent"), "{log}");
+    assert!(!log.contains("spam"), "a stranger's frame got through\n{log}");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// A fake friend's invite while a game mod is on: Joiner::start refuses it as usual, offline play goes on
+/// (the run reaches its last frame). Without the mod it gets past those checks (here to "Start Steam": XR_NO_STEAM).
+#[cfg(feature = "mp-tests")]
+#[test]
+fn invite_join_hits_lockdown() {
+    let says = "100:76561197960287934:invite:steam:90297831083063301 Kalos Friends";
+    let Some((data, log)) = friends_run("friends_invite_mod", says, true) else { return };
+    assert!(log.contains("friends: invite from 76561197960287934 to \"Kalos Friends\" (steam:90297831083063301)"), "{log}");
+    assert!(log.contains("world: cannot join steam:90297831083063301: Turn off mods to play online"), "{log}");
+    assert!(log.contains("ran 300 frames"), "{log}");
+    let _ = std::fs::remove_dir_all(&data);
+    let Some((data, log)) = friends_run("friends_invite", says, false) else { return };
+    assert!(log.contains("world: cannot join steam:90297831083063301: Start Steam to play online"), "{log}");
+    let _ = std::fs::remove_dir_all(&data);
 }

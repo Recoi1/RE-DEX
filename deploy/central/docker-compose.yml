@@ -1,0 +1,178 @@
+# The central RE:DEX stack: Postgres (its own internal network, only the backend reaches it, never published), the
+# account backend behind Caddy (HTTPS), and the central world on TLS port 7777 with a copy of Caddy's certificate for
+# WORLD_HOST. Needs Docker Compose 2.27+ (volume `subpath`). Run from this folder:
+#   cp .env.example .env   # and set the host names
+#   mkdir secrets          # then write the secret files below (they never go in the repository)
+#   docker compose up -d --build
+# Secrets (one value per file, no trailing newline needed):
+#   secrets/pg_password.txt   Postgres password
+#   secrets/database_url.txt  postgres://redex:<that password>@postgres:5432/redex
+#   secrets/world_secret.txt  32+ random characters shared by backend and world (e.g. openssl rand -hex 32)
+#   secrets/smtp_url.txt      smtps://user:password@smtp.example.org:465 (or no SMTP: docker-compose.maildir.yml)
+# Compose bind-mounts these files as they are, so each must be readable by the uid that reads it inside: keep them
+# mode 600 and owned by that uid (pg_password.txt 999, Postgres; the others 10001, backend and world), in a root-only
+# folder:  sudo chown 999:999 secrets/pg_password.txt; sudo chown 10001:10001 secrets/database_url.txt #          secrets/world_secret.txt secrets/smtp_url.txt; sudo chmod 600 secrets/*.txt; sudo chmod 700 secrets
+name: redex-central
+
+services:
+  postgres:
+    image: postgres:18-bookworm@sha256:e742a2668255221388004f3a42b6150a2103f5054ab3a4a93ae9e4f01e551c35
+    environment:
+      POSTGRES_USER: redex
+      POSTGRES_DB: redex
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets: [pg_password]
+    volumes:
+      - pgdata:/var/lib/postgresql
+    networks: [db]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U redex -d redex"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: deploy/central/Dockerfile
+      target: backend
+    image: redex-central-backend:latest
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+      REDEX_WORLD_SECRET_FILE: /run/secrets/world_secret
+      REDEX_SMTP_URL_FILE: /run/secrets/smtp_url
+      REDEX_MAIL_FROM: ${REDEX_MAIL_FROM}
+      REDEX_PUBLIC_URL: https://${ACCOUNTS_HOST}
+      REDEX_TRUST_PROXY: "1"
+    secrets: [database_url, world_secret, smtp_url]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [db, edge]
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+  # First deploy: a volume `subpath` must exist before it is mounted, and Caddy makes `caddy/certificates` only with its
+  # first certificate. This makes the folder (once; a no-op later) so certsync can start and wait for the files.
+  certs-dir:
+    image: alpine:3@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+    network_mode: none
+    volumes:
+      - caddy_data:/data
+    command: ["mkdir", "-p", "/data/caddy/certificates"]
+    restart: "no"
+
+  # The only service that sees Caddy's certificates (just the certificates folder, read-only, no network): every
+  # 10 minutes it copies WORLD_HOST's certificate and key, whichever CA issued them, into `worldtls`, owned by the
+  # world's uid. The world reloads them when they change.
+  certsync:
+    image: alpine:3@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+    network_mode: none
+    depends_on:
+      certs-dir:
+        condition: service_completed_successfully
+    environment:
+      WORLD_HOST: ${WORLD_HOST}
+    volumes:
+      - type: volume
+        source: caddy_data
+        target: /src
+        read_only: true
+        volume:
+          subpath: caddy/certificates
+      - worldtls:/dst
+    entrypoint: ["/bin/sh", "/certsync.sh"]
+    configs:
+      - source: certsync
+        target: /certsync.sh
+    restart: unless-stopped
+
+  world:
+    build:
+      context: ../..
+      dockerfile: deploy/central/Dockerfile
+      target: world
+    image: redex-central-world:latest
+    # runs as the image's uid 10001; it reads only its own certificate copy
+    environment:
+      REDEX_BACKEND_URL: http://backend:8080
+      REDEX_WORLD_SECRET_FILE: /run/secrets/world_secret
+      REDEX_WORLD_ID: ${WORLD_HOST}:7777
+      REDEX_TLS_CERT: /tls/cert.pem
+      REDEX_TLS_KEY: /tls/key.pem
+    secrets: [world_secret]
+    ports:
+      - "7777:7777"
+    volumes:
+      - worlddata:/data
+      - worldtls:/tls:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      certsync:
+        condition: service_started
+    networks: [edge]
+    # the certificate may not exist on the very first start (Caddy is still getting it): restart until it does
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2@sha256:4851e54a46b206517c574821bb5cc67f170d2156041e9fbc4c9193b45e84a75b
+    environment:
+      ACCOUNTS_HOST: ${ACCOUNTS_HOST}
+      WORLD_HOST: ${WORLD_HOST}
+      STATUS_HOST: ${STATUS_HOST}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      # the public status page and progress card (deploy/status/render.py writes them)
+      - ${STATUS_SITE:-../status/site}:/srv/status:ro
+    networks: [edge]
+    restart: unless-stopped
+
+networks:
+  # Postgres and the backend only; no way out
+  db:
+    internal: true
+  edge: {}
+
+volumes:
+  pgdata: {}
+  worlddata: {}
+  worldtls: {}
+  caddy_data: {}
+  caddy_config: {}
+
+configs:
+  certsync:
+    content: |
+      # no -e: a failed copy (Caddy mid-write, or no certificate yet) waits for the next round instead of exiting
+      set -u
+      echo "certsync: watching for $${WORLD_HOST}'s certificate"
+      while true; do
+        crt=$$(find /src -type f -path "*/$${WORLD_HOST}/$${WORLD_HOST}.crt" -exec ls -t {} + 2>/dev/null | head -n 1)
+        if [ -n "$$crt" ] && [ -f "$${crt%.crt}.key" ]; then
+          if ! cmp -s "$$crt" /dst/cert.pem || ! cmp -s "$${crt%.crt}.key" /dst/key.pem; then
+            cp "$$crt" /dst/cert.tmp && cp "$${crt%.crt}.key" /dst/key.tmp
+            chown 10001:10001 /dst/cert.tmp /dst/key.tmp && chmod 0444 /dst/cert.tmp && chmod 0400 /dst/key.tmp
+            mv /dst/key.tmp /dst/key.pem && mv /dst/cert.tmp /dst/cert.pem
+            echo "certsync: copied $$crt"
+          fi
+        fi
+        # every 10 s until the first copy (Caddy gets the first certificate within a minute), then every 10 min
+        if [ -f /dst/cert.pem ]; then sleep 600; else sleep 10; fi
+      done
+
+secrets:
+  pg_password:
+    file: ./secrets/pg_password.txt
+  database_url:
+    file: ./secrets/database_url.txt
+  world_secret:
+    file: ./secrets/world_secret.txt
+  smtp_url:
+    file: ./secrets/smtp_url.txt

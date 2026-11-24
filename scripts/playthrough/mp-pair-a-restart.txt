@@ -1,4 +1,4 @@
-# plan 4 Task 5, Review Focus 4, player A: the 100% save flies to Vaniville and meets B. The harness kills the world
+# Player A: the 100% save flies to Vaniville and meets B. The harness kills the world
 # server once both have met and starts it again 3 s later: the puppet must go within 2 s and come back, and the game
 # must not stall (XR_FRAMETIMES).
 400 A

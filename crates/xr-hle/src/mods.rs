@@ -109,52 +109,65 @@ fn decompressed(bytes: Vec<u8>, title: &Title) -> Vec<u8> {
     lz77::decompress(&bytes).unwrap_or(bytes)
 }
 
-/// lays the title's mods over it, logging what they changed; whether they changed the game (its exheader or RomFS)
-pub fn lay(title: &mut Title, data_dir: Option<&Path>) -> bool {
-    let Some(data_dir) = data_dir else {
-        return false;
-    };
-    let dir = dir(data_dir, title.program_id());
-    if !dir.is_dir() {
-        return false;
+/// how the title's own mods folder is named to the player (in "turn off mods to play online")
+pub fn own_name(program_id: u64) -> String {
+    format!("the mods in mods/{program_id:016X}")
+}
+
+/// the folders a title's mods are laid from, in order, each w/ its name: the mods folder's own (Citra's layout), then
+/// the ones on from the Mods screen in the order they were installed (modlist), so a later one's file wins
+pub fn layers(data_dir: &Path, program_id: u64) -> Vec<(String, PathBuf)> {
+    let own = dir(data_dir, program_id);
+    let own = own.is_dir().then(|| (own_name(program_id), own));
+    own.into_iter().chain(crate::modlist::enabled(data_dir, program_id).into_iter().map(|(m, dir)| (m.name, dir))).collect()
+}
+
+/// lays the title's mods over it, logging what they changed. What keeps the game offline, if anything does: the name
+/// of a mod that changes more than looks (an exheader, or a RomFS file off the cosmetic list, see cosmetic.rs)
+pub fn lay(title: &mut Title, data_dir: Option<&Path>) -> Option<String> {
+    let data_dir = data_dir?;
+    let layers = layers(data_dir, title.program_id());
+    if layers.is_empty() {
+        return None;
     }
-    let mut changed = false;
+    let mut offline = None;
     if let Some((_, exheader)) = exheader(title, data_dir) {
-        log::info!("mods: the game's exheader is {}", dir.join(EXHEADER).display());
+        log::info!("mods: the game's exheader is {}", dir(data_dir, title.program_id()).join(EXHEADER).display());
         title.exheader = exheader;
-        changed = true;
+        offline = Some(own_name(title.program_id()));
     }
-    match title.lay_mods(&dir) {
-        Ok(Some(changes)) => {
-            changed |= changes.any();
-            log::info!(
-            "mods from {}: {} files replaced, {} added, {} patched, {} removed",
-            dir.display(),
+    let dirs: Vec<&Path> = layers.iter().map(|(_, dir)| dir.as_path()).collect();
+    let names = layers.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", ");
+    match title.lay_mods(&dirs) {
+        Ok(Some(changes)) => log::info!(
+            "mods ({names}): {} files replaced, {} added, {} patched, {} removed",
             changes.replaced,
             changes.added,
             changes.patched,
             changes.removed
-            )
-        }
-        Ok(None) => log::info!("mods: {} changes nothing in the game's files", dir.display()),
-        Err(error) => log::warn!("mods: {} can't be laid over the game: {error}", dir.display()),
+        ),
+        Ok(None) => log::info!("mods: {names} change nothing in the game's files"),
+        Err(error) => log::warn!("mods: {names} can't be laid over the game: {error}"),
     }
     // and over the update's files, a game reads those besides its own
     if let Some(update) = title.update_mut() {
-        match update.title.lay_mods(&dir) {
-            Ok(Some(changes)) => {
-                changed |= changes.any();
-                log::info!(
+        match update.title.lay_mods(&dirs) {
+            Ok(Some(changes)) => log::info!(
                 "mods over the update's files: {} replaced, {} added, {} patched, {} removed",
                 changes.replaced,
                 changes.added,
                 changes.patched,
                 changes.removed
-                )
-            }
+            ),
             Ok(None) => {}
-            Err(error) => log::warn!("mods: {} can't be laid over the update: {error}", dir.display()),
+            Err(error) => log::warn!("mods: {names} can't be laid over the update: {error}"),
         }
     }
-    changed
+    offline.or_else(|| {
+        layers.iter().find_map(|(name, dir)| {
+            let file = crate::modlist::offline_file(dir)?;
+            log::info!("mods: {name} changes {file}, which is game data, not looks: online is off");
+            Some(name.clone())
+        })
+    })
 }

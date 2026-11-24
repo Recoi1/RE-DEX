@@ -339,8 +339,9 @@ void shade(vec4 textures[4], out vec4 diffuse_out, out vec4 specular_out) {
 
         float distance = 1.0;
         if ((flags & 16u) != 0u) {
-            vec3 offset = -view - light.position.xyz;
-            float place = clamp(light.distance.y * length(offset) + light.distance.x, 0.0, 1.0);
+            // the light vector's length before it's normalized, a directional light's is its direction's own
+            vec3 vector = (flags & 1u) != 0u ? light.position.xyz : light.position.xyz + view;
+            float place = clamp(light.distance.y * length(vector) + light.distance.x, 0.0, 1.0);
             float entry = clamp(floor(place * 256.0), 0.0, 255.0);
             distance = lookup(DISTANCE + number, uint(entry), place * 256.0 - entry);
         }

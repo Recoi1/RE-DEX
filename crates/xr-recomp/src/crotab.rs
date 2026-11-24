@@ -6,7 +6,7 @@
 //! walked from its entry through direct edges (and `ldr pc, [pc, rm, lsl #2]` jump tables, whose relocated words
 //! give the cases); BL/BLX targets, B targets in another function's range, and the first plausible ARM code after
 //! a function's last reachable instruction and literal pool (a function only reached indirectly, separated by
-//! the pool) become entries. Finally the plan-1 repairs (`repair::repair`) run on the table, as for code.bin.
+//! the pool) become entries. Finally the repairs (`repair::repair`) run on the table, as for code.bin.
 //!
 //! Mode: an entry is Thumb only when the evidence says so: a relocated pointer or import with bit 0 set, or a
 //! BLX imm from ARM code (BL/B keep the caller's mode). Everything else is ARM (interworking: a pointer without
@@ -335,7 +335,7 @@ pub struct Table {
     pub conflicts: usize,
     /// Branch targets outside the code segment or misaligned, ignored.
     pub stray_targets: usize,
-    /// Plan-1 repairs: (dropped, ended at a noreturn call, added).
+    /// Repairs: (dropped, ended at a noreturn call, added).
     pub repaired: (usize, usize, usize),
     /// Functions whose last reachable instruction runs on into the next entry (a split inside straight-line code;
     /// codegen makes that a tail call).
@@ -346,7 +346,7 @@ pub struct Table {
     pub undecodable: Vec<u32>,
 }
 
-/// Discovers a module's functions (fixed point), applies the plan-1 repairs and measures coverage.
+/// Discovers a module's functions (fixed point), applies the repairs and measures coverage.
 pub fn discover(m: &Module) -> Table {
     let size = m.code.len() as u32;
     let mut entries = m.seeds.clone();

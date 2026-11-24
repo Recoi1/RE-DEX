@@ -116,7 +116,7 @@ pub fn load(path: impl AsRef<std::path::Path>, mut config: Config, guest: Box<dy
 
     map_special_pages(&mut system, app_bytes);
     system.code_modded = map_code(&mut system, &title)?;
-    system.game_modded = game_modded || system.code_modded;
+    system.game_modded = if system.code_modded { Some(crate::mods::own_name(title.program_id())) } else { game_modded };
     map_stack(&mut system, exheader.stack_size);
 
     system.kernel.heap_top = HEAP_VADDR;
@@ -158,12 +158,14 @@ pub fn load(path: impl AsRef<std::path::Path>, mut config: Config, guest: Box<dy
         }
     }
     if let Some(data_dir) = system.config.data_dir.as_deref().filter(|_| system.config.texture_packs) {
-        let dir = crate::mods::textures(data_dir, title.program_id());
+        // the mods folder's own pack, then the packs of the mods on from the Mods screen (a later one's picture wins)
+        let mut dirs = vec![crate::mods::textures(data_dir, title.program_id())];
+        dirs.extend(crate::modlist::enabled(data_dir, title.program_id()).into_iter().map(|(_, dir)| dir.join("textures")));
         if !on_gpu {
-            if std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some()) {
+            for dir in dirs.iter().filter(|dir| std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some())) {
                 log::warn!("the texture pack in {} needs the 3D drawn on the GPU, it is left out", dir.display());
             }
-        } else if let Some(pack) = zakuro_gpu::pack::Pack::open(&dir) {
+        } else if let Some(pack) = zakuro_gpu::pack::Pack::open_all(&dirs.iter().map(std::path::PathBuf::as_path).collect::<Vec<_>>()) {
             system.gpu.set_texture_pack(Some(std::sync::Arc::new(pack)));
         }
     }
@@ -425,8 +427,9 @@ mod tests {
         }
     }
 
-    /// the system says when a mod changed the game (its RomFS or exheader; its code too, see code_modded), so online
-    /// play can refuse it; a texture pack alone changes nothing
+    /// the system names the mod that changes the game beyond its looks (its RomFS off the cosmetic list, or its
+    /// exheader; its code too, see code_modded), so online play can refuse it; a texture pack, or a skin installed from
+    /// the Mods screen, changes nothing that counts
     #[test]
     fn the_system_says_whether_a_mod_changed_the_game() {
         use zakuro_fs::testing::{ncch, write};
@@ -435,20 +438,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data_dir);
         let mods = crate::mods::dir(&data_dir, PROGRAM_ID);
         let boot = || load(&game, Config { data_dir: Some(data_dir.clone()), ..Config::default() }, crate::memory::reserve()).unwrap().game_modded;
-        assert!(!boot(), "no mods folder");
+        assert_eq!(boot(), None, "no mods folder");
+        // from the Mods screen: a skin (a cosmetic GARC) stays online, a mod changing game data doesn't while it is on
+        let installed = crate::modlist::root(&data_dir);
+        for (id, file) in [(1, "romfs/a/0/8/8"), (2, "romfs/d.bin")] {
+            let path = installed.join(format!(".unpack-{id}/{file}"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"mod").unwrap();
+            crate::modlist::install(&data_dir, id, &format!("mod {id}"), "", &installed.join(format!(".unpack-{id}"))).unwrap();
+        }
+        crate::modlist::set_enabled(&data_dir, 2, false).unwrap();
+        assert_eq!(boot(), None, "a skin");
+        crate::modlist::set_enabled(&data_dir, 2, true).unwrap();
+        assert_eq!(boot().as_deref(), Some("mod 2"), "a data mod");
+        crate::modlist::remove(&data_dir, 2).unwrap();
         std::fs::create_dir_all(mods.join("textures")).unwrap();
         std::fs::write(mods.join("textures/tex1_8x8_0000000000000000_0.png"), b"png").unwrap();
-        assert!(!boot(), "a texture pack is cosmetic");
+        assert_eq!(boot(), None, "a texture pack is cosmetic");
         std::fs::create_dir_all(mods.join("romfs")).unwrap();
         std::fs::write(mods.join("romfs/d.bin"), b"z").unwrap();
-        assert!(boot(), "a RomFS file replaced");
+        assert_eq!(boot(), Some(crate::mods::own_name(PROGRAM_ID)), "a RomFS file replaced");
         std::fs::remove_dir_all(mods.join("romfs")).unwrap();
         let mut exheader = vec![0; 0x400];
         put(&mut exheader, 0x10, &[0x0010_0000u32, 1, 8].map(u32::to_le_bytes).concat());
         put(&mut exheader, 0x20, &[0x0010_1000u32, 0, 0].map(u32::to_le_bytes).concat());
         put(&mut exheader, 0x30, &[0x0010_1000u32, 0, 0].map(u32::to_le_bytes).concat());
         std::fs::write(mods.join("exheader.bin"), &exheader).unwrap();
-        assert!(boot(), "the exheader replaced");
+        assert_eq!(boot(), Some(crate::mods::own_name(PROGRAM_ID)), "the exheader replaced");
         std::fs::remove_dir_all(&data_dir).unwrap();
         std::fs::remove_file(game).unwrap();
     }

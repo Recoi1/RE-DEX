@@ -8,8 +8,10 @@
 //!
 //! # Identity
 //! `Hello.auth` says who the player is: a Steam auth session ticket with the SteamID64 it claims (the server has Steam
-//! verify the ticket for that id; a ticket is good for one login), or a dev id (128 random bits made once per install) that only a `--dev` server on localhost accepts, for two
-//! instances on one PC. The identity is only a key: the server assigns the session id and never relays the identity.
+//! verify the ticket for that id; a ticket is good for one login), a world ticket from the account backend (the server
+//! has the backend verify it, server to server, and learns the account id from the backend, never from the client), or
+//! a dev id (128 random bits made once per install) that only a `--dev` server on localhost accepts, for two
+//! instances on one PC. The identity is only a key: the server assigns the session id and relays only a `PlayerId`.
 //! A second `Hello` with the same identity replaces the live session (a crash needs reconnect); the old connection
 //! gets `Refuse` `ELSEWHERE`.
 //!
@@ -28,8 +30,21 @@
 //! - A `Refuse` is always followed by a close. Its `code` (`refuse::*`) says whether a retry can help:
 //!   `refuse::lasting` codes (version, title, logged in elsewhere, protocol misuse) must not be retried.
 //!   `Refuse` is laid out `tag 3, code (u8), reason` from version 2 on and never changes, like the `Hello` prefix.
+//!
+//! # Compatibility rules
+//! - A server speaks exactly one `VERSION` and refuses every other one with `refuse::VERSION` and a reason; there is no
+//!   negotiation. That works for any old or new client because the `Hello` prefix and the `Refuse` layout are frozen.
+//! - Any change to a message's layout or meaning bumps `VERSION` (and adds a line to its history below).
+//! - A message tag or an `Auth` kind is never reused for something else: new messages and new login kinds take new
+//!   numbers, removed ones leave a gap.
+//! - `MAX_FRAME_PRE_HELLO` (what a stranger may make the server buffer) does not grow; `MAX_FRAME_LIVE` may, with a
+//!   version bump, when a message needs it.
 
 pub mod appearance;
+pub mod friends;
+pub mod names;
+
+pub use friends::{decode_friend, encode_friend, steam_world, FriendMsg, FRIEND_MAX, FRIEND_VERSION};
 
 /// Bumped on any wire change. The server refuses other versions in `Hello`.
 /// 2: `Hello` carries `auth` and the 3DS title id, `Peer` the title, `Refuse` a code, `Entered` a repeat flag.
@@ -40,7 +55,9 @@ pub mod appearance;
 ///    too (the server checks it against the session) and its note may be `NOTE_CHARS` characters of any width.
 ///    (All within v4: no v4 build was released before these, so the version stays.)
 /// 5: CharacterPut / Characters, a character per account
-pub const VERSION: u16 = 5;
+/// 6: `Auth::WorldTicket` (account login); `Peer` and `Report` carry a `PlayerId` (dev, Steam or account) instead of
+///    a SteamID64
+pub const VERSION: u16 = 6;
 /// Characters an account holds (and a `Characters` list carries) at most.
 pub const MAX_CHARACTERS: usize = 8;
 /// How far ahead of the server's clock a put's `changed` may be.
@@ -84,6 +101,8 @@ pub const REPORT_CHEAT: u8 = 3;
 pub const MAX_REPORT_REASON: u8 = 3;
 /// Largest Steam auth ticket in a `Hello` (Steam's session tickets are about 240 bytes).
 pub const MAX_TICKET: usize = 512;
+/// Largest account world ticket in a `Hello` (the backend's are 49 ASCII characters).
+pub const MAX_WORLD_TICKET: usize = 128;
 
 /// Who a `Hello` says the player is.
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +112,27 @@ pub enum Auth {
     /// A Steam auth session ticket (`ISteamUser::GetAuthSessionTicket`) and the SteamID64 that made it; the server has
     /// Steam check that the two belong together (`BeginAuthSession`).
     SteamTicket { steam_id: u64, ticket: Vec<u8> },
+    /// A one-use, short-lived ticket from the account backend (`POST /v1/world-tickets`). It names no account: the
+    /// world server asks the backend whose it is.
+    WorldTicket(String),
+}
+
+/// Who a player is, as other players see it (`Peer`) and a report names it (`Report`): verified by the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum PlayerId {
+    /// A dev id (a `--dev` test server): nothing to befriend or tell apart across sessions.
+    #[default]
+    Dev,
+    Steam(u64),
+    /// An account of the account backend.
+    Account(u64),
+}
+
+impl PlayerId {
+    /// The SteamID64 to befriend, 0 when not a Steam player.
+    pub fn steam(self) -> u64 {
+        if let PlayerId::Steam(id) = self { id } else { 0 }
+    }
 }
 /// Generation 6 (X, Y, Omega Ruby, Alpha Sapphire): the `game` field of `Hello`, `MapEnter` and `Pos`.
 pub const GEN_X: u8 = 6;
@@ -199,9 +239,9 @@ pub enum Msg {
     Entered { map: u32, channel: u16, repeat: bool },
     MapLeave,
     Pos(Pos),
-    /// A player is now visible to you (same region, map and channel); `title` says which version they play, `steam`
-    /// is their verified SteamID64 (0: a dev id, no Steam account).
-    Peer { session: u32, name: String, game: u8, title: u64, appearance: Vec<u8>, steam: u64 },
+    /// A player is now visible to you (same region, map and channel); `title` says which version they play, `who` is
+    /// their verified identity (a Steam one can be befriended).
+    Peer { session: u32, name: String, game: u8, title: u64, appearance: Vec<u8>, who: PlayerId },
     PeerPos { session: u32, pos: Pos },
     PeerGone { session: u32 },
     Bye,
@@ -212,10 +252,9 @@ pub enum Msg {
     Whisper { to_session: u32, text: String },
     /// A whisper for you. `name` is the sender's name (they may not be on your map).
     PeerWhisper { from_session: u32, name: String, text: String },
-    /// Tell the server about a player (`REPORT_*`). `steam_id` is who the reporter means (their `Peer.steam`, 0 for a
-    /// dev id): the server drops a report whose session is no longer that account. Metadata only, at most 3 a minute
-    /// per reporter.
-    Report { session: u32, steam_id: u64, reason: u8, note: String },
+    /// Tell the server about a player (`REPORT_*`). `who` is who the reporter means (their `Peer.who`): the server
+    /// drops a report whose session is no longer that player. Metadata only, at most 3 a minute per reporter.
+    Report { session: u32, who: PlayerId, reason: u8, note: String },
     /// New clothes or bike mid-map. The server checks it like the `Hello` one (a bad one is ignored) and allows 1 a second.
     AppearanceUpdate { appearance: Vec<u8> },
     /// A peer's appearance changed.
@@ -292,6 +331,10 @@ impl W {
         self.u64(c.id); self.str_max(&c.name, MAX_NAME); self.bytes(&c.look[..c.look.len().min(MAX_APPEARANCE)]);
         self.u64(c.created); self.u64(c.changed);
     }
+    fn who(&mut self, w: PlayerId) {
+        let (kind, id) = match w { PlayerId::Dev => (0, 0), PlayerId::Steam(id) => (1, id), PlayerId::Account(id) => (2, id) };
+        self.u8(kind); self.u64(id);
+    }
     fn pos(&mut self, p: &Pos) {
         self.u8(p.game); self.u32(p.map); self.u16(p.channel);
         self.f32(p.x); self.f32(p.y); self.f32(p.z);
@@ -329,6 +372,15 @@ impl R<'_> {
     fn character(&mut self) -> Result<Character, ProtoError> {
         Ok(Character { id: self.u64()?, name: self.string(MAX_NAME)?, look: self.bytes(MAX_APPEARANCE)?, created: self.u64()?, changed: self.u64()? })
     }
+    fn who(&mut self) -> Result<PlayerId, ProtoError> {
+        let (kind, id) = (self.u8()?, self.u64()?);
+        match kind {
+            0 if id == 0 => Ok(PlayerId::Dev),
+            1 => Ok(PlayerId::Steam(id)),
+            2 => Ok(PlayerId::Account(id)),
+            k => Err(ProtoError::BadTag(k)),
+        }
+    }
     fn pos(&mut self) -> Result<Pos, ProtoError> {
         Ok(Pos {
             game: self.u8()?, map: self.u32()?, channel: self.u16()?,
@@ -351,6 +403,7 @@ impl Msg {
                         let t = &ticket[..ticket.len().min(MAX_TICKET)];
                         w.u8(2); w.u64(*steam_id); w.u16(t.len() as u16); w.0.extend(t);
                     }
+                    Auth::WorldTicket(t) => { w.u8(3); w.str_max(t, MAX_WORLD_TICKET) }
                 } w.str(name); w.u8(*game); w.u64(*title); w.bytes(appearance);
             }
             Msg::Welcome { session } => { w.u8(2); w.u32(*session) }
@@ -359,8 +412,8 @@ impl Msg {
             Msg::Entered { map, channel, repeat } => { w.u8(5); w.u32(*map); w.u16(*channel); w.u8(*repeat as u8) }
             Msg::MapLeave => w.u8(6),
             Msg::Pos(p) => { w.u8(7); w.pos(p) }
-            Msg::Peer { session, name, game, title, appearance, steam } => {
-                w.u8(8); w.u32(*session); w.str(name); w.u8(*game); w.u64(*title); w.bytes(appearance); w.u64(*steam);
+            Msg::Peer { session, name, game, title, appearance, who } => {
+                w.u8(8); w.u32(*session); w.str(name); w.u8(*game); w.u64(*title); w.bytes(appearance); w.who(*who);
             }
             Msg::PeerPos { session, pos } => { w.u8(9); w.u32(*session); w.pos(pos) }
             Msg::PeerGone { session } => { w.u8(10); w.u32(*session) }
@@ -369,7 +422,7 @@ impl Msg {
             Msg::Pong(n) => { w.u8(13); w.u32(*n) }
             Msg::Whisper { to_session, text } => { w.u8(14); w.u32(*to_session); w.long_str(text, WHISPER_BYTES) }
             Msg::PeerWhisper { from_session, name, text } => { w.u8(15); w.u32(*from_session); w.str(name); w.long_str(text, WHISPER_BYTES) }
-            Msg::Report { session, steam_id, reason, note } => { w.u8(16); w.u32(*session); w.u64(*steam_id); w.u8(*reason); w.long_str(note, NOTE_BYTES) }
+            Msg::Report { session, who, reason, note } => { w.u8(16); w.u32(*session); w.who(*who); w.u8(*reason); w.long_str(note, NOTE_BYTES) }
             Msg::AppearanceUpdate { appearance } => { w.u8(17); w.bytes(appearance) }
             Msg::PeerAppearance { session, appearance } => { w.u8(18); w.u32(*session); w.bytes(appearance) }
             Msg::CharacterPut { character } => { w.u8(19); w.character(character) }
@@ -401,6 +454,7 @@ impl Msg {
                         if n > MAX_TICKET { return Err(ProtoError::TooLarge(n)); }
                         Auth::SteamTicket { steam_id, ticket: r.take(n)?.to_vec() }
                     }
+                    3 => Auth::WorldTicket(r.string(MAX_WORLD_TICKET)?),
                     t => return Err(ProtoError::BadTag(t)),
                 };
                 Msg::Hello { version, auth, name: r.string(MAX_NAME)?, game: r.u8()?, title: r.u64()?, appearance: r.bytes(MAX_APPEARANCE)? }
@@ -411,7 +465,7 @@ impl Msg {
             5 => Msg::Entered { map: r.u32()?, channel: r.u16()?, repeat: r.u8()? != 0 },
             6 => Msg::MapLeave,
             7 => Msg::Pos(r.pos()?),
-            8 => Msg::Peer { session: r.u32()?, name: r.string(MAX_NAME)?, game: r.u8()?, title: r.u64()?, appearance: r.bytes(MAX_APPEARANCE)?, steam: r.u64()? },
+            8 => Msg::Peer { session: r.u32()?, name: r.string(MAX_NAME)?, game: r.u8()?, title: r.u64()?, appearance: r.bytes(MAX_APPEARANCE)?, who: r.who()? },
             9 => Msg::PeerPos { session: r.u32()?, pos: r.pos()? },
             10 => Msg::PeerGone { session: r.u32()? },
             11 => Msg::Bye,
@@ -419,7 +473,7 @@ impl Msg {
             13 => Msg::Pong(r.u32()?),
             14 => Msg::Whisper { to_session: r.u32()?, text: r.long_string(WHISPER_BYTES)? },
             15 => Msg::PeerWhisper { from_session: r.u32()?, name: r.string(MAX_NAME)?, text: r.long_string(WHISPER_BYTES)? },
-            16 => Msg::Report { session: r.u32()?, steam_id: r.u64()?, reason: r.u8()?, note: r.long_string(NOTE_BYTES)? },
+            16 => Msg::Report { session: r.u32()?, who: r.who()?, reason: r.u8()?, note: r.long_string(NOTE_BYTES)? },
             17 => Msg::AppearanceUpdate { appearance: r.bytes(MAX_APPEARANCE)? },
             18 => Msg::PeerAppearance { session: r.u32()?, appearance: r.bytes(MAX_APPEARANCE)? },
             19 => Msg::CharacterPut { character: r.character()? },
@@ -473,13 +527,16 @@ mod tests {
             Msg::Welcome { session: 5 }, Msg::Refuse { code: refuse::FULL, reason: "no".into() },
             Msg::MapEnter { game: 6, map: 9 }, Msg::Entered { map: 9, channel: 1, repeat: false },
             Msg::Entered { map: 9, channel: 1, repeat: true }, Msg::MapLeave,
-            Msg::Pos(pos()), Msg::Peer { session: 1, name: "B".into(), game: 6, title: TITLE_X, appearance: vec![], steam: 76561197960287930 },
+            Msg::Hello { version: VERSION, auth: Auth::WorldTicket("rdx_t_abc".into()), name: "Calem".into(), game: 6, title: TITLE_X, appearance: vec![] },
+            Msg::Pos(pos()), Msg::Peer { session: 1, name: "B".into(), game: 6, title: TITLE_X, appearance: vec![], who: PlayerId::Steam(76561197960287930) },
+            Msg::Peer { session: 2, name: "C".into(), game: 6, title: TITLE_Y, appearance: vec![], who: PlayerId::Account(42) },
+            Msg::Peer { session: 3, name: "D".into(), game: 6, title: TITLE_Y, appearance: vec![], who: PlayerId::Dev },
             Msg::PeerPos { session: 1, pos: pos() }, Msg::PeerGone { session: 1 },
             Msg::Bye, Msg::Ping(4), Msg::Pong(4),
             Msg::Whisper { to_session: 3, text: "hi é".into() },
             Msg::PeerWhisper { from_session: 3, name: "Ash".into(), text: "hi".into() },
-            Msg::Report { session: 3, steam_id: 76561197960287930, reason: REPORT_CHAT, note: "rude".into() },
-            Msg::Report { session: 3, steam_id: 0, reason: REPORT_OTHER, note: "é".repeat(NOTE_CHARS) },
+            Msg::Report { session: 3, who: PlayerId::Steam(76561197960287930), reason: REPORT_CHAT, note: "rude".into() },
+            Msg::Report { session: 3, who: PlayerId::Account(7), reason: REPORT_OTHER, note: "é".repeat(NOTE_CHARS) },
             Msg::AppearanceUpdate { appearance: vec![6, 1, 0, 9] }, Msg::PeerAppearance { session: 3, appearance: vec![6, 1, 1] },
             Msg::CharacterPut { character: ch(7, "Serena", 5) },
             Msg::Characters { list: vec![] }, Msg::Characters { list: vec![ch(7, "Serena", 5), ch(u64::MAX, "é", u64::MAX)] },
@@ -506,7 +563,7 @@ mod tests {
         assert_eq!(Msg::decode(&e), Err(ProtoError::TooLarge(MAX_CHARACTERS + 1)));
     }
 
-    /// Review Focus 4: one character changed offline on two PCs, the newest `changed` wins; a tie keeps ours.
+    /// one character changed offline on two PCs, the newest `changed` wins; a tie keeps ours.
     #[test]
     fn merge_keeps_the_newest_and_ties_keep_ours() {
         let mut list = vec![ch(1, "Serena", 10)];
@@ -571,6 +628,27 @@ mod tests {
         t.extend(7u64.to_le_bytes());
         t.extend(((MAX_TICKET + 1) as u16).to_le_bytes());
         assert_eq!(Msg::decode(&t), Err(ProtoError::TooLarge(MAX_TICKET + 1)));
+        // a world ticket over its cap, and a player id of an unknown kind (or a dev id carrying bits)
+        let mut w = vec![1, VERSION as u8, 0, 3, (MAX_WORLD_TICKET + 1) as u8];
+        w.extend(vec![b'a'; MAX_WORLD_TICKET + 1]);
+        assert_eq!(Msg::decode(&w), Err(ProtoError::TooLarge(MAX_WORLD_TICKET + 1)));
+        for (kind, id) in [(3u8, 0u64), (0, 5)] {
+            let mut p = vec![16, 1, 0, 0, 0, kind];
+            p.extend(id.to_le_bytes());
+            p.extend([0, 0, 0]);
+            assert_eq!(Msg::decode(&p), Err(ProtoError::BadTag(kind)));
+        }
+    }
+
+    /// A v5 client (the last Steam-only one) is refused by its version, so it never misreads a v6 `Peer`.
+    #[test]
+    fn v5_hello_is_refused_by_version() {
+        let mut v5 = vec![1, 5, 0, 1];
+        v5.extend([7u8; 16]);
+        v5.extend([1, b'A', 6, 0, 0x5D, 5, 0, 0, 4, 0, 0, 0]);
+        assert_eq!(Msg::decode(&v5), Err(ProtoError::Version(5)));
+        assert_eq!(PlayerId::Steam(9).steam(), 9);
+        assert_eq!(PlayerId::Account(9).steam(), 0);
     }
 
     #[test]

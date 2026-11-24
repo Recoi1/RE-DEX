@@ -32,8 +32,10 @@ mod exec;
 mod explore;
 mod game;
 mod hooks;
+mod hostprof;
 mod inbetweens;
 mod interp;
+mod intro;
 mod log;
 mod mem;
 mod preview;
@@ -48,7 +50,8 @@ use xr_hle::services::hid::{InputState, PadState};
 /// Host address of guest address 0 (0 before boot), for the fault handler.
 pub static GUEST_BASE: AtomicUsize = AtomicUsize::new(0);
 
-/// A host access violation inside guest memory is a guest fault: log the guest address and stop (exit 6). A host
+/// A host access violation inside guest memory is a guest fault (unless it hit a page lazy GPU coherency protects):
+/// log the guest address and stop (exit 6). A host
 /// stack overflow (deep guest recursion on a host thread) stops with exit 7.
 unsafe extern "system" fn on_fault(info: *mut windows_sys::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS) -> i32 {
     let rec = unsafe { &*(*info).ExceptionRecord };
@@ -56,9 +59,18 @@ unsafe extern "system" fn on_fault(info: *mut windows_sys::Win32::System::Diagno
         0xC000_0005 => {
             let base = GUEST_BASE.load(Ordering::Relaxed);
             let a = rec.ExceptionInformation[1].wrapping_sub(base);
+            // a page the host GPU drew that memory doesn't have yet (xr_hle Memory::lazy): written back, then retried
+            if base != 0 && a < 1 << 32 && exec::lazy_fault(a as u32) {
+                return -1; // EXCEPTION_CONTINUE_EXECUTION
+            }
             if base != 0 && a < 1 << 32 {
                 let kind = ["read", "write"].get(rec.ExceptionInformation[0]).unwrap_or(&"execute");
-                log::stop(6, &format!("guest memory fault: {kind} at 0x{a:08X} (unmapped)"));
+                // a mapped page here: a write to a read-only page, or one lazy write-back could not unprotect (logged above)
+                let what = match exec::page_bits(a as u32) {
+                    Some(0) | None => "unmapped".to_string(),
+                    Some(bits) => format!("mapped, page bits 0x{bits:02X}"),
+                };
+                log::stop(6, &format!("guest memory fault: {kind} at 0x{a:08X} ({what})"));
             }
         }
         0xC000_00FD => log::stop(7, &format!("host stack overflow on thread {:?}", std::thread::current().name())),
@@ -114,8 +126,7 @@ fn preview_user(data: &std::path::Path, build: &std::path::Path, tag: &str) -> s
 fn own_data_folder(data: &std::path::Path, wait_ms: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
-    let key = std::fs::canonicalize(data).unwrap_or_else(|_| data.to_path_buf()).to_string_lossy().to_lowercase();
-    let name: Vec<u16> = format!("Local\\redex-data-{:016x}", xr_hle::cro::code_hash(key.as_bytes())).encode_utf16().chain([0]).collect();
+    let name = xr_frontend::start::storage::data_lock_name(data);
     unsafe {
         let h = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
         if h.is_null() {
@@ -169,6 +180,7 @@ const USAGE: &str = "usage: redex                      the start screen
              [--renderer software|vulkan] [--resolution N] [--mute] [--frames N] [--press BUTTON@FRAME]...
              [--headless [--screens-every N] [--deterministic] [--realtime] [--script FILE [--record-expects]]]
              [--make-preview boy|girl --out PATH] [--preview STATE] [+connect steam:ID]
+             [--account-server URL --login EMAIL --world tls:HOST:PORT]   (the password in REDEX_PASSWORD)
   Dev and test options (--headless, --script, --press, --deterministic, --make-preview, XR_STATE_*, XR_EXPLORE*,
   XR_FAKE_*, XR_MP_*, XR_SET_FASHION, XR_RAILPOS) keep the game offline, and so do mods that change the game.";
 
@@ -191,6 +203,8 @@ fn run() -> Result<(), String> {
     #[cfg_attr(not(feature = "mp-tests"), allow(unused_mut))]
     let (mut world, mut name, mut dev_id, mut offline) = (None::<String>, None::<String>, false, false);
     let mut character = None::<u64>;
+    // an account of the account backend (central worlds): the dev path until the start screen has a login
+    let (mut account_server, mut login) = (None::<String>, None::<String>);
     let mut args = std::env::args_os().skip(1);
     while let Some(a) = args.next() {
         let mut value = || args.next().ok_or(format!("{a:?} needs a value"));
@@ -245,6 +259,8 @@ fn run() -> Result<(), String> {
                 world = Some(addr);
             }
             Some("--offline") => offline = true,
+            Some("--account-server") => account_server = Some(value()?.to_string_lossy().into_owned()),
+            Some("--login") => login = Some(value()?.to_string_lossy().into_owned()),
             Some("--name") => name = Some(value()?.to_string_lossy().into_owned()),
             // log in to a --dev world server with <data>/user/redex-id instead of Steam (a second instance on one PC)
             #[cfg(feature = "mp-tests")]
@@ -302,6 +318,11 @@ fn run() -> Result<(), String> {
     if !headless && !own_data_folder(data, 5000) {
         message_box("RE:DEX is already playing this game from the same save folder. Switch to its window to keep playing.");
         return Err("another game window is using this data folder".into());
+    }
+    // the start screen's Pokémon Storage (PKVault) writes these saves while it is open
+    if !headless && xr_frontend::start::storage::running(data) {
+        message_box("Pokémon Storage is open and may be changing your saves. Close it, then play.");
+        return Err("Pokémon Storage (PKVault) is open on this data folder".into());
     }
     // a preview run goes beside a game that is playing: its own log, and the game's loadcro.csv left alone
     init_log(&data.join(if make_preview.is_some() { "logs/preview.log" } else { "logs/latest.log" }))?;
@@ -369,7 +390,30 @@ fn run() -> Result<(), String> {
     // GenHashConsoleUnique mixed with console_id) and PSS records passersby by it, so it must not change between
     // sessions. Offline runs keep the default id (the playthrough hashes do not depend on a data dir)
     let mut notice = None;
-    let steam = (world.is_some() && !dev_id)
+    // --account-server and --login: the account's session (the password from REDEX_PASSWORD, used once, never logged);
+    // a failed login plays offline and says why
+    let account = match (&account_server, &login, &world) {
+        (None, None, _) => None,
+        (Some(_), None, _) | (None, Some(_), _) => return Err("--account-server and --login go together".into()),
+        (Some(_), Some(_), None) => return Err("--login needs a world: --world tls:HOST:PORT".into()),
+        (Some(server), Some(email), Some(_)) => {
+            let password = std::env::var("REDEX_PASSWORD").map_err(|_| "--login takes the password from REDEX_PASSWORD")?;
+            let device = format!("RE:DEX on {}", std::env::var("COMPUTERNAME").unwrap_or_else(|_| "a PC".into()));
+            match xr_net::account::Account::login(server, email, &password, &device) {
+                Ok(a) => {
+                    log::log(&format!("account: logged in to {server} as account {}", a.account_id));
+                    Some(a)
+                }
+                Err(e) => {
+                    log::log(&format!("account: login to {server} failed: {e}; playing offline"));
+                    notice = Some(format!("The account login failed: {e}.\n\nPlaying offline."));
+                    None
+                }
+            }
+        }
+    };
+    let world = world.filter(|_| account.is_some() || login.is_none());
+    let steam = (world.is_some() && !dev_id && account.is_none())
         .then(|| {
             xr_net::steam::Steam::init()
                 .inspect_err(|e| {
@@ -380,10 +424,10 @@ fn run() -> Result<(), String> {
                 .ok()
         })
         .flatten();
-    let world = world.filter(|_| steam.is_some() || dev_id);
+    let world = world.filter(|_| steam.is_some() || dev_id || account.is_some());
     // a Steam login never goes over TCP to another machine (the ticket is not bound to the server): offline, not a boot failure
     let world = world.filter(|a| {
-        let keep = boot_world_kept(a, steam.is_some(), dev_id);
+        let keep = account.is_some() || boot_world_kept(a, steam.is_some(), dev_id);
         if !keep {
             log::log(&format!("world: {a} is a remote TCP world and Steam is on; playing offline (use steam:<id>, or --dev-id)"));
             notice = Some(format!("A Steam login does not go over plain TCP to {a}: use a steam:<id> world.
@@ -393,6 +437,7 @@ Playing offline."));
         keep
     });
     let identity = match &steam {
+        _ if account.is_some() => account.as_ref().map(|a| xr_net::id::Identity::Account(a.account_id)),
         Some(s) => Some(xr_net::id::Identity::Steam(s.steam_id())),
         None if link.is_some() || world.is_some() => {
             Some(xr_net::id::Identity::Dev(xr_net::id::load_or_create(&data.join("user")).map_err(|e| format!("player id: {e}"))?))
@@ -412,17 +457,17 @@ Playing offline."));
     let flags = [("--headless", headless), ("--script", script), ("--press", !presses.is_empty() && !script), ("--deterministic", deterministic && !script), ("--make-preview", make_preview.is_some()), ("--room", link.is_some())];
     let dev = dev_inputs(&flags, std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()));
     // a window may join a world later (the server browser, Steam's "Join game"): Steam is started then if it is not yet
-    let mut joiner = Joiner { steam, dev_id, name, user, id_dir: data.join("user"), data: data.to_path_buf(), identity, dev, cci: cci.clone() };
+    let mut joiner = Joiner { steam, account, dev_id, name, user, id_dir: data.join("user"), data: data.to_path_buf(), identity, dev, cci: cci.clone() };
     // the world client starts once the game is loaded: the running title says which world (region) and version. A run
     // that may not join (`refusal`) plays offline and says why (a toast in a window)
     let start_net = move |j: &mut Joiner, m: &mut exec::Machine| -> Result<(Option<xr_net::Client>, Option<String>), String> {
         let Some(addr) = &world else { return Ok((None, None)) };
-        let modded = m.system().game_modded;
-        if let Some(r) = refusal(&j.dev, modded, || j.dump_changed()) {
+        let modded = m.system().game_modded.clone();
+        if let Some(r) = refusal(&j.dev, modded.as_deref(), || j.dump_changed()) {
             log::log(&format!("world: not joining {addr}: {r}; playing offline"));
             return Ok((None, Some(r)));
         }
-        j.start(addr, m.title_id, modded).map(|c| (Some(c), None))
+        j.start(addr, m.title_id, modded.as_deref()).map(|c| (Some(c), None))
     };
     if !headless {
         window.notice = notice;
@@ -439,7 +484,17 @@ Playing offline."));
                 let (net, refused) = start_net(&mut joiner, &mut m)?;
                 let world = net.as_ref().and(world_shown);
                 let played = played(m.title_id);
-                Ok(Windowed { m, n: 0, presses, net, joiner, world, pending: None, query: None, presence: None, notes: refused.into_iter().collect(), played })
+                // Steam from the start, online or not: friends see "in RE:DEX" and can write (never with --dev-id)
+                if !joiner.dev_id {
+                    let _ = joiner.steam();
+                }
+                #[cfg(feature = "mp-tests")]
+                let friends = xr_net::friends::FakeFriends::from_env().map(|f| Box::new(f) as Box<dyn xr_net::friends::FriendsLink>);
+                #[cfg(not(feature = "mp-tests"))]
+                let friends = None;
+                let (friend_list, ignored, world_names) = (Vec::new(), None, Default::default());
+                let (listed, friend_failed) = (None, Vec::new());
+                Ok(Windowed { m, n: 0, presses, net, joiner, world, pending: None, query: None, presence: None, notes: refused.into_iter().collect(), played, friends, friend_list, ignored, world_names, listed, friend_failed })
             })
         };
         if xr_frontend::run(window, config, boot)? {
@@ -466,6 +521,10 @@ Playing offline."));
     let mut net = start_net(&mut joiner, &mut m)?.0;
     let mut played = played(m.title_id);
     let mut fake = FakePeers::from_env();
+    // XR_FAKE_FRIENDS (mp-tests): made-up Steam friends whose scripted chat and invites arrive here; a headless game has
+    // no Friends tab, so a chat is answered with XR_MP_FRIEND_REPLY and an invite is joined (through Joiner::start)
+    #[cfg(feature = "mp-tests")]
+    let fake_friends = xr_net::friends::FakeFriends::from_env();
     // XR_SET_FASHION=HEX@FRAME (tests): at that script frame the save's outfit in memory (MyStatus +0x30) becomes the
     // 16 bytes HEX (17: the gender first); the game reads it when it next builds the player (a map change)
     let mut set_fashion = std::env::var("XR_SET_FASHION").ok().and_then(|v| {
@@ -760,6 +819,31 @@ Playing offline."));
                 let (reason, note) = arg.split_once(':').unwrap_or((&arg, ""));
                 let ok = c.report(*to, *steam, reason.parse().unwrap_or(0), note);
                 log::log(&format!("XR_MP_REPORT session {to} ({name}, steam {steam}): {}", if ok { "sent" } else { "not sent" }));
+            }
+        }
+        #[cfg(feature = "mp-tests")]
+        if let Some(f) = &fake_friends {
+            use xr_net::friends::{FriendMsg, FriendsLink};
+            f.frame(t);
+            for (from, msg) in f.take() {
+                match msg {
+                    FriendMsg::Chat(text) => {
+                        log::log(&format!("friends: chat from {from}: {text}"));
+                        if let Ok(reply) = std::env::var("XR_MP_FRIEND_REPLY") {
+                            let sent = f.send(from, &FriendMsg::Chat(reply)).is_ok();
+                            log::log(&format!("friends: reply to {from}: {}", if sent { "sent" } else { "not sent" }));
+                        }
+                    }
+                    FriendMsg::Invite { world, connect } => {
+                        log::log(&format!("friends: invite from {from} to {world:?} ({connect})"));
+                        let modded = m.system().game_modded.clone();
+                        match joiner.start(&connect, m.title_id, modded.as_deref()) {
+                            Ok(c) => net = Some(c),
+                            Err(e) => log::log(&format!("world: cannot join {connect}: {e}")),
+                        }
+                    }
+                    FriendMsg::Decline => log::log(&format!("friends: {from} declined")),
+                }
             }
         }
         if let Some((bytes, _)) = set_fashion.take_if(|(b, at)| t >= *at && matches!(b.len(), 16 | 17)) {
@@ -1407,7 +1491,7 @@ fn input_at(presses: &[Press], n: u64) -> InputState {
 
 #[cfg(test)]
 mod tests {
-    /// Final re-review N1: every preview process gets a folder nothing else uses (a sibling's stays untouched, a
+    /// every preview process gets a folder nothing else uses (a sibling's stays untouched, a
     /// stale one from an old run is swept, a player's `<data>/user` is never involved).
     #[test]
     fn each_preview_gets_its_own_folder() {
@@ -1456,11 +1540,11 @@ mod tests {
         let dev = vec!["XR_STATE_LOAD".to_string()];
         let unasked = || panic!("the dump is checked last, and only when nothing else refused");
         if !cfg!(feature = "mp-tests") {
-            assert!(super::refusal(&dev, false, unasked).is_some());
+            assert!(super::refusal(&dev, None, unasked).is_some());
         }
-        assert_eq!(super::refusal(&[], true, unasked).as_deref(), Some("Turn off mods to play online (texture packs are fine)"));
-        assert_eq!(super::refusal(&[], false, || true).as_deref(), Some("This game file was changed since it was added; online is off"));
-        assert_eq!(super::refusal(&[], false, || false), None);
+        assert_eq!(super::refusal(&[], Some("Shiny Lock Removal"), unasked).as_deref(), Some("Turn off mods to play online: Shiny Lock Removal changes the game (skins and texture packs are fine)"));
+        assert_eq!(super::refusal(&[], None, || true).as_deref(), Some("This game file was changed since it was added; online is off"));
+        assert_eq!(super::refusal(&[], None, || false), None);
     }
 
     #[test]
@@ -1472,6 +1556,27 @@ mod tests {
     }
 
     use super::*;
+
+    /// Presence is recorded as set only once it was: a window that booted without Steam sets it (the `redex` key with it)
+    /// as soon as Steam is up, though what it wants did not change.
+    #[test]
+    fn presence_waits_for_steam() {
+        let mut last = None;
+        let offline = (Some("Playing offline".to_string()), None::<String>);
+        assert_eq!(presence_to_set(&mut last, offline.clone(), false), None);
+        assert_eq!(last, None, "nothing was sent");
+        assert_eq!(presence_to_set(&mut last, offline.clone(), true), Some(offline.clone()));
+        assert_eq!(presence_to_set(&mut last, offline.clone(), true), None, "unchanged");
+    }
+
+    /// Fake friends are a test input: a release run with XR_FAKE_FRIENDS (or its script or reply) stays out of worlds.
+    #[test]
+    fn fake_friends_is_a_dev_input() {
+        let got = dev_inputs(&[], ["XR_FAKE_FRIENDS", "XR_FAKE_FRIEND_SAYS", "XR_MP_FRIEND_REPLY"].map(String::from));
+        assert_eq!(got, ["XR_FAKE_FRIENDS", "XR_FAKE_FRIEND_SAYS", "XR_MP_FRIEND_REPLY"]);
+        let refused = refusal(&got, None, || false);
+        assert_eq!(refused.is_some(), !cfg!(feature = "mp-tests"), "{refused:?}");
+    }
 
     /// Only `steam:<digits>` comes in from Steam's "Join game" and +connect; a Steam login reaches TCP on this PC only.
     #[test]
@@ -1610,21 +1715,36 @@ struct Windowed {
     notes: Vec<String>,
     /// --character's look in the game
     played: Option<character::Played>,
+    /// Steam friends (once Steam is up), or fakes (mp-tests, XR_FAKE_FRIENDS)
+    friends: Option<Box<dyn xr_net::friends::FriendsLink>>,
+    /// friends online, as last listed (on opening the tab, every FRIENDS_AGAIN while open, and when a stranger to the
+    /// list writes)
+    friend_list: Vec<xr_net::friends::Friend>,
+    /// the Steam accounts ignored, once the window read its list: the Steam link starts only then, so no session from an
+    /// ignored friend is ever accepted
+    ignored: Option<Vec<u64>>,
+    /// when the friends were last listed (again every FRIENDS_AGAIN, tab open or not: a chat needs to know who left)
+    listed: Option<std::time::Instant>,
+    /// sends that failed, for the view: (to, chat text, why)
+    friend_failed: Vec<(u64, Option<String>, String)>,
+    /// worlds' names from Steam's server list, by address: what an invite names
+    world_names: std::collections::HashMap<String, String>,
 }
 
 /// How long a world being joined may take to log us in before it is given up (the old world kept).
 const JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// `steam:<digits>`: a world by its SteamID, what Steam's "Join game" and `+connect` may name. A `host:port` there
-/// could come from anyone's rich presence and would get our Steam ticket over TCP, unbound to that server.
-fn steam_world(addr: &str) -> bool {
-    addr.strip_prefix("steam:").is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) && id.parse::<u64>().is_ok())
-}
+use redex_proto::steam_world;
 
 /// Whether a boot-time world address is kept: with a Steam login (no `--dev-id`) only `steam:` and this PC's own TCP
 /// world are; anything else would send the ticket over TCP to another machine.
 fn boot_world_kept(addr: &str, steam: bool, dev_id: bool) -> bool {
     dev_id || !steam || addr.starts_with("steam:") || loopback(addr)
+}
+
+/// A world's name as friends' presence shows it: 24 characters at most.
+fn short_name(name: &str) -> String {
+    name.chars().take(24).collect()
 }
 
 /// A TCP world on this PC: the only place a Steam login goes over TCP (a ticket there is not bound to the server).
@@ -1672,15 +1792,15 @@ fn dev_inputs(flags: &[(&str, bool)], vars: impl IntoIterator<Item = String>) ->
 }
 
 /// Why this run may not join a world, if it may not: dev or test inputs (bots, save states, scripted input; allowed
-/// only in an `mp-tests` build, the MP test harness's), mods that change the game, or a game file edited since it was
+/// only in an `mp-tests` build, the MP test harness's), a mod that changes the game (`modded`, its name), or a game file edited since it was
 /// added (`changed`, asked last: it may hash the file). Client-side: it keeps dev tools and casual edits out of a
 /// release; the server's checks are the real fence.
-fn refusal(dev: &[String], modded: bool, changed: impl FnOnce() -> bool) -> Option<String> {
+fn refusal(dev: &[String], modded: Option<&str>, changed: impl FnOnce() -> bool) -> Option<String> {
     if !cfg!(feature = "mp-tests") && !dev.is_empty() {
         return Some(format!("Online is off while test options are on ({})", dev.join(", ")));
     }
-    if modded {
-        return Some("Turn off mods to play online (texture packs are fine)".into());
+    if let Some(name) = modded {
+        return Some(format!("Turn off mods to play online: {name} changes the game (skins and texture packs are fine)"));
     }
     changed().then(|| "This game file was changed since it was added; online is off".into())
 }
@@ -1690,6 +1810,8 @@ fn refusal(dev: &[String], modded: bool, changed: impl FnOnce() -> bool) -> Opti
 /// while it is not up.
 struct Joiner {
     steam: Option<xr_net::steam::Steam>,
+    /// logged in to the account backend (`--account-server`): worlds are joined with world tickets, never Steam
+    account: Option<xr_net::account::Account>,
     dev_id: bool,
     name: Option<String>,
     /// the saves folder: the character's with --character, else `<data>/user`
@@ -1726,16 +1848,17 @@ impl Joiner {
         }
     }
 
-    /// A world client for `addr`, the running game being `title` (`modded`: a mod changed it); puppets on from then on.
+    /// A world client for `addr`, the running game being `title` (`modded`: the mod that changes it); puppets on from then on.
     /// Every join comes here (the boot's world, the server browser, Steam's "Join game"), so this is where a run that
     /// may not join (`refusal`) is refused.
-    fn start(&mut self, addr: &str, title: u64, modded: bool) -> Result<xr_net::Client, String> {
+    fn start(&mut self, addr: &str, title: u64, modded: Option<&str>) -> Result<xr_net::Client, String> {
         if let Some(r) = refusal(&self.dev, modded, || self.dump_changed()) {
             return Err(r);
         }
-        let steam = self.steam().cloned();
+        let steam = if self.account.is_some() { None } else { self.steam().cloned() };
         let identity = match (self.identity, &steam) {
             (Some(i), _) => i,
+            (None, _) if self.account.is_some() => xr_net::id::Identity::Account(self.account.as_ref().map_or(0, |a| a.account_id)),
             (None, Some(s)) => xr_net::id::Identity::Steam(s.steam_id()),
             (None, None) if self.dev_id => xr_net::id::Identity::Dev(xr_net::id::load_or_create(&self.id_dir).map_err(|e| format!("player id: {e}"))?),
             (None, None) => return Err(xr_net::steam::START_STEAM.into()),
@@ -1749,16 +1872,20 @@ impl Joiner {
         let auth = match identity {
             xr_net::id::Identity::Dev(id) => redex_proto::Auth::DevId(id),
             xr_net::id::Identity::Steam(steam_id) => redex_proto::Auth::SteamTicket { steam_id, ticket: Vec::new() },
+            // a fresh ticket per connection (xr_net::account)
+            xr_net::id::Identity::Account(_) => redex_proto::Auth::WorldTicket(String::new()),
         };
         // a dev id logs in without Steam even when Steam runs (a second instance on one PC)
         let steam = steam.filter(|_| matches!(identity, xr_net::id::Identity::Steam(_)));
         if steam.is_some() && !addr.starts_with("steam:") && !loopback(addr) {
             return Err("a Steam login goes over TCP only to this PC (127.0.0.1); join other worlds as steam:<server id>".into());
         }
-        log::log(&format!("world: joining {addr} as {name:?} (title {title:016X}, {} login)", if steam.is_some() { "Steam" } else { "dev id" }));
+        let kind = if self.account.is_some() { "account" } else if steam.is_some() { "Steam" } else { "dev id" };
+        log::log(&format!("world: joining {addr} as {name:?} (title {title:016X}, {kind} login)"));
         // the player's characters go to the account after every login (the server keeps the newest copy of each)
         let characters = xr_frontend::start::characters::Store::load(&self.data).characters.into_iter().filter(|c| xr_net::x::field::Appearance::from_bytes(&c.look).is_some()).collect();
-        let net = xr_net::Client::start(xr_net::Options { steam, appearance, characters, ..xr_net::Options::new(addr, auth, title, name) }).map_err(|e| format!("world: {e}"))?;
+        let account = self.account.clone();
+        let net = xr_net::Client::start(xr_net::Options { steam, account, appearance, characters, ..xr_net::Options::new(addr, auth, title, name) }).map_err(|e| format!("world: {e}"))?;
         // online: other players on our map become puppets (hooks.rs)
         let mut puppets = hooks::PUPPETS.lock().unwrap_or_else(|e| e.into_inner());
         if puppets.is_none() {
@@ -1820,7 +1947,9 @@ impl xr_frontend::Game for Windowed {
             }
             view.searching = !done;
             view.servers = found.into_iter().map(|l| Server { address: format!("steam:{}", l.id), name: l.name, players: l.players, max: l.max, ping: l.ping }).collect();
+            self.world_names.extend(view.servers.iter().filter(|s| !s.name.is_empty()).map(|s| (s.address.clone(), s.name.clone())));
         }
+        self.friends_frame(&mut view);
         let Some(net) = &mut self.net else { return Some(view) };
         view.online = net.online;
         view.whispers = net.whispers.drain(..).map(|w| Whisper { from: w.from_session, steam: w.steam, name: w.name, text: w.text }).collect();
@@ -1891,16 +2020,115 @@ impl xr_frontend::Game for Windowed {
             },
             Request::Join(addr) => self.join(&addr),
             Request::Type(text) => {
-                let shown = self.joiner.steam().is_some_and(|s| s.type_with_gamepad("Whisper", xr_frontend::online::WHISPER_CHARS as u32, &text));
+                let shown = self.joiner.steam().is_some_and(|s| s.type_with_gamepad("Message", xr_frontend::online::WHISPER_CHARS as u32, &text));
                 if !shown {
                     self.notes.push("Connect a keyboard to type (Steam's on-screen keyboard is not available here)".into());
                 }
+            }
+            Request::FriendChat { to, text } => {
+                let sent = self.friends.as_ref().map_or(Err("Steam isn't running".to_string()), |f| f.send(to, &xr_net::friends::FriendMsg::Chat(text.clone())));
+                if let Err(why) = sent {
+                    log::log(&format!("friends: chat to {to} not sent: {why}"));
+                    self.notes.push(format!("Message to {} not sent: {}", self.friend_name(to), why_for(&self.friend_name(to), &why)));
+                    self.friend_failed.push((to, Some(text), why));
+                }
+            }
+            Request::Invite { to } => {
+                let online = self.net.as_ref().is_some_and(|n| n.online);
+                let Some(connect) = self.world.clone().filter(|w| online && steam_world(w)) else {
+                    self.notes.push("Invites need a Steam world: join one, then invite friends into it".into());
+                    return;
+                };
+                let world = self.world_names.get(&connect).cloned().unwrap_or_else(|| format!("my world (\u{2026}{})", &connect[connect.len().saturating_sub(4)..]));
+                let sent = self.friends.as_ref().map_or(Err("Steam isn't running".to_string()), |f| f.send(to, &xr_net::friends::FriendMsg::Invite { world, connect: connect.clone() }));
+                let name = self.friend_name(to);
+                log::log(&format!("friends: invite to {to} for {connect}: {}", sent.as_ref().map_or_else(|e| format!("not sent ({e})"), |()| "sent".into())));
+                self.notes.push(match sent {
+                    Ok(()) => format!("Invite sent to {name}"),
+                    Err(why) => format!("Invite to {name} not sent: {}", why_for(&name, &why)),
+                });
+            }
+            // the usual join: every check of Joiner::start (dev inputs, mods, an edited game, the world's lists)
+            Request::AcceptInvite { from, connect } if steam_world(&connect) => {
+                log::log(&format!("friends: joining {connect} on {from}'s invite"));
+                self.join(&connect);
+            }
+            Request::AcceptInvite { connect, .. } => log::log(&format!("friends: an invite to {connect:?} was ignored (only steam:<server id>)")),
+            Request::DeclineInvite { from } => {
+                if let Some(Err(why)) = self.friends.as_ref().map(|f| f.send(from, &xr_net::friends::FriendMsg::Decline)) {
+                    log::log(&format!("friends: Not now to {from} not sent: {why}"));
+                }
+            }
+            Request::FriendsOpened => {
+                if self.friends.is_none() && !self.joiner.dev_id {
+                    // Steam may have been started since
+                    let _ = self.joiner.steam();
+                }
+                self.link_friends();
+                if let Some(f) = &self.friends {
+                    f.refresh();
+                    self.friend_list = f.list();
+                    self.listed = Some(std::time::Instant::now());
+                }
+            }
+            Request::Ignored(ids) => {
+                if let Some(f) = &self.friends {
+                    f.set_ignored(&ids);
+                }
+                self.ignored = Some(ids);
             }
         }
     }
 }
 
 impl Windowed {
+    /// The Steam friends link, once Steam is up and the Ignore list was read (a fake one is there from the start).
+    fn link_friends(&mut self) {
+        use xr_net::friends::FriendsLink;
+        if let (None, Some(s), Some(ignored)) = (&self.friends, &self.joiner.steam, &self.ignored) {
+            let link = xr_net::friends::SteamFriends::new(s);
+            link.set_ignored(ignored);
+            self.friend_list = link.list();
+            self.friends = Some(Box::new(link));
+        }
+    }
+
+    fn friend_name(&self, steam: u64) -> String {
+        self.friend_list.iter().find(|f| f.steam == steam).map_or_else(|| "that friend".into(), |f| f.name.clone())
+    }
+
+    /// Friends into the view: the list, the frames that came in, and where this account's Ignore list is kept.
+    fn friends_frame(&mut self, view: &mut xr_frontend::online::View) {
+        // per own Steam account; fakes (no Steam) keep theirs apart. The window reads it first (Request::Ignored)
+        let own = self.joiner.steam.as_ref().map(|s| s.steam_id().to_string()).or_else(|| self.friends.as_ref().map(|_| "fake".into()));
+        view.ignore_file = own.map(|own| self.joiner.id_dir.join(format!("ignored-{own}.txt")));
+        self.link_friends();
+        let Some(link) = &self.friends else { return };
+        link.frame(self.n);
+        let got = link.take();
+        // someone not listed yet wrote, or the list is old: listed again (presence itself is asked only with the tab open)
+        let stale = self.listed.is_none_or(|t| t.elapsed() >= xr_frontend::online::FRIENDS_AGAIN);
+        if stale || got.iter().any(|(from, _)| !self.friend_list.iter().any(|f| f.steam == *from)) {
+            self.friend_list = link.list();
+            self.listed = Some(std::time::Instant::now());
+        }
+        for peer in link.take_failed() {
+            let name = self.friend_name(peer);
+            log::log(&format!("friends: Steam gave up on the session with {peer}"));
+            self.notes.push(format!("Couldn't reach {name}: your last message may not have arrived"));
+            self.friend_failed.push((peer, None, "the connection to them failed".into()));
+        }
+        for (from, m) in &got {
+            let kind = match m {
+                xr_net::friends::FriendMsg::Chat(_) => "chat",
+                xr_net::friends::FriendMsg::Invite { .. } => "an invite",
+                xr_net::friends::FriendMsg::Decline => "a decline",
+            };
+            log::log(&format!("friends: {kind} from {from}"));
+        }
+        (view.friends, view.friend_msgs, view.friend_failed) = (self.friend_list.clone(), got, std::mem::take(&mut self.friend_failed));
+    }
+
     /// Starts joining `addr`; the world we are in stays until the new one logs us in (`settle_join`).
     fn join(&mut self, addr: &str) {
         let addr = addr.trim();
@@ -1908,8 +2136,8 @@ impl Windowed {
             self.notes.push("Already in that world".into());
             return;
         }
-        let (title, modded) = (self.m.title_id, self.m.system().game_modded);
-        match self.joiner.start(addr, title, modded) {
+        let (title, modded) = (self.m.title_id, self.m.system().game_modded.clone());
+        match self.joiner.start(addr, title, modded.as_deref()) {
             // a join under way for another world is dropped (it says Bye)
             Ok(net) => self.pending = Some((addr.to_owned(), net, std::time::Instant::now())),
             Err(e) => {
@@ -1932,9 +2160,11 @@ impl Windowed {
             self.net = Some(net);
             self.world = Some(addr);
         } else if gone {
-            let (addr, ..) = self.pending.take().unwrap();
-            log::log(&format!("world: {addr} did not log us in within {} s; staying where we were", JOIN_WAIT.as_secs()));
-            self.notes.push("Couldn't reach that world".into());
+            // a refusal says why (the world's allow or ban list, another version); silence is just unreachable
+            let (addr, net, _) = self.pending.take().unwrap();
+            let refused = net.refused.clone();
+            log::log(&format!("world: {addr} did not log us in ({}); staying where we were", refused.as_deref().unwrap_or("no answer")));
+            self.notes.push(refused.map_or("Couldn't reach that world".into(), |r| format!("Cannot join: {}", capitalized(&r))));
         }
     }
 
@@ -1946,16 +2176,38 @@ impl Windowed {
             redex_proto::Region::Kalos => "Kalos",
             redex_proto::Region::Hoenn => "Hoenn",
         });
-        let wanted = if online { (Some(format!("In {region}")), self.world.clone().filter(|w| w.starts_with("steam:"))) } else { (None, None) };
-        if self.presence.as_ref() == Some(&wanted) {
-            return;
-        }
-        if let Some(s) = &self.joiner.steam {
+        // the world's name when Steam's list gave it (a friend's Friends tab shows it), and the region
+        let shown = |w: &String| self.world_names.get(w).map_or(format!("In {region}"), |n| format!("{} \u{b7} In {region}", short_name(n)));
+        let wanted = if online {
+            (self.world.as_ref().map(shown), self.world.clone().filter(|w| w.starts_with("steam:")))
+        } else {
+            (Some("Playing offline".to_string()), None)
+        };
+        if let (Some(s), Some(wanted)) = (&self.joiner.steam, presence_to_set(&mut self.presence, wanted, self.joiner.steam.is_some())) {
             s.set_presence(wanted.0.as_deref(), wanted.1.as_deref());
             log::log(&format!("world: Steam presence {:?}, connect {:?}", wanted.0, wanted.1));
         }
-        self.presence = Some(wanted);
     }
+}
+
+/// What presence to send now: `wanted` when it differs from what was last sent and Steam is up to take it, recorded as
+/// sent only then (so Steam coming up later still gets it, `redex` key included).
+fn presence_to_set<P: PartialEq + Clone>(last: &mut Option<P>, wanted: P, steam: bool) -> Option<P> {
+    (steam && last.as_ref() != Some(&wanted)).then(|| {
+        *last = Some(wanted.clone());
+        wanted
+    })
+}
+
+/// A friend's send failure as a sentence: "isn't running RE:DEX" reads after their name, the others on their own.
+fn why_for(name: &str, why: &str) -> String {
+    if why.starts_with("isn't") || why.starts_with("runs ") { format!("{name} {why}") } else { why.to_owned() }
+}
+
+/// A server's reason with its first letter up ("Cannot join: You are banned ...").
+fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
 }
 
 /// The status line, every 60 frames and at the end.

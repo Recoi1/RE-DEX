@@ -1,0 +1,8 @@
+[Unit]
+Description=Re-render the RE:DEX status page when its JSON changes
+
+[Path]
+PathChanged=/opt/redex/status/progress.json
+
+[Install]
+WantedBy=multi-user.target

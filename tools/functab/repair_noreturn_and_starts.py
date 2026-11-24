@@ -1,4 +1,4 @@
-"""Apply the Task 5 reviewed code.txt repairs.
+"""Apply the reviewed code.txt repairs.
 1. ARM functions whose listed range ends right after `bl <callee>` for callees Ghidra wrongly took as no-return
    (each checked in rizin: they return) get their end moved to the next listed start, or to the first function the
    last build's repair added in between that is a BL/BLX target (a real function), whichever comes first.

@@ -92,9 +92,11 @@ fn images(system: &System) -> Images {
 impl System {
     /// the console as it is between frames, as a save state
     pub fn save_state(&mut self) -> Result<Vec<u8>, String> {
-        // what the host GPU drew comes down first, so memory holds all of it
+        // what the host GPU drew comes down first, so memory holds all of it: the lazy guards (each written back on its
+        // own, outside any GPU call), then whatever else the GPU holds
+        self.memory.settle_all();
         let linear_base = self.kernel.linear_base;
-        self.gpu.write_back_all(&mut GuestMemory { memory: &mut self.memory, linear_base, writes: 0 });
+        self.gpu.write_back_all(&mut GuestMemory::new(&mut self.memory, linear_base));
         let (images, layers) = images(self);
         let mut files = Vec::with_capacity(self.services.fs.files.len());
         for (&handle, file) in &self.services.fs.files {
@@ -295,6 +297,20 @@ mod tests {
         assert_eq!(system.cpu.regs[3], 7);
         assert_eq!(system.kernel.resolve(handle), Some(event));
         assert_eq!(system.frames, 600);
+    }
+
+    /// lazy GPU write-back: a save state writes every guard back, and leaves no raw (GPU) access open behind it
+    #[test]
+    fn a_lazy_state_writes_everything_back_and_leaves_memory_plain() {
+        let (mut system, _) = system_with_thread();
+        let page = system.memory.phys.allocate(MemoryRegion::Application, 0x2000).unwrap();
+        system.memory.map(0x0800_0000, page.addr, 0x2000, Permission::RW, MemoryState::Private);
+        system.lazy_gpu();
+        system.memory.guard_cpu_writes(0x0800_0000, 0x1800);
+        system.save_state().unwrap();
+        assert_eq!(system.memory.raw_depth(), 0);
+        assert!(system.memory.take_guards().is_empty());
+        assert!(system.memory.plain_read32(0x0800_1000).is_some(), "still protected");
     }
 
     /// two mappings of one physical page are two copies (see the memory module): a state keeps each copy and the bytes

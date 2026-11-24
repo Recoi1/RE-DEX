@@ -42,6 +42,8 @@ const VERTEX_SPIRV: &[u8] = include_bytes!("../../shaders/raster.vert.spv");
 const FRAGMENT_SPIRV: &[u8] = include_bytes!("../../shaders/raster.frag.spv");
 /// raster.frag built w/ WRITES_DEPTH, for the draws whose depth the rasterizer can't work out
 const FRAGMENT_DEPTH_SPIRV: &[u8] = include_bytes!("../../shaders/raster_depth.frag.spv");
+/// the triangle setup lit draws go thru, each triangle's quaternions to one side
+const FLIP_SPIRV: &[u8] = include_bytes!("../../shaders/flip.geom.spv");
 const TRANSFER_SPIRV: &[u8] = include_bytes!("../../shaders/transfer.comp.spv");
 const DEPTH_SPIRV: &[u8] = include_bytes!("../../shaders/depth.comp.spv");
 const UPRIGHT_SPIRV: &[u8] = include_bytes!("../../shaders/upright.comp.spv");
@@ -445,6 +447,9 @@ struct Surface {
     checked: bool,
     /// the rows drawn into since guest memory last got the image, rows of memory from the buffer's start, whole rows of tiles
     dirty: Option<(u32, u32)>,
+    /// lazy write-back (see Hardware::flush_point): dirty, but past a point where the eager write-back would have taken
+    /// it, and not drawn since; what reads the drawing decides as if memory had it
+    held: bool,
     /// the rows of those whose reads the CPU was told to ask for first
     guarded: Option<(u32, u32)>,
     /// and those its writes have to wait for, see guard_writes
@@ -553,6 +558,11 @@ impl Surface {
 
     /// is guest memory over a range behind the image, where the GPU drew
     /// titles pack buffers tightly, one's unused rows can be another's, and only rows really drawn matter
+    /// dirty as the eager write-back would leave it (see held)
+    fn eager_dirty_overlaps(&self, addr: u32, len: u32) -> bool {
+        !self.held && self.dirty_overlaps(addr, len)
+    }
+
     fn dirty_overlaps(&self, addr: u32, len: u32) -> bool {
         self.dirty.is_some_and(|(start, end)| {
             let (from, to) = (self.addr + start * self.row_bytes(), self.addr + end * self.row_bytes());
@@ -588,6 +598,7 @@ impl Surface {
 
     /// the GPU changed rows of the image, rows of memory from the start
     fn drew(&mut self, (start, end): (u32, u32)) {
+        self.held = false;
         let rows = ((start / 8 * 8).min(self.height), end.div_ceil(8).saturating_mul(8).min(self.height));
         self.dirty = Some(match self.dirty {
             Some((from, to)) => (from.min(rows.0), to.max(rows.1)),
@@ -738,7 +749,7 @@ const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 /// then the taller one (titles draw a shorter buffer into its start)
 /// drawn in other rows, it may have older ones there
 fn newest(surface: &Surface, (start, end): (u32, u32)) -> (bool, u32) {
-    (surface.dirty.is_some_and(|(from, to)| from < end && start < to), surface.height)
+    (!surface.held && surface.dirty.is_some_and(|(from, to)| from < end && start < to), surface.height)
 }
 
 /// the rows of memory of a tiled surface a fill covers, when it covers some of its rows of tiles whole but not all of them
@@ -1102,13 +1113,12 @@ fn blend_equation(config: u32) -> vk::ColorBlendEquationEXT {
         .dst_alpha_blend_factor(factor(config >> 28))
 }
 
-/// the build of raster.frag a pipeline runs, the one leaving depth to the rasterizer or the one working it out
-fn fragment_module([plain, writing]: [vk::ShaderModule; 2], key: &PipelineKey) -> vk::ShaderModule {
-    if key.fragment[28] & WRITES_DEPTH != 0 {
-        writing
-    } else {
-        plain
-    }
+/// the modules a pipeline runs: its vertex stage's, flip.geom for a lit draw (null w/o geometry shaders, or unlit),
+/// and the build of raster.frag, the one leaving depth to the rasterizer or the one working it out
+fn stage_modules(vertex: vk::ShaderModule, [plain, writing, flip]: [vk::ShaderModule; 3], key: &PipelineKey) -> [vk::ShaderModule; 3] {
+    let fragment = if key.fragment[28] & WRITES_DEPTH != 0 { writing } else { plain };
+    let geometry = if key.fragment[26] != 0 { flip } else { vk::ShaderModule::null() };
+    [vertex, geometry, fragment]
 }
 
 /// what a draw's vertices go thru on the GPU
@@ -1184,7 +1194,7 @@ impl Compiler {
         cache: vk::PipelineCache,
         kept: Option<Arc<std::path::Path>>,
         layout: vk::PipelineLayout,
-        fragments: [vk::ShaderModule; 2],
+        fragments: [vk::ShaderModule; 3],
         dynamic: Dynamic,
         depth_format: vk::Format,
     ) -> Compiler {
@@ -1268,7 +1278,7 @@ fn compile(
     cache: vk::PipelineCache,
     kept: Option<&std::path::Path>,
     layout: vk::PipelineLayout,
-    fragments: [vk::ShaderModule; 2],
+    fragments: [vk::ShaderModule; 3],
     dynamic: Dynamic,
     depth_format: vk::Format,
 ) {
@@ -1315,7 +1325,7 @@ fn work(
     device: &ash::Device,
     cache: vk::PipelineCache,
     layout: vk::PipelineLayout,
-    fragments: [vk::ShaderModule; 2],
+    fragments: [vk::ShaderModule; 3],
     dynamic: Dynamic,
     depth_format: vk::Format,
 ) -> Made {
@@ -1344,7 +1354,7 @@ fn work(
             Made::Translated(key, made)
         }
         Job::Compile(key, module) => {
-            let modules = [module, fragment_module(fragments, &key)];
+            let modules = stage_modules(module, fragments, &key);
             let made = compile_pipeline(device, cache, layout, modules, &key, vk::PipelineCreateFlags::empty(), dynamic, depth_format);
             log::debug!(
                 target: "zakuro_gpu::pipelines",
@@ -1356,13 +1366,13 @@ fn work(
     }
 }
 
-/// a draw pipeline for a key, w/ its vertex and fragment shader modules, drawing depth in the depth format given
+/// a draw pipeline for a key, w/ its vertex, geometry (none when null) and fragment shader modules, drawing depth in the depth format given
 #[allow(clippy::too_many_arguments)]
 fn compile_pipeline(
     device: &ash::Device,
     cache: vk::PipelineCache,
     layout: vk::PipelineLayout,
-    [vertex, fragment]: [vk::ShaderModule; 2],
+    [vertex, geometry, fragment]: [vk::ShaderModule; 3],
     key: &PipelineKey,
     flags: vk::PipelineCreateFlags,
     dynamic: Dynamic,
@@ -1373,7 +1383,7 @@ fn compile_pipeline(
         .collect();
     let constants: Vec<u8> = key.fragment.iter().flat_map(|value| value.to_le_bytes()).collect();
     let specialization = vk::SpecializationInfo::default().map_entries(&entries).data(&constants);
-    let stages = [
+    let mut stages = vec![
         vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::VERTEX)
             .module(vertex)
@@ -1384,6 +1394,9 @@ fn compile_pipeline(
             .name(c"main")
             .specialization_info(&specialization),
     ];
+    if geometry != vk::ShaderModule::null() {
+        stages.push(vk::PipelineShaderStageCreateInfo::default().stage(vk::ShaderStageFlags::GEOMETRY).module(geometry).name(c"main"));
+    }
     let bindings = [vk::VertexInputBindingDescription::default()
         .binding(0)
         .stride(VERTEX_SIZE as u32)
@@ -1510,6 +1523,8 @@ pub struct Hardware {
     fragment_shader: vk::ShaderModule,
     depth_fragment_shader: vk::ShaderModule,
     shade_shader: vk::ShaderModule,
+    /// flip.geom, null on a GPU w/o geometry shaders
+    flip_shader: vk::ShaderModule,
     /// do draws go to shade_shader
     shades: bool,
     /// do programs get translated instead of interpreted
@@ -1740,6 +1755,16 @@ impl Hardware {
             let fragment_shader = module(FRAGMENT_SPIRV)?;
             let depth_fragment_shader = module(FRAGMENT_DEPTH_SPIRV)?;
             let shade_shader = module(SHADE_SPIRV)?;
+            // render_device turns geometry shaders on wherever the GPU has them, lit draws go w/o the flip elsewhere,
+            // and w/ ZAKURO_NO_FLIP set, to tell the two apart
+            let flip_shader = if std::env::var_os("ZAKURO_NO_FLIP").is_some() {
+                vk::ShaderModule::null()
+            } else if instance.get_physical_device_features(physical).geometry_shader == vk::TRUE {
+                module(FLIP_SPIRV)?
+            } else {
+                log::warn!("the GPU has no geometry shaders, lit draws interpolate their quaternions w/o the PICA's flip");
+                vk::ShaderModule::null()
+            };
 
             let unmade = || Buffer {
                 buffer: vk::Buffer::null(),
@@ -1769,7 +1794,7 @@ impl Hardware {
                 .create_pipeline_cache(&vk::PipelineCacheCreateInfo::default().initial_data(&saved), None)
                 .or_else(|_| device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None))
                 .map_err(vk_error("create a pipeline cache"))?;
-            let compiler = Compiler::start(device.clone(), pipeline_cache, kept_pipelines.clone(), layout, [fragment_shader, depth_fragment_shader], dynamic, depth_format);
+            let compiler = Compiler::start(device.clone(), pipeline_cache, kept_pipelines.clone(), layout, [fragment_shader, depth_fragment_shader, flip_shader], dynamic, depth_format);
             let blend_state = dynamic.blend.then(|| ash::ext::extended_dynamic_state3::Device::new(&instance, &device));
             let logic_op_state = dynamic.logic_op.then(|| ash::ext::extended_dynamic_state2::Device::new(&instance, &device));
             let mut hardware = Hardware {
@@ -1794,6 +1819,7 @@ impl Hardware {
                 fragment_shader,
                 depth_fragment_shader,
                 shade_shader,
+                flip_shader,
                 // shading on the CPU instead, to tell the two apart
                 // an integrated GPU does worse at it than the CPU,
                 // its draws read each vertex's inputs and uniforms out of storage buffers, one load after another
@@ -2517,6 +2543,7 @@ impl Hardware {
                     watch: None,
                     checked: false,
                     dirty: None,
+                    held: false,
                     guarded: None,
                     write_guarded: None,
                     cleared: None,
@@ -3208,7 +3235,7 @@ impl Hardware {
         if let Some(&pipeline) = self.pipelines.get(&key) {
             return Ok(pipeline);
         }
-        let modules = [self.vertex_module(key.vertex), fragment_module(self.fragment_modules(), &key)];
+        let modules = stage_modules(self.vertex_module(key.vertex), self.fragment_modules(), &key);
         let started = std::time::Instant::now();
         let pipeline = compile_pipeline(
             &self.device,
@@ -3232,7 +3259,7 @@ impl Hardware {
 
     /// the pipeline for a key when the disk cache has it, made w/o compiling anything
     fn cached(&mut self, key: PipelineKey) -> Option<vk::Pipeline> {
-        let modules = [self.vertex_module(key.vertex), fragment_module(self.fragment_modules(), &key)];
+        let modules = stage_modules(self.vertex_module(key.vertex), self.fragment_modules(), &key);
         let started = std::time::Instant::now();
         let flags = vk::PipelineCreateFlags::FAIL_ON_PIPELINE_COMPILE_REQUIRED;
         let pipeline = compile_pipeline(&self.device, self.pipeline_cache, self.layout, modules, &key, flags, self.dynamic, self.depth_format).ok()?;
@@ -3290,9 +3317,9 @@ impl Hardware {
         self.pipeline(generic)
     }
 
-    /// raster.frag leaving depth to the rasterizer, and working it out
-    fn fragment_modules(&self) -> [vk::ShaderModule; 2] {
-        [self.fragment_shader, self.depth_fragment_shader]
+    /// raster.frag leaving depth to the rasterizer, and working it out, then flip.geom, see stage_modules
+    fn fragment_modules(&self) -> [vk::ShaderModule; 3] {
+        [self.fragment_shader, self.depth_fragment_shader, self.flip_shader]
     }
 
     /// the module a vertex stage runs
@@ -3361,6 +3388,7 @@ impl Hardware {
                 surface.pixel = None;
                 surface.watch = None;
                 surface.dirty = None;
+                surface.held = false;
                 surface.guarded = None;
                 surface.write_guarded = None;
                 surface.cleared = None;
@@ -3411,6 +3439,7 @@ impl Hardware {
             surface.untwin();
             surface.keep_pixel(&pixel);
             surface.dirty = None;
+            surface.held = false;
             surface.guarded = None;
             surface.write_guarded = None;
             surface.cleared = None;
@@ -4437,6 +4466,26 @@ impl Hardware {
         self.wait()
     }
 
+    /// lazy write-back: where the eager write-back would take everything drawn so far (after a command list or a
+    /// transfer); what is dirty now is held, see Surface::held
+    /// the eager write-back's batch boundary is kept too (it ran and submitted the batch when one of them had no
+    /// capture), so what the GPU decides per batch (`checked` and the rest) stays as it was
+    pub(crate) fn flush_point(&mut self) -> Result<(), String> {
+        let mut runs = false;
+        for surface in &mut self.surfaces {
+            if surface.dirty.is_some() && !surface.held {
+                runs |= surface.captured().is_none();
+                surface.held = true;
+            }
+        }
+        if runs {
+            self.begin()?;
+            self.end_rendering();
+            self.submit()?;
+        }
+        Ok(())
+    }
+
     /// drops what the GPU drew that guest memory lacks, memory having been put back like a save state had it,
     /// each buffer takes memory's bytes at its next use
     pub(crate) fn forget(&mut self) {
@@ -4449,6 +4498,7 @@ impl Hardware {
             surface.pixel = None;
             surface.watch = None;
             surface.dirty = None;
+            surface.held = false;
             surface.guarded = None;
             surface.write_guarded = None;
             surface.cleared = None;
@@ -4657,6 +4707,19 @@ impl Hardware {
             .max_by_key(|&(i, row)| (row + texture.height <= self.surfaces[i].height, newest(&self.surfaces[i], (row, row + texture.height))))
     }
 
+    /// the rows of a texture past its surface's last row are read from memory: the held surfaces drawn there (which
+    /// the eager write-back would have put there) come down first
+    pub(crate) fn prepare_past<M: GpuMemory>(&mut self, memory: &mut M, texture: &DrawnTexture) -> Result<(), String> {
+        let Some((index, row)) = self.texture_source(texture) else { return Ok(()) };
+        let s = &self.surfaces[index];
+        let Some(past) = (row + texture.height).checked_sub(s.height).filter(|&n| n > 0) else { return Ok(()) };
+        let (at, len) = (s.addr + s.height * s.row_bytes(), past * s.row_bytes());
+        if self.surfaces.iter().any(|o| o.held && o.dirty_overlaps(at, len)) {
+            self.sync_where(memory, at, len, |o| o.held)?;
+        }
+        Ok(())
+    }
+
     /// does the surface a texture is rows of hold all of its rows
     pub(crate) fn covers(&self, texture: &DrawnTexture) -> bool {
         self.texture_source(texture).is_some_and(|(index, row)| row + texture.height <= self.surfaces[index].height)
@@ -4674,12 +4737,18 @@ impl Hardware {
             let at = surface.addr + from * surface.row_bytes();
             from < to
                 && (!surface.checked
-                    || (0..self.surfaces.len()).any(|i| i != index && self.surfaces[i].dirty_overlaps(at, (to - from) * surface.row_bytes())))
+                    || (0..self.surfaces.len()).any(|i| i != index && self.surfaces[i].eager_dirty_overlaps(at, (to - from) * surface.row_bytes())))
         });
-        // nor where a fill wrote over what it drew
+        // nor where another surface drew that is held (its drawing never reached memory, so this one's image was never
+        // checked against it there, which the eager write-back had made happen)
         let row_bytes = surface.row_bytes();
+        let (at, len) = (surface.addr + row * row_bytes, (surface.height - row).min(texture.height) * row_bytes);
+        if (0..self.surfaces.len()).any(|i| i != index && self.surfaces[i].held && self.surfaces[i].dirty_overlaps(at, len)) {
+            return false;
+        }
+        // nor where a fill wrote over what it drew
         let stale = surface.stale.is_some_and(|(from, to)| from < (row + texture.height) * row_bytes && row * row_bytes < to);
-        surface.dirty.is_some() && !changed && !stale
+        surface.dirty.is_some() && !surface.held && !changed && !stale
     }
 
     /// is a texture rows of a color or depth surface guest memory got back and that hasn't changed since,
@@ -4692,23 +4761,35 @@ impl Hardware {
     pub(crate) fn holds_unchanged<M: GpuMemory>(&self, memory: &mut M, texture: &DrawnTexture) -> bool {
         let Some((index, row)) = self.texture_source(texture) else { return false };
         let surface = &self.surfaces[index];
-        if surface.dirty.is_some() || surface.stale.is_some() {
+        if (surface.dirty.is_some() && !surface.held) || surface.stale.is_some() {
             return false;
         }
         let row_bytes = surface.row_bytes();
         let rows = (surface.height - row).min(texture.height);
         let (at, len) = (surface.addr + row * row_bytes, rows * row_bytes);
-        // memory behind another surface drawn over it says nothing about this one
+        // memory behind another surface drawn over it says nothing about this one, held ones too (the eager write-back
+        // would have put their drawing there)
         if (0..self.surfaces.len()).any(|i| i != index && self.surfaces[i].dirty_overlaps(at, len)) {
             return false;
         }
-        let range = (row * row_bytes) as usize..((row + rows) * row_bytes) as usize;
-        if let Some(now) = memory.slice(at, len as usize) {
-            return surface.shadows(range, now);
-        }
-        let mut now = vec![0u8; len as usize];
-        memory.read(at, &mut now);
-        surface.shadows(range, &now)
+        // held: its drawn rows are behind in memory on purpose (the eager write-back would have left memory and the
+        // shadow both holding the drawing, and a write there writes it back first); the rest is compared as always
+        let skip = surface.dirty.filter(|_| surface.held).map_or((0, 0), |(from, to)| (from.max(row), to.min(row + rows)));
+        let pieces = [(row, skip.0.max(row).min(row + rows)), (skip.1.max(row), row + rows)];
+        let mut bytes = Vec::new();
+        let now = match memory.slice(at, len as usize) {
+            Some(now) => now,
+            None => {
+                bytes.resize(len as usize, 0);
+                memory.read(at, &mut bytes);
+                &bytes[..]
+            }
+        };
+        pieces.iter().filter(|(a, b)| a < b).all(|&(a, b)| {
+            let range = (a * row_bytes) as usize..(b * row_bytes) as usize;
+            let local = ((a - row) * row_bytes) as usize..((b - row) * row_bytes) as usize;
+            surface.shadows(range, &now[local])
+        })
     }
 
     /// the image of a texture copied from the surface it's part of, copied again whenever the surface changed
@@ -5169,10 +5250,12 @@ impl Hardware {
                 && (addr - s.addr).is_multiple_of(row_bytes)
                 && (addr - s.addr) / row_bytes + height <= s.height
         })?;
+        let first = (addr - self.surfaces[found].addr) / row_bytes;
+        // another surface held over the rows shown would have reached memory eagerly, and the screen would show memory
+        let held_over = (0..self.surfaces.len()).any(|i| i != found && self.surfaces[i].held && self.surfaces[i].dirty_overlaps(addr, height * row_bytes));
         let s = &mut self.surfaces[found];
-        let first = (addr - s.addr) / row_bytes;
         let shown = (first * row_bytes) as usize..((first + height) * row_bytes) as usize;
-        if s.dirty.is_none() && !s.shadows(shown, guest) {
+        if s.dirty.is_none() && (held_over || !s.shadows(shown, guest)) {
             return None;
         }
         let (surface, size) = (s.addr, (s.width, s.height));
@@ -5772,6 +5855,7 @@ impl Hardware {
             surface.shadow = bytes;
         }
         surface.dirty = None;
+        surface.held = false;
         surface.guarded = None;
         surface.write_guarded = None;
         surface.cleared = None;
@@ -5869,6 +5953,7 @@ impl Drop for Hardware {
             self.device.destroy_shader_module(self.fragment_shader, None);
             self.device.destroy_shader_module(self.depth_fragment_shader, None);
             self.device.destroy_shader_module(self.shade_shader, None);
+            self.device.destroy_shader_module(self.flip_shader, None);
             for &module in self.modules.values() {
                 self.device.destroy_shader_module(module, None);
             }
@@ -6061,6 +6146,7 @@ pub(crate) fn render_device(
     let statistics = std::env::var_os("ZAKURO_GPU_TIMES").is_some() && supported.pipeline_statistics_query == vk::TRUE;
     let features = vk::PhysicalDeviceFeatures::default()
         .depth_clamp(true)
+        .geometry_shader(supported.geometry_shader == vk::TRUE)
         .logic_op(logic_ops)
         .pipeline_statistics_query(statistics);
     // the cache control, to make a pipeline only when the disk cache has it, every Vulkan 1.3 device does
@@ -6265,6 +6351,7 @@ mod tests {
                 watch: None,
                 checked: false,
                 dirty: None,
+                held: false,
                 guarded: None,
                 write_guarded: None,
                 cleared: None,

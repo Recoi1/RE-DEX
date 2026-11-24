@@ -10,6 +10,6 @@
 580 checkpoint start-menu
 expect start-menu a2a3efaffb91d43b
 1050 checkpoint continued
-expect continued a2e2205c39bd96fc
+expect continued a3bbe145cd4894bd
 1400 checkpoint walked
-expect walked 3b144ad61af1e1c6
+expect walked 17bb1a01c81ab92b

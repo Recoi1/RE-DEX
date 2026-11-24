@@ -1,0 +1,8 @@
+[Unit]
+Description=RE:DEX daily Postgres backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/redex/src/deploy/central/ops/backup.sh /opt/redex/src/deploy/central /opt/redex/backups

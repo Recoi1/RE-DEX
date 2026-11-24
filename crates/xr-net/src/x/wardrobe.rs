@@ -1,15 +1,15 @@
-//! The player's own outfit changed in place, on the player's move model, with no map load (
-//! the character creator's live preview). The rebuild sequence:
+//! The player's own outfit changed in place, on the player's move model, with no map load
+//! (the character creator's live preview). The rebuild sequence:
 //! once an outfit's dress-up slot is loaded (state 3), tear the player's draw handler down while the
 //! old parameter is still in +0x998, copy the new parameter in (COPY_PARAM) and init the handler; the game builds the
 //! new look at its next update.
 //!
-//! Our outfits are asked for with header byte 3 = 1 ([`PLAYER_MARK`]), the player's own value (Task 5 fix round 1).
+//! Our outfits are asked for with header byte 3 = 1 ([`PLAYER_MARK`]), the player's own value.
 //! The part loader (code.bin 0x46F3F4) reads that byte: 1 loads the player's full part set into one of two player heaps
 //! (`[PLAYER_HEAPS]+0x2C` and `+0x30`, 0x4A000 bytes each); 0 loads the NPC set, on which the girl's long hair is drawn
-//! as a plank and short hair not at all. With both player heaps taken it reads through a null heap (the spike's fault
-//! at 0x00000004). The game's own outfit holds one heap for good (it is never released: the spike saw a later load into
-//! its slot read a stale pointer), so at most one of ours is loaded at a time:
+//! as a plank and short hair not at all. With both player heaps taken it reads through a null heap (a fault
+//! at 0x00000004). The game's own outfit holds one heap for good (it is never released: a later load into
+//! its slot was seen to read a stale pointer), so at most one of ours is loaded at a time:
 //! 1. A change from one of ours to another first puts the game's own outfit back on ("home", still loaded), releases
 //!    ours TAKE_OFF ticks later, and waits until its slot has unloaded (its heap is free again).
 //! 2. Then it asks for the new look (RequestDressUp) and rebuilds the player in it once loaded.
@@ -205,7 +205,7 @@ mod tests {
     const MGR: u32 = 0x08D0_1F5C;
     const MM: u32 = 0x08D0_3924;
     const SYS: u32 = 0x0900_0000;
-    /// The draw handler and its vtable (DllField's, as in the spike's state).
+    /// The draw handler and its vtable (DllField's).
     const H: u32 = 0x0820_0000;
     const VT: u32 = 0x007A_B384;
     const TEARDOWN: u32 = CODE + 0xDA8D4;
@@ -517,7 +517,7 @@ mod tests {
         assert_eq!(g.count(TEARDOWN), torn);
     }
 
-    /// Final review M6: a look asked for whose slot went before it was worn is asked for again only while a player heap
+    /// A look asked for whose slot went before it was worn is asked for again only while a player heap
     /// is free (the fake panics on a load with both taken, as the real loader faults).
     #[test]
     fn asked_again_only_with_a_free_player_heap() {

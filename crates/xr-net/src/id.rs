@@ -65,17 +65,20 @@ pub enum Identity {
     Dev(u128),
     /// The SteamID64: one Steam account is one console (one PSS identity) on any PC.
     Steam(u64),
+    /// An account of the account backend (central worlds), the same way.
+    Account(u64),
 }
 
 /// The console id cfg reports (and mixes into GenHashConsoleUnique, by which X's PSS tells passersby apart): the
-/// spike-0 "ZK" prefix plus 48 bits of SHA-256("redex-console" || identity). One identity (one Steam account, later)
+/// "ZK" prefix plus 48 bits of SHA-256("redex-console" || identity). One identity (one Steam account, later)
 /// is one PSS identity on any PC and across sessions, and other consoles learn nothing of the identity itself.
 pub fn console_id(identity: Identity) -> u64 {
     let mut h = Sha256::new().chain_update(b"redex-console");
-    // 16 bytes for a dev id, 8 for a SteamID: the two never hash the same input
+    // 16 bytes for a dev id, 8 for a SteamID, a tag and 8 for an account: no two kinds hash the same input
     match identity {
         Identity::Dev(id) => h.update(id.to_le_bytes()),
         Identity::Steam(id) => h.update(id.to_le_bytes()),
+        Identity::Account(id) => h.update([b"account".as_slice(), &id.to_le_bytes()].concat()),
     }
     let h = h.finalize();
     0x5A4B_0000_0000_0000 | (u64::from_le_bytes(h[..8].try_into().unwrap()) & 0xFFFF_FFFF_FFFF)
@@ -161,6 +164,7 @@ mod tests {
         let s = console_id(Identity::Steam(76561197960287930));
         assert_eq!((s >> 48, s), (0x5A4B, console_id(Identity::Steam(76561197960287930))));
         assert_ne!(console_id(Identity::Steam(7)), console_id(Identity::Dev(7)), "a SteamID is not the dev id of the same value");
+        assert_ne!(console_id(Identity::Account(7)), console_id(Identity::Steam(7)), "nor an account of the same value");
     }
 
     /// An empty or cut file (not one being written right now) says how to get going again.

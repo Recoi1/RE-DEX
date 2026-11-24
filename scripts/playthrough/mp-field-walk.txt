@@ -1,4 +1,4 @@
-# 100% save (plan 4 Task 1): out of the Pokemon Center door, turn on the spot four ways, walk, run. The runner logs
+# 100% save: out of the Pokemon Center door, turn on the spot four ways, walk, run. The runner logs
 # "field NAME: map .. facing .. mode .." at each checkpoint (xr-net's read accessors); tests/exec.rs checks them.
 400 A
 440 A

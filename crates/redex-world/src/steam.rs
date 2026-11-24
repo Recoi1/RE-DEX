@@ -1,4 +1,4 @@
-//! Steam login (plan 4 Task 3b). A Steamworks game server for app 480 (Valve's Spacewar test app), logged on
+//! Steam login. A Steamworks game server for app 480 (Valve's Spacewar test app), logged on
 //! anonymously, has Steam check each `Auth::SteamTicket`: `BeginAuthSession` checks the ticket against the SteamID64 it
 //! claims, then Steam's `ValidateAuthTicketResponse` says whether the player is really online with it. The session is
 //! then bound to that SteamID; `end` (`EndAuthSession`) when the connection ends.
@@ -291,6 +291,6 @@ fn on_callback(state: &Mutex<State>, cb: CallbackResult, end: &mut Vec<u64>) {
 mod tests {
     #[test]
     fn game_tags_name_game_protocol_and_region() {
-        assert_eq!(super::game_tags(), "redex,v5,kalos");
+        assert_eq!(super::game_tags(), "redex,v6,kalos");
     }
 }

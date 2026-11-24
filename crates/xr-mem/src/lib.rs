@@ -2,7 +2,7 @@
 //! Shared by xr-runtime (native code, exception handler) and xr-hle (its `Memory` lives in it).
 use std::io;
 use windows_sys::Win32::System::Memory::{
-    VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_NOACCESS, PAGE_READWRITE,
+    VirtualAlloc, VirtualFree, VirtualProtect, MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_NOACCESS, PAGE_READWRITE,
 };
 
 pub struct GuestMem {
@@ -40,6 +40,14 @@ impl GuestMem {
             return Ok(());
         }
         let ok = unsafe { VirtualFree(self.base.add(start) as _, len, MEM_DECOMMIT) };
+        if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+    }
+
+    /// Make the committed pages covering [addr, addr+size) read/write (`access`) or fault on any access.
+    pub fn protect(&self, addr: u32, size: u32, access: bool) -> io::Result<()> {
+        let (start, len) = pages(addr, size);
+        let mut old = 0;
+        let ok = unsafe { VirtualProtect(self.base.add(start) as _, len, if access { PAGE_READWRITE } else { PAGE_NOACCESS }, &mut old) };
         if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
     }
 

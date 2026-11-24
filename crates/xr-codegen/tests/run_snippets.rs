@@ -192,7 +192,7 @@ fn one<'a>(name: &'a str, words: &'a [u32], funcs: &'a [(u32, u32)], regs: &'a [
 
 fn span(words: &[u32]) -> [(u32, u32); 1] { [(BASE, BASE + 4 * words.len() as u32)] }
 
-// ---- tests from the brief ----
+// ---- basic tests ----
 
 #[test]
 fn sum_loop() {
@@ -843,7 +843,7 @@ fn never_panics() {
     }
 }
 
-// ---- Task 9: Thumb, interworking, VFP ----
+// ---- Thumb, interworking, VFP ----
 
 const BX_LR: u32 = 0xE12FFF1E;
 
@@ -1305,7 +1305,7 @@ fn vfp_loads_stores() {
     assert_eq!(o.r[13], 0x8000, "vpush/vpop balance");
 }
 
-// ---- Task 10 fix: flags across function boundaries ----
+// ---- flags across function boundaries ----
 
 /// A split function: the flags set before a B across a literal pool are read by the next piece (a separate
 /// function, as repair (a) adds it). The tail call must store them into c->cpsr.
@@ -1568,7 +1568,7 @@ fn null_hooks_ok() {
     assert_eq!((o.r[0], o.miss), (42, None), "NULL hooks table: the direct call runs");
 }
 
-// ---- Task 3 fix round 1: the frame's return travels through tail calls; backward tail calls pay the budget ----
+// ---- the frame's return travels through tail calls; backward tail calls pay the budget ----
 
 /// Split function: piece 1 calls, then tail-calls piece 2, which returns with piece 1's frame.
 #[test]
@@ -1621,7 +1621,7 @@ fn tail_call_loop_preempts() {
     assert_eq!(r0s, (1..=10).map(|k| 1001 - 100 * k).collect::<Vec<_>>(), "one charge per backward tail call");
 }
 
-// ---- plan 3 Task 2: module mode (CRO code, base-relative) ----
+// ---- module mode (CRO code, base-relative) ----
 
 /// A CRO-shaped module compiled once and run at two bases: a relocated literal (pointer into the module), a jump
 /// table of absolute relocated cases after `ldrls pc, [pc, r3, lsl #2]`, an import thunk (`ldr pc, [pc, #-4]` +

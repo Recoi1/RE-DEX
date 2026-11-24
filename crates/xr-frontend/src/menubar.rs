@@ -244,7 +244,7 @@ pub fn modal_ended() -> bool {
     MODAL_SEEN.swap(false, Relaxed)
 }
 
-pub const GITHUB: &str = "https://github.com/Recoi1/redex";
+pub const GITHUB: &str = "https://github.com/Recoi1/RE-DEX";
 
 /// what the item w/ this id asks for
 #[cfg_attr(not(windows), allow(dead_code))]

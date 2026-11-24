@@ -561,8 +561,9 @@ impl Lighting {
             };
 
             let distance = light.distance.map_or(1.0, |(bias, scale)| {
-                let offset: [f32; 3] = std::array::from_fn(|i| -view[i] - light.position[i]);
-                let place = (scale * dot(offset, offset).sqrt() + bias).clamp(0.0, 1.0);
+                // the light vector's length before it's normalized, a directional light's is its direction's own
+                let vector = if light.directional { light.position } else { std::array::from_fn(|i| light.position[i] + view[i]) };
+                let place = (scale * dot(vector, vector).sqrt() + bias).clamp(0.0, 1.0);
                 let entry = (place * 256.0).floor().clamp(0.0, 255.0);
                 tables.lookup(DISTANCE + light.number, entry as u8, place * 256.0 - entry)
             });
@@ -797,6 +798,35 @@ mod tests {
             assert_eq!(format!("{:?}", kept.read(&registers)), format!("{fresh:?}"), "step {step}, register {register:#X}");
         }
         assert!(lit > 400, "lit {lit} times");
+    }
+
+    /// a directional light's distance attenuation reads its table at the length of its own direction (the light
+    /// vector before it's normalized), not at the fragment's distance from it: Pokémon X and Y light the town in the
+    /// cutscenes w/ directional lights whose table falls to 0 a few units out, which left every lit surface black
+    #[test]
+    fn a_directional_lights_distance_is_its_directions_length() {
+        let mut registers = vec![0u32; 0x200];
+        registers[REG_ENABLE] = 1;
+        // light 0 alone, every table off but its distance attenuation
+        registers[REG_CONFIG1] = 0xFFFF_FFFF & !(1 << 24);
+        let light = &mut registers[REG_LIGHTS..REG_LIGHTS + 0x10];
+        light[2] = 255 << 20 | 255 << 10 | 255; // white diffuse
+        light[5] = 0x3C00; // pointing along z, length 1
+        light[10] = 0; // bias 0
+        light[11] = 62 << 12; // scale 0.5
+        let mut tables = Tables::default();
+        // 1 up to a distance of 1.5 (entry 192), 0 past it
+        registers[REG_TABLE_INDEX] = (DISTANCE as u32) << 8;
+        (0..256).for_each(|entry| tables.write(&mut registers, if entry <= 192 { 4095 } else { 0 }));
+        let textures = [[0.0; 4]; 4];
+        let mut lit = |directional: bool, view: [f32; 3]| {
+            registers[REG_LIGHTS + 9] = directional as u32;
+            Lighting::read(&registers).unwrap().shade(&tables, [0.0, 0.0, 0.0, 1.0], view, &textures).0
+        };
+        // a fragment 100 units from the camera: the directional light reads entry 128 and lights it fully
+        assert_eq!(lit(true, [0.0, 0.0, 100.0]), [1.0, 1.0, 1.0, 1.0]);
+        // a positional light there is 101 units away, past the table's 1.5
+        assert_eq!(lit(false, [0.0, 0.0, 100.0])[..3], [0.0; 3]);
     }
 
     #[test]

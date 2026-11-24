@@ -51,6 +51,23 @@ fn seen_x(c: &Client) -> Option<f32> {
     c.peers.values().next().and_then(|r| r.track.back()).map(|(_, p)| p.x)
 }
 
+/// A refusal for good says why (the window shows "Cannot join: <reason>", e.g. a world's allow list), not "couldn't reach".
+#[test]
+fn a_lasting_refusal_keeps_its_reason() {
+    let t = TcpTransport::bind("127.0.0.1:0").unwrap();
+    let addr = t.local_addr().unwrap();
+    let _srv = Server::start(Config::default(), t); // no --dev: a dev id is refused (AUTH, lasting)
+    let mut c = Client::start(fast(addr, 7, "Refused")).unwrap();
+    let end = Instant::now() + Duration::from_secs(10);
+    while !c.stopped {
+        assert!(Instant::now() < end, "never refused");
+        c.frame(None);
+        std::thread::sleep(Duration::from_millis(16));
+    }
+    assert!(c.refused.as_deref().is_some_and(|r| !r.is_empty()), "{:?}", c.refused);
+    assert!(!c.online);
+}
+
 #[test]
 fn two_clients_exchange_positions() {
     let (_srv, addr) = server_on("127.0.0.1:0");
@@ -80,7 +97,7 @@ fn two_clients_exchange_positions() {
     });
 }
 
-/// plan 5 Task 3: the look goes in the Hello (Options.appearance), and a changed one the game reads (Local.appearance)
+/// the look goes in the Hello (Options.appearance), and a changed one the game reads (Local.appearance)
 /// goes out as an AppearanceUpdate: the other player sees the first at once and the second after the server's 1 s gap.
 /// A look whose outfit fails the game's ranges still carries the gender: the other player shows the plain look.
 #[test]

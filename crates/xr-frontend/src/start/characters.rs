@@ -453,7 +453,7 @@ mod tests {
         assert!(!store.merge_remote(vec![calem], 10), "nothing new");
     }
 
-    /// Final review I2: a hostile world can't win every merge with a `changed` far ahead (more than a day past now is
+    /// a hostile world can't win every merge with a `changed` far ahead (more than a day past now is
     /// dropped, as the server does), and a removed character stays removed across a restart, whatever the account sends.
     #[test]
     fn far_future_copies_are_dropped_and_removed_ones_stay_out() {
@@ -494,7 +494,7 @@ mod tests {
         assert!(user_dir(&data, 0x5001).is_dir(), "its saves folder stays");
     }
 
-    /// Final review I5/M4: the save goes through a temporary file of this process's own, synced, and none is left.
+    /// the save goes through a temporary file of this process's own, synced, and none is left.
     #[test]
     fn a_save_leaves_no_temporary_file() {
         let data = temp("save-tmp");
@@ -622,7 +622,7 @@ mod tests {
         assert_eq!(store.get(id).unwrap().name, "Trainer");
     }
 
-    /// Final review M1: RE:DEX's `<title>.format` beside the save's folder comes along (a copy without it reads the
+    /// RE:DEX's `<title>.format` beside the save's folder comes along (a copy without it reads the
     /// default format info).
     #[test]
     fn import_copies_the_format_info() {
@@ -635,7 +635,7 @@ mod tests {
         assert_eq!(std::fs::read(user_dir(&data, id).join("savedata/0004000000055D00.format")).unwrap(), info);
     }
 
-    /// Final review M7: Citra's and Azahar's layout and a Checkpoint backup are taken too (the title from the folder
+    /// Citra's and Azahar's layout and a Checkpoint backup are taken too (the title from the folder
     /// names); a `main` anywhere else is refused with a message naming the layouts taken.
     #[test]
     fn import_takes_emulator_and_checkpoint_layouts() {

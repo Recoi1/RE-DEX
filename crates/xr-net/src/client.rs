@@ -1,4 +1,4 @@
-//! The world-server client (plan 4 Task 3). A net thread owns the socket; the game thread calls [`Client::frame`] once
+//! The world-server client. A net thread owns the socket; the game thread calls [`Client::frame`] once
 //! per frame, which never blocks: the local state goes out over a bounded channel (`try_send`) and what the server
 //! says comes back over another (`try_iter`). Connecting, timeouts, disconnects and the reconnect backoff all happen
 //! on the net thread. Nothing here touches game memory: the caller reads the local player and gets `peers` back.
@@ -12,7 +12,7 @@ use steamworks::networking_sockets::NetConnection;
 use steamworks::networking_types::SendFlags;
 use std::time::{Duration, Instant};
 
-/// Positions kept per remote player, newest last (Task 4 interpolates over them).
+/// Positions kept per remote player, newest last (the puppets interpolate over them).
 pub const TRACK: usize = 32;
 /// Remote players kept at most (a room this full shows MAX_PUPPETS of them anyway).
 pub const MAX_PEERS: usize = 64;
@@ -67,6 +67,8 @@ pub struct Options {
     pub auth: redex_proto::Auth,
     /// Steam login: every connection sends a fresh auth session ticket, cancelled when the connection ends.
     pub steam: Option<crate::steam::Steam>,
+    /// Account login (a `tls:host:port` world): every connection sends a fresh world ticket from the backend.
+    pub account: Option<crate::account::Account>,
     /// the running game's 3DS title id (from the loader, never from the user): the server's region and version key
     pub title: u64,
     pub name: String,
@@ -88,6 +90,7 @@ impl Options {
             addr: addr.into(),
             auth,
             steam: None,
+            account: None,
             title,
             name: name.into(),
             appearance: Vec::new(),
@@ -100,14 +103,16 @@ impl Options {
     }
 }
 
-/// A player on our map and channel, for Task 4's puppets.
+/// A player on our map and channel, for the puppets.
 #[derive(Debug, Clone)]
 pub struct Remote {
     pub name: String,
     /// which version they play (`redex_proto::TITLE_*`)
     pub title: u64,
-    /// their SteamID64 as the server verified it, 0 for a dev id (no Steam account)
+    /// their SteamID64 as the server verified it, 0 when not a Steam player
     pub steam: u64,
+    /// who they are as the server verified it (a report names it)
+    pub who: redex_proto::PlayerId,
     /// their look: `Appearance::from_bytes` of what the server relayed (so validated); None for missing or bad bytes,
     /// which shows the plain look of `gender`
     pub appearance: Option<Appearance>,
@@ -123,9 +128,11 @@ enum Event {
     Clear,
     /// The connection dropped: peers gone, a reconnect is under way.
     Offline,
+    /// Refused for good: the server's reason (for people).
+    Refused(String),
 }
 
-/// A whisper another player sent us (Task 4's chat drains `Client::whispers`).
+/// A whisper another player sent us (the chat drains `Client::whispers`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Whisper {
     pub from_session: u32,
@@ -157,6 +164,8 @@ pub struct Client {
     pub online: bool,
     /// The net thread is gone for good (refused, or it panicked): nothing more is sent or heard.
     pub stopped: bool,
+    /// Why the server refused us for good, once it did (cleaned; what the player is told).
+    pub refused: Option<String>,
 }
 
 impl Client {
@@ -169,6 +178,10 @@ impl Client {
         if o.addr.starts_with("steam:") && o.steam.is_none() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "a steam: world address needs Steam (not --dev-id)"));
         }
+        // a world ticket goes only over TLS, to the world whose certificate names the host it was asked for
+        if o.account.is_some() != o.addr.starts_with("tls:") {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "an account login goes to a tls:host:port world, and a tls: world takes account logins only"));
+        }
         // the server cuts a name to NAME_CHARS anyway; a longer one on the wire is refused as a bad frame, on every retry
         o.name = o.name.chars().take(redex_proto::NAME_CHARS).collect();
         o.appearance.truncate(redex_proto::MAX_APPEARANCE);
@@ -180,7 +193,7 @@ impl Client {
     }
 
     fn over(tx: SyncSender<Local>, out: SyncSender<Msg>, rx: Receiver<Event>) -> Client {
-        Client { tx, out, rx, sent: None, peers: HashMap::new(), seen: HashMap::new(), whispers: VecDeque::new(), accounts: VecDeque::new(), room: None, online: false, stopped: false }
+        Client { tx, out, rx, sent: None, peers: HashMap::new(), seen: HashMap::new(), whispers: VecDeque::new(), accounts: VecDeque::new(), room: None, online: false, stopped: false, refused: None }
     }
 
     /// Whispers to a player on any map (cut to `WHISPER_CHARS`; control and bidi characters stripped). False when
@@ -191,12 +204,14 @@ impl Client {
     }
 
     /// Reports a player (`redex_proto::REPORT_*`; the note is cut to `NOTE_CHARS` characters). `steam_id` is the account
-    /// meant (their `Remote.steam`): the server drops the report when the session is no longer it. False when not logged
-    /// in, the reason is unknown, or the session on our map is known to be another account now.
+    /// meant (their `Remote.steam`): the server drops the report when the session is no longer it (the report names the
+    /// session's `Remote.who`, or for a session gone from our map the Steam account, else a dev id). False when not
+    /// logged in, the reason is unknown, or the session on our map is known to be another account now.
     pub fn report(&self, session: u32, steam_id: u64, reason: u8, note: &str) -> bool {
         let note = clean(note.trim(), redex_proto::NOTE_CHARS);
         let moved = self.peers.get(&session).is_some_and(|r| r.steam != steam_id);
-        !moved && reason <= redex_proto::MAX_REPORT_REASON && self.online && self.out.try_send(Msg::Report { session, steam_id, reason, note }).is_ok()
+        let who = self.peers.get(&session).map_or(if steam_id != 0 { redex_proto::PlayerId::Steam(steam_id) } else { redex_proto::PlayerId::Dev }, |r| r.who);
+        !moved && reason <= redex_proto::MAX_REPORT_REASON && self.online && self.out.try_send(Msg::Report { session, who, reason, note }).is_ok()
     }
 
     /// A character for the account (a new one, or a new look): the net thread keeps it in its copy of
@@ -238,6 +253,7 @@ impl Client {
                 (at, m)
             }
             Event::Clear => return self.clear(),
+            Event::Refused(r) => return self.refused = Some(clean(&r, 120)),
             Event::Offline => {
                 self.online = false;
                 self.seen.clear();
@@ -254,14 +270,15 @@ impl Client {
             }
             (_, Msg::MapLeave) => self.clear(),
             // a server can announce any number of sessions: past MAX_PEERS new ones are ignored (a known one is updated)
-            (_, Msg::Peer { session, name, title, appearance, steam, .. }) if self.peers.len() < MAX_PEERS || self.peers.contains_key(&session) => {
+            (_, Msg::Peer { session, name, title, appearance, who, .. }) if self.peers.len() < MAX_PEERS || self.peers.contains_key(&session) => {
                 let (look, gender) = (Appearance::from_bytes(&appearance), Appearance::gender_of(&appearance));
                 let name = clean(&name, redex_proto::NAME_CHARS);
                 if self.seen.len() >= SEEN {
                     self.seen.clear();
                 }
+                let steam = who.steam();
                 self.seen.insert(session, steam);
-                self.peers.insert(session, Remote { name, title, steam, appearance: look, gender, track: VecDeque::new() });
+                self.peers.insert(session, Remote { name, title, steam, who, appearance: look, gender, track: VecDeque::new() });
             }
             (_, Msg::PeerAppearance { session, appearance }) => {
                 if let Some(r) = self.peers.get_mut(&session) {
@@ -331,13 +348,42 @@ impl Backoff {
 /// messages carry the same frame bytes.
 enum Conn {
     Tcp(TcpStream),
+    /// `tls:host:port`: TCP with TLS, the server's certificate checked for `host` (the central world).
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
     Steam { conn: NetConnection, steam: crate::steam::Steam, rx: Vec<u8> },
+}
+
+/// TLS for `tls:` worlds: the web's root certificates (webpki-roots), plus the PEM certificates in the file
+/// `REDEX_WORLD_CA` names (a self-hosted world's own CA, or a test's self-signed certificate).
+fn tls_config() -> io::Result<std::sync::Arc<rustls::ClientConfig>> {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+    static CFG: std::sync::OnceLock<Result<std::sync::Arc<rustls::ClientConfig>, String>> = std::sync::OnceLock::new();
+    let cfg = CFG.get_or_init(|| {
+        let mut roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+        if let Some(ca) = std::env::var_os("REDEX_WORLD_CA") {
+            let certs = CertificateDer::pem_file_iter(&ca).and_then(|i| i.collect::<Result<Vec<_>, _>>()).map_err(|e| format!("REDEX_WORLD_CA: {e}"))?;
+            for c in certs {
+                roots.add(c).map_err(|e| format!("REDEX_WORLD_CA: {e}"))?;
+            }
+        }
+        let cfg = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| e.to_string())?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        Ok(std::sync::Arc::new(cfg))
+    });
+    cfg.clone().map_err(io::Error::other)
 }
 
 impl Conn {
     fn write_all(&mut self, b: &[u8]) -> io::Result<()> {
         match self {
             Conn::Tcp(s) => s.write_all(b),
+            Conn::Tls(s) => {
+                s.write_all(b)?;
+                s.flush()
+            }
             Conn::Steam { conn, .. } => conn.send_message(b, SendFlags::RELIABLE_NO_NAGLE).map(|_| ()).map_err(io::Error::other),
         }
     }
@@ -346,6 +392,7 @@ impl Conn {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let (conn, steam, rx) = match self {
             Conn::Tcp(s) => return s.read(buf),
+            Conn::Tls(s) => return s.read(buf),
             Conn::Steam { conn, steam, rx } => (conn, steam, rx),
         };
         if rx.is_empty() {
@@ -422,7 +469,7 @@ impl Net {
                     end
                 }
                 Err(e) => {
-                    log::warn!("world: no Steam ticket ({e}); retrying");
+                    log::warn!("world: no login ticket ({e}); retrying");
                     End::Retry(false)
                 }
             };
@@ -440,6 +487,9 @@ impl Net {
 
     /// The `Hello.auth` for one connection: the dev id, or a fresh Steam ticket (and its handle, to cancel).
     fn login(&self) -> io::Result<(redex_proto::Auth, Option<steamworks::AuthTicket>)> {
+        if let (Some(a), Some(world)) = (&self.o.account, self.o.addr.strip_prefix("tls:")) {
+            return Ok((redex_proto::Auth::WorldTicket(a.ticket(world).map_err(io::Error::other)?), None));
+        }
         let Some(steam) = &self.o.steam else { return Ok((self.o.auth.clone(), None)) };
         // bound to the server's SteamID when the address names it
         let server = self.o.addr.strip_prefix("steam:").and_then(|id| id.parse().ok());
@@ -452,14 +502,28 @@ impl Net {
             let id = id.parse().map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "steam: needs a SteamID64"))?;
             return Ok(Conn::Steam { conn: steam.connect(id, Duration::from_secs(10))?, steam: steam.clone(), rx: Vec::new() });
         }
+        let tls = self.o.addr.strip_prefix("tls:");
+        let addr = tls.unwrap_or(&self.o.addr);
         let mut last = io::Error::new(io::ErrorKind::NotFound, "no address");
-        for a in self.o.addr.to_socket_addrs()? {
+        for a in addr.to_socket_addrs()? {
             match TcpStream::connect_timeout(&a, Duration::from_secs(2)) {
-                Ok(s) => {
+                Ok(mut s) => {
                     s.set_nodelay(true)?;
-                    s.set_read_timeout(Some(Duration::from_millis(10)))?;
                     // a server that stops reading drops the connection instead of stalling this thread for long
                     s.set_write_timeout(Some(Duration::from_secs(2)))?;
+                    if let Some(hostport) = tls {
+                        let host = hostport.rsplit_once(':').map_or(hostport, |(h, _)| h).trim_matches(['[', ']']);
+                        let name = rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+                        let mut c = rustls::ClientConnection::new(tls_config()?, name).map_err(io::Error::other)?;
+                        // the handshake (and the certificate check) before the session's 10 ms reads
+                        s.set_read_timeout(Some(Duration::from_secs(5)))?;
+                        while c.is_handshaking() {
+                            c.complete_io(&mut s)?;
+                        }
+                        s.set_read_timeout(Some(Duration::from_millis(10)))?;
+                        return Ok(Conn::Tls(Box::new(rustls::StreamOwned::new(c, s))));
+                    }
+                    s.set_read_timeout(Some(Duration::from_millis(10)))?;
                     return Ok(Conn::Tcp(s));
                 }
                 Err(e) => last = e,
@@ -645,6 +709,9 @@ impl Net {
                         self.steam_retried |= steam_answer;
                         let lasting = redex_proto::refuse::lasting(*code) && !steam_answer;
                         log::warn!("world: refused ({code}): {reason}{}", if lasting { "; staying offline" } else { "; retrying" });
+                        if lasting {
+                            let _ = self.tx.try_send(Event::Refused(reason.clone()));
+                        }
                         return if lasting { End::Stop } else { End::Retry(stable(welcomed)) };
                     }
                     Msg::Ping(n) => {
@@ -715,7 +782,7 @@ mod tests {
         let (out, _out_rx) = sync_channel(OUT);
         let (event_tx, rx) = sync_channel(8);
         let mut c = Client::over(tx, out, rx);
-        let peer = Msg::Peer { session: 7, name: "B".into(), game: 6, title: redex_proto::TITLE_X, appearance: vec![], steam: 0 };
+        let peer = Msg::Peer { session: 7, name: "B".into(), game: 6, title: redex_proto::TITLE_X, appearance: vec![], who: redex_proto::PlayerId::Dev };
         event_tx.send(Event::Msg(Instant::now(), Msg::Entered { map: 1, channel: 0, repeat: false })).unwrap();
         event_tx.send(Event::Msg(Instant::now(), peer)).unwrap();
         let net = std::thread::spawn(move || {
@@ -741,7 +808,7 @@ mod tests {
         let (event_tx, rx) = sync_channel(8);
         let mut c = Client::over(tx, out, rx);
         let name = format!("\u{202E}{}", "B".repeat(30));
-        event_tx.send(Event::Msg(Instant::now(), Msg::Peer { session: 1, name, game: 6, title: 0, appearance: vec![], steam: 765 })).unwrap();
+        event_tx.send(Event::Msg(Instant::now(), Msg::Peer { session: 1, name, game: 6, title: 0, appearance: vec![], who: redex_proto::PlayerId::Steam(765) })).unwrap();
         event_tx.send(Event::Msg(Instant::now(), Msg::PeerWhisper { from_session: 1, name: "B\u{2066}".into(), text: format!("x{}", "y".repeat(300)) })).unwrap();
         c.frame(None);
         assert_eq!((c.peers[&1].name.as_str(), c.peers[&1].steam), ("BBBBBBBBBBBBBBBB", 765));
@@ -760,7 +827,7 @@ mod tests {
         let (event_tx, rx) = sync_channel(8);
         let mut c = Client::over(tx, out, rx);
         let say = |from| Event::Msg(Instant::now(), Msg::PeerWhisper { from_session: from, name: "B".into(), text: "hi".into() });
-        event_tx.send(Event::Msg(Instant::now(), Msg::Peer { session: 1, name: "B".into(), game: 6, title: 0, appearance: vec![], steam: 765 })).unwrap();
+        event_tx.send(Event::Msg(Instant::now(), Msg::Peer { session: 1, name: "B".into(), game: 6, title: 0, appearance: vec![], who: redex_proto::PlayerId::Steam(765) })).unwrap();
         event_tx.send(Event::Msg(Instant::now(), Msg::PeerGone { session: 1 })).unwrap();
         event_tx.send(say(1)).unwrap();
         event_tx.send(say(2)).unwrap();
@@ -781,7 +848,7 @@ mod tests {
         let mut c = Client::over(tx, out, rx);
         let at = Instant::now();
         event_tx.send(Event::Msg(at, Msg::Entered { map: 1, channel: 0, repeat: false })).unwrap();
-        event_tx.send(Event::Msg(at, Msg::Peer { session: 7, name: "B".into(), game: 6, title: 0, appearance: vec![], steam: 0 })).unwrap();
+        event_tx.send(Event::Msg(at, Msg::Peer { session: 7, name: "B".into(), game: 6, title: 0, appearance: vec![], who: redex_proto::PlayerId::Dev })).unwrap();
         event_tx.send(Event::Msg(at, Msg::Entered { map: 1, channel: 0, repeat: true })).unwrap();
         c.frame(None);
         assert_eq!((c.room, c.peers.len()), (Some((1, 0)), 1));
@@ -793,12 +860,12 @@ mod tests {
         let (out, _out_rx) = sync_channel(OUT);
         let (event_tx, rx) = sync_channel(MAX_PEERS * 2 + 8);
         let mut c = Client::over(tx, out, rx);
-        let peer = |session| Event::Msg(Instant::now(), Msg::Peer { session, name: "B".into(), game: 6, title: 0, appearance: vec![], steam: 0 });
+        let peer = |session| Event::Msg(Instant::now(), Msg::Peer { session, name: "B".into(), game: 6, title: 0, appearance: vec![], who: redex_proto::PlayerId::Dev });
         for s in 0..(MAX_PEERS as u32 * 2) {
             event_tx.send(peer(s)).unwrap();
         }
         // a known one is still updated
-        event_tx.send(Event::Msg(Instant::now(), Msg::Peer { session: 3, name: "C".into(), game: 6, title: 0, appearance: vec![], steam: 0 })).unwrap();
+        event_tx.send(Event::Msg(Instant::now(), Msg::Peer { session: 3, name: "C".into(), game: 6, title: 0, appearance: vec![], who: redex_proto::PlayerId::Dev })).unwrap();
         c.frame(None);
         assert_eq!(c.peers.len(), MAX_PEERS);
         assert_eq!(c.peers[&3].name, "C");
@@ -815,7 +882,7 @@ mod tests {
         let mut c = Client::over(tx, out, rx);
         let girl = Appearance { gender: 1, fashion: [0xC0, 0, 0x24, 2, 0x4C, 5, 0x90, 2, 0, 4, 0, 0, 0, 0, 0, 0] };
         let send = |m| event_tx.send(Event::Msg(Instant::now(), m)).unwrap();
-        let peer = |session, appearance| Msg::Peer { session, name: "B".into(), game: 6, title: 0, appearance, steam: 0 };
+        let peer = |session, appearance| Msg::Peer { session, name: "B".into(), game: 6, title: 0, appearance, who: redex_proto::PlayerId::Dev };
         let mut bad = girl.to_bytes().to_vec();
         bad[3 + 4] = 0xFF; // a top past the game's range
         send(peer(1, girl.to_bytes().to_vec()));

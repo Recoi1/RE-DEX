@@ -128,7 +128,7 @@ mod tests {
         let data = temp("outdated");
         std::fs::create_dir_all(data.join("build/x-usa-v0.2.0")).unwrap();
         std::fs::write(data.join("build/x-usa-v0.2.0/xgame.dll"), b"").unwrap();
-        // what plan 1's first builds wrote: the build id only
+        // what the first builds wrote: the build id only
         std::fs::write(data.join("build/x-usa-v0.2.0/verified.txt"), "x-usa-v0.2.0").unwrap();
         assert_eq!(label(&data, "x-usa-v0.2.0", Some("xr-recomp 0.1.0 1 2\nabi 6")), "Update");
         // no tools to build with (a dev tree): a verified build is ready as it is

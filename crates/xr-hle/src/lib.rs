@@ -10,6 +10,8 @@ pub mod kernel;
 pub mod loader;
 pub mod memory;
 pub mod microphone;
+pub mod cosmetic;
+pub mod modlist;
 pub mod mods;
 pub mod replay;
 pub mod room;
@@ -148,7 +150,7 @@ impl Default for Pacing {
 
 /// refreshes after a camera cut w/o pictures in between (see System::camera_cut): X opens its door transition's iris
 /// over the 16 after the cut, and in pictures in between its hole and the black around it don't agree (the hole's
-/// corners clipped: one part follows the frame as is, the other moves in between; M3 strips, plan 6 Task 4)
+/// corners clipped: one part follows the frame as is, the other moves in between)
 const CUT_HOLD: u64 = 24;
 
 /// whether a new picture at `refresh` goes w/o pictures in between for a camera cut (System::camera_cut: the cut's
@@ -285,8 +287,9 @@ pub struct System {
     pub interpreted_instructions: u64,
     /// xr-hle: a mod (code.bin, code.ips, code.bps) changed the game's code, which recompiled code doesn't include
     pub code_modded: bool,
-    /// xr-hle: a mod changed the game: its RomFS (a texture pack aside), exheader or code (online play is refused)
-    pub game_modded: bool,
+    /// xr-hle: the mod that changes the game beyond its looks, by name: its RomFS off the cosmetic list (a texture
+    /// pack and skins aside), its exheader or code (online play is refused while there is one)
+    pub game_modded: Option<String>,
     /// xr-hle: GX ProcessCommandList commands run so far
     pub command_lists: u64,
     /// xr-hle: every service the title sent a request to, in first-call order, each w/ (command id, count) in
@@ -382,7 +385,7 @@ impl System {
             idle,
             interpreted_instructions: 0,
             code_modded: false,
-            game_modded: false,
+            game_modded: None,
             command_lists: 0,
             service_calls: Vec::new(),
             module_hook: None,
@@ -622,11 +625,16 @@ impl System {
 
     /// GPU coherency phase 1: writes back everything the host GPU drew that guest memory doesn't have yet
     /// runs after every command list and display transfer (so the cpu's later writes land on top), and at end_frame as a backstop
-    /// TODO(phase 2): per-access interception (VirtualProtect + the runtime's exception handler) instead of eagerly
+    /// (phase 1, eager; in phase 2, `lazy_gpu`, nothing to do here)
     pub fn flush_gpu_guards(&mut self) {
+        // phase 2: they come down at the first access instead (Memory::lazy); the GPU decides as if they had
+        if self.memory.is_lazy() {
+            self.gpu.flush_point();
+            return;
+        }
         let linear_base = self.kernel.linear_base;
         for (addr, end) in self.memory.take_guards() {
-            self.gpu.sync_memory(&mut GuestMemory { memory: &mut self.memory, linear_base, writes: 0 }, addr, end - addr);
+            self.gpu.sync_memory(&mut GuestMemory::new(&mut self.memory, linear_base), addr, end - addr);
         }
     }
 
@@ -640,6 +648,14 @@ impl System {
             }
         }
         out
+    }
+
+    /// GPU coherency phase 2: what the host GPU draws stays there till something other than a draw touches it (native
+    /// code thru the host's page protection and the runtime's fault handler calling `Memory::fault`, Rust code thru
+    /// Memory's accessors). Only for a System that stays put from now on (the Gpu is reached by pointer).
+    pub fn lazy_gpu(&mut self) {
+        let lazy = memory::LazyGpu { gpu: &mut self.gpu, linear_base: self.kernel.linear_base };
+        self.memory.set_lazy(lazy);
     }
 
     /// starts collecting PC samples
@@ -958,13 +974,10 @@ impl System {
 
     pub fn submit_command_list(&mut self, paddr: u32, size: u32) {
         let linear_base = self.kernel.linear_base;
-        let mut guest = GuestMemory {
-            writes: 0,
-            linear_base,
-            memory: &mut self.memory,
-        };
+        let mut guest = GuestMemory::new(&mut self.memory, linear_base);
         self.gpu
             .process_command_list(&mut guest, self.renderer.as_mut(), paddr, size);
+        drop(guest);
         // what it drew reaches memory now, b4 the cpu or a service writes there (a reused buffer, a texture upload)
         self.flush_gpu_guards();
     }
@@ -972,11 +985,7 @@ impl System {
     /// makes guest memory hold what the host GPU drew over a range, b4 smth other than a draw touches it
     pub fn sync_gpu(&mut self, addr: u32, len: u32) {
         let linear_base = self.kernel.linear_base;
-        let mut guest = GuestMemory {
-            writes: 0,
-            linear_base,
-            memory: &mut self.memory,
-        };
+        let mut guest = GuestMemory::new(&mut self.memory, linear_base);
         self.gpu.sync_memory(&mut guest, addr, len);
     }
 
@@ -991,11 +1000,7 @@ impl System {
 
     pub fn memory_fill(&mut self, start: u32, end: u32, value: u32, width: u32) {
         let linear_base = self.kernel.linear_base;
-        let mut guest = GuestMemory {
-            writes: 0,
-            linear_base,
-            memory: &mut self.memory,
-        };
+        let mut guest = GuestMemory::new(&mut self.memory, linear_base);
         self.gpu.memory_fill(&mut guest, start, end, value, width);
     }
 
@@ -1008,11 +1013,7 @@ impl System {
         flags: u32,
     ) {
         let linear_base = self.kernel.linear_base;
-        let mut guest = GuestMemory {
-            writes: 0,
-            linear_base,
-            memory: &mut self.memory,
-        };
+        let mut guest = GuestMemory::new(&mut self.memory, linear_base);
         self.gpu.display_transfer(
             &mut guest,
             input,
@@ -1021,6 +1022,7 @@ impl System {
             output_dimensions,
             flags,
         );
+        drop(guest);
         // a transfer the GPU did lands in memory now too, see submit_command_list
         self.flush_gpu_guards();
     }
@@ -1034,11 +1036,7 @@ impl System {
         output_gap: u32,
     ) {
         let linear_base = self.kernel.linear_base;
-        let mut guest = GuestMemory {
-            writes: 0,
-            linear_base,
-            memory: &mut self.memory,
-        };
+        let mut guest = GuestMemory::new(&mut self.memory, linear_base);
         self.gpu
             .texture_copy(&mut guest, input, output, size, input_gap, output_gap);
     }
@@ -1168,10 +1166,11 @@ impl System {
         // compared in place, copying both screens every frame costs more than comparing
         let base = services::gsp::physical_to_virtual(self, address);
         let len = width * stride;
-        let mut guest = GuestMemory { linear_base: self.kernel.linear_base, memory: &mut self.memory, writes: 0 };
+        let mut guest = GuestMemory::new(&mut self.memory, self.kernel.linear_base);
         if let Some(bytes) = guest.slice(base, len as usize) {
             return self.gpu.scaled_screen(base, (height, width), stride / bpp, format, bytes);
         }
+        drop(guest);
         let mut bytes = vec![0u8; len as usize];
         self.memory.read_bytes(base, &mut bytes);
         self.gpu.scaled_screen(base, (height, width), stride / bpp, format, &bytes)
@@ -1180,7 +1179,7 @@ impl System {
     /// The creator's studio view (zakuro_gpu::studio): the player's draws of the last frame, again from an orbit camera.
     pub fn studio_frame(&mut self, yaw: f32, zoom: f32) -> Result<zakuro_gpu::studio::Frame, &'static str> {
         let linear_base = self.kernel.linear_base;
-        self.gpu.studio_render(&mut GuestMemory { memory: &mut self.memory, linear_base, writes: 0 }, yaw, zoom)
+        self.gpu.studio_render(&mut GuestMemory::new(&mut self.memory, linear_base), yaw, zoom)
     }
 
     /// reads one screen into a plain RGBA8 buffer for presenting
@@ -1252,12 +1251,39 @@ impl System {
     }
 }
 
-/// lets the GPU reach guest memory by physical addr
-struct GuestMemory<'a> {
+/// lets the GPU reach guest memory by physical addr; while one lives its accesses are raw: they see memory as it is
+/// and never write back a lazy guard (see Memory::lazy), the GPU's surfaces know what is newer than memory
+pub(crate) struct GuestMemory<'a> {
     memory: &'a mut Memory,
     linear_base: u32,
     /// writes thru it so far, see GpuMemory::writes
     writes: u64,
+    /// only `raw::Token::begin` makes one, so every GuestMemory began the raw access its Drop ends
+    _raw: raw::Token,
+}
+
+mod raw {
+    pub(crate) struct Token(());
+
+    impl Token {
+        pub(crate) fn begin(memory: &mut crate::memory::Memory) -> Token {
+            memory.begin_raw();
+            Token(())
+        }
+    }
+}
+
+impl Drop for GuestMemory<'_> {
+    fn drop(&mut self) {
+        self.memory.end_raw();
+    }
+}
+
+impl<'a> GuestMemory<'a> {
+    pub(crate) fn new(memory: &'a mut Memory, linear_base: u32) -> Self {
+        let _raw = raw::Token::begin(memory);
+        GuestMemory { memory, linear_base, writes: 0, _raw }
+    }
 }
 
 impl GuestMemory<'_> {

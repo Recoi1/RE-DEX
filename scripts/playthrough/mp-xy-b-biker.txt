@@ -1,5 +1,5 @@
 # Driven by crates/xr-runtime/tests/two_instances.rs (xy_a_x_b_y and xy_a_y_b_x), which sets the env and makes the asserts: the checkpoints here have no expects.
-# plan 5 Task 5, the biker of the X+Y pair: a 100% save (X, or the same save in Pokemon Y's folder) flies to Vaniville,
+# The biker of the X+Y pair: a 100% save (X, or the same save in Pokemon Y's folder) flies to Vaniville,
 # waits for the other player, opens the registered-items wheel (Y), takes the bike (RIGHT) and rides about. Run with
 # XR_SET_FASHION=<outfit>@1300 (a non-default outfit, set before the Fly builds the player; the field must be up) and XR_MP_WHISPER.
 400 A

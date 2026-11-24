@@ -11,7 +11,7 @@ pub struct Look {
 }
 
 pub const DEFAULT_BOY: [u8; 16] = [0x48, 0x64, 0x09, 0x01, 0x01, 0xcb, 0x08, 0x03, 0x41, 0, 0, 0, 0, 0, 0, 0];
-/// The girl's starting outfit after Mom's mirror, measured on the real game (Task 2).
+/// The girl's starting outfit after Mom's mirror, measured on the real game.
 pub const DEFAULT_GIRL: [u8; 16] = [0x40, 0x3c, 0x24, 0x02, 0x00, 0x20, 0x13, 0x03, 0x41, 0x05, 0x20, 0, 0, 0, 0, 0];
 pub const SKINS: [u8; 3] = [1, 2, 3];
 pub const HAIR_COLOURS: u8 = 5;

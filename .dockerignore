@@ -1,0 +1,20 @@
+# the central server image needs only the sources (see deploy/central/Dockerfile)
+target/
+build/
+generated/
+release/
+dump/
+**/*.3ds
+**/*.cci
+**/*.cxi
+**/*.cia
+**/*.state
+deploy/central/secrets/
+.git/
+deploy/central/.env
+**/exefs/
+**/romfs/
+**/savedata/
+**/saves/
+# the image pins the compiler (rust:1-bookworm by digest): channel "stable" here made rustup download another one
+rust-toolchain.toml

@@ -1,4 +1,4 @@
-# Multiplayer (plan 4, M1: two trainers on one map)
+# Multiplayer (two trainers on one map)
 
 RE:DEX players meet through a `redex-world` server. Every player on your map is drawn as an NPC (a "puppet") in the
 game's own move-model pool, made and moved by the game's functions. A puppet walks where the other player walks, goes
@@ -39,8 +39,8 @@ redex-world --dev [--bind ADDR:PORT]          (an mp-tests build only)
   names no Steam account`) and counts for nothing. Both are read at every Steam login, right after the ticket is
   verified, and every 30 s for each connected Steam player (parsed again only when the file changed): a ban, or leaving
   the allow list, disconnects a player within 30 s. A list that can't be read refuses everyone (a missing `bans.txt`
-  bans nobody). A refused player gets `AUTH` with the reason ("this world is
-  invite-only, and you are not on its list", "you are banned from this world"). Spacewar accounts are free, so a
+  bans nobody). A refused player gets `AUTH` with the reason ("You're not on
+  this world's list; ask its host", "you are banned from this world"), shown to them as "Cannot join: ...". Spacewar accounts are free, so a
   SteamID ban is weak: the allow list is the real gate until M8.
 - `--dev` (an `mp-tests` build only): TCP on `127.0.0.1:7777` (or `--bind`, localhost only). Dev ids and Steam logins. The server starts an
   anonymous Steam game server to check tickets; that needs `steamclient64.dll`, `tier0_s64.dll` and
@@ -96,8 +96,11 @@ The client keeps dev and test tools out of worlds; the server's checks above are
   `XR_STATE_*`, `XR_SET_FASHION`, `XR_EXPLORE*`, `XR_FAKE_*`, `XR_MP_*`, `XR_RAILPOS`. An `mp-tests` build allows them
   (the pair tests). `--dev-id`, `--room` and `--room-server` exist only in such a build: without a room the game's own
   local wireless (PSS trades, battles, Download Play) is off, and those trades must never bypass the server.
-- **Mods that change the game.** A mod that changed the RomFS (a texture pack aside), the exheader or the code
-  (`System::game_modded`): "Turn off mods to play online (texture packs are fine)".
+- **Mods that change the game.** A mod that changes a RomFS file off the cosmetic list (`xr-hle/src/cosmetic.rs`:
+  the GARCs of Pokémon, player and trainer models and the menus' pictures), the exheader or the code
+  (`System::game_modded`, the mod's name): "Turn off mods to play online: <mod> changes the game (skins and texture
+  packs are fine)". Texture packs and skins on the list play online; other players never see them (see
+  [mods.md](mods.md)).
 - **An edited game file.** "Add your game" hashes the dump anyway; its SHA-256 is kept with the file's size and time in
   `<data>/dumps/verified.txt`. At a world's door the dump (`--cci`) is taken as that build while its size and time are
   the same; otherwise it is hashed again once (the answer kept), and one that is no longer a known build's (a RomFS
@@ -117,7 +120,7 @@ The client keeps dev and test tools out of worlds; the server's checks above are
 
 ## Two instances on one PC
 
-1. Start the server: `redex-world --dev` (the `Start world server.bat` launcher).
+1. Start the server: `redex-world --dev`.
 2. Player A, a window with your Steam account:
    `redex --cci <game> --build <dataA>/build/x-usa-v0.2.0 --world 127.0.0.1:7777 --name A`
 3. Player B, a second window (or `--headless`) with a dev id and **its own data dir**:
@@ -131,7 +134,14 @@ Between two PCs: run `redex-world --p2p` on one, and both players join with `--w
 be opened. Not over plain TCP: a Steam ticket sent over TCP is not bound to the server (see "The server"), so a TCP
 server takes logins on localhost only.
 
-## Characters on the account (protocol v5, start-screen plan 2)
+## Finding a P2P server
+
+**The query port of a P2P server.** Players find a `--p2p` server through Steam's master list (tags `redex,v5,kalos`), which
+needs nothing opened. Its name, player count and ping come from a UDP query to `--query-port` (default 27016): if Steam
+cannot reach it (a router without that port forwarded, a firewall), the server is still listed and joinable, as "Unnamed
+world" with no ping. Two P2P servers on one PC need different `--query-port`s.
+
+## Characters on the account (protocol v5)
 
 A character (made in the start screen's creator: a name and a look, `<data>/characters.json`, its saves in
 `<data>/characters/<id>/user`) belongs to the player's account, not to one PC or one game:
@@ -167,12 +177,12 @@ A character (made in the start screen's creator: a name and a look, `<data>/char
   come plain); without them the puppet wears the plain look. A puppet's outfit never shares the game's slot for the
   player's (a twin in your exact outfit loads its own). A changed outfit is a new puppet (deleted, then made again a
   second later).
-- **Girls (Task 13).** A girl's outfit loads the game's *player* part set (header byte 3 = 1): on the NPC set a boy's
+- **Girls.** A girl's outfit loads the game's *player* part set (header byte 3 = 1): on the NPC set a boy's
   outfit draws fine, but a girl's long hair is drawn as a brown plank and short hair not at all. The player part set
   takes one of the game's two player heaps (`[0x5E9EE4]+0x2C` and `+0x30`) and your own outfit holds the
   other, so one girl outfit is on the player set at a time: a second girl in the same outfit shares it, a girl in
-  another outfit, or in your exact outfit (a twin: the game's own slot is never shared), wears hers on the NPC set
-  (final fix wave C1): her clothes, skin and eyes are right, long hair is the plank. Each outfit keeps the set it was
+  another outfit, or in your exact outfit (a twin: the game's own slot is never shared), wears hers on the NPC set:
+  her clothes, skin and eyes are right, long hair is the plank. Each outfit keeps the set it was
   asked for on when it is asked for again after a battle or released. While a shared girl outfit's parts are gone
   (after a battle) and no player heap is free, a new girl in it waits rather than load into a null heap. The girl model
   has no body of its own (it is all dress-up parts), so a girl with no outfit at all (a stuck loader, no free slot or
@@ -239,6 +249,73 @@ A character (made in the start screen's creator: a name and a look, `<data>/char
   Steam starts Spacewar, not redex, for a
   friend whose redex is not running: app 480 is not our own app id.
 
+## Friends: Steam friends, invites, chat
+
+The friends list is the player's Steam friends. No
+RE:DEX server is involved: friends' chat and invites go game to game over Steam's networking messages, relayed by
+Steam like the world connection.
+
+- **Who's in RE:DEX.** A window starts Steam at once (not with `--dev-id`; offline play goes on if Steam is closed) and,
+  once Steam is up (also when it starts later), sets the rich-presence key `redex` = the protocol version, beside `status` ("<world name> · In Kalos" online,
+  the name when Steam's list gave it; "Playing offline" otherwise) and `connect`. A friend is in RE:DEX when the `redex`
+  key holds this protocol's version and their game is app 480 (the key alone when Steam can't say which game); another
+  version shows as "Another RE:DEX version". The list is read again every 10 s (presence is asked only while the tab
+  is open). The start screen sets no
+  presence: nothing there could take a friend's chat or invite.
+- **The Friends tab**, beside Players nearby (Left/Right, or a click): friends running RE:DEX first, with what their
+  presence says, then friends online in Steam only (greyed, a hollow dot: "Not in RE:DEX"; chat and invites to them go
+  through Steam itself, never through Spacewar). Presence is asked when the tab opens and every 10 s while it's open.
+  A friend's menu: Chat, Invite to my world (only while you're logged in to a `steam:` world), Ignore / Stop ignoring.
+- **Invites.** An invite carries the inviter's world name (32 characters at most) and its `steam:<server id>`; one
+  that names anything else does not decode. The friend sees "<name> invites you to <world>", Join / Not now (A / B),
+  Not now focused; A / Enter / Join count only after its first half second, and while a chat or whisper box is up its
+  keys stay the box's. A newer invite replaces the prompt. Join is the usual join (`Windowed::join` -> `Joiner::start`), so every check
+  applies: dev and test inputs, mods, an edited game, the world's allow and ban lists (its refusal shows as usual,
+  "You're not on this world's list; ask its host" for the allow list). Not now tells the inviter "<name> can't come
+  right now". Steam's own game invite is never used (it would launch Spacewar for someone without RE:DEX).
+- **Chat**, in a window at the bottom right with a tab per friend, unread counts (also on the Friends tab and the
+  friend's row) and a toast per message, as whispers. Text is cleaned like a whisper (control, bidi and zero-width
+  characters out, 120 characters) and sending is limited to 5 every 10 s. It works across worlds and offline while both
+  run RE:DEX; when the friend leaves, their tab stays and the box says "<name> isn't in RE:DEX". This run's lines only
+  (Steam keeps no in-game chat). With a controller alone, A types with Steam's gamepad keyboard, A again sends. A line
+  that didn't go is marked "not sent" with why (not in RE:DEX, sending too fast, the connection failed, Steam's own
+  error); when Steam gives up on a friend's session, the last line sent to them is marked and a toast says so.
+- **Ignore** (the player menu's, now also the friend menu's) drops that Steam account's whispers, chat and invites,
+  and is kept per own Steam account in `<data>/user/ignored-<own steamid>.txt` (one SteamID64 a line, written whole
+  through a temporary file). Ignores made before Steam was up are kept and saved with it. A file with a line that isn't
+  an id, or not UTF-8, is kept aside as `<name>.bad-<time>` and its readable ids count; one that can't be read at all
+  is not written over that run. Ignored friends stay listed, marked "ignored" (unfriending stays Steam's job).
+- **The transport** (`xr_net::friends`): reliable frames (`redex_proto::FriendMsg`, versioned, 512 bytes at most) on
+  channel 7. The link starts only once the window read the Ignore list, and a session is accepted only from a Steam friend who isn't
+  ignored; frames from anyone else, past 10 per
+  10 s from one friend, or that don't decode are dropped.
+- **Tests.** `FakeFriends` stands in for Steam in tests and `mp-tests` builds: `XR_FAKE_FRIENDS=ID:NAME[:STATUS];...`
+  (a STATUS means running RE:DEX) and `XR_FAKE_FRIEND_SAYS=FRAME:ID:chat:TEXT|FRAME:ID:invite:steam:<id> WORLD|
+  FRAME:ID:decline;...`. Both are dev inputs (`XR_FAKE_`): a release run with them stays out of worlds. A headless
+  run answers a fake chat with `XR_MP_FRIEND_REPLY` and joins a fake invite (through `Joiner::start`); see
+  `tests/exec.rs` `a_fake_friends_chat_arrives_and_is_answered` and `invite_join_hits_lockdown`, and the frontend's
+  `online::tests` for the tab, chat, prompt and Ignore. `friends_screenshots` (ignored; `XR_UI_SHOTS=DIR`) renders the
+  panels to PNG.
+
+### Manual Steam check (two PCs, two Steam accounts that are friends)
+
+The real Steam path can't be tested on one PC (one Steam account per PC). Run a release `redex.exe` on both, A in a
+`steam:` world, B anywhere (offline is fine):
+
+1. Each sees the other in the Friends tab, first, with a green dot and their status; a friend not running RE:DEX is
+   greyed.
+2. Chat both ways: the toast, the unread count on the tab, a tab per friend in the chat window; text arrives cleaned.
+3. A invites B: B gets the prompt; Join lands B in A's world ("Joined steam:..."). Not now on another invite: A sees
+   "B can't come right now".
+4. B ignores A: A's chat and invites no longer arrive; restart B: still ignored (`<data>/user/ignored-<B's id>.txt`).
+   Stop ignoring brings them back.
+5. A's world has an allow list without B: B's Join shows "You're not on this world's list; ask its host" and B plays on.
+6. Quit B's redex: within about 10 s A's list shows B as not in RE:DEX and A's chat box says "B isn't in RE:DEX".
+
+If chat or invites never arrive while the world connection works, Steam networking messages between two app-480
+clients don't deliver here; the fallback is to carry chat and invites through the world server (friends on the same
+world only).
+
 ## Testing
 
 `crates/xr-runtime/tests/two_instances.rs` runs the server and two headless games held to real time (`--realtime`)
@@ -261,7 +338,7 @@ The harness needs the `mp-tests` feature (`two_instances` requires it): `--dev-i
 world exist only there. The same goes for exec.rs's world tests (`a_world_peer_becomes_a_puppet`,
 `world_server_sees_the_walk`, `a_character_made_on_x_shows_on_y_after_login`). `make-release` builds without it.
 
-### X and Y together (plan 5 Task 5)
+### X and Y together
 
 Pokémon X and Y players share the world, so the pair also runs as X + Y (scripts `mp-xy-*.txt`, driven by hand with
 `XR_SET_FASHION` and the headless hooks below, now asserted by the tests named at the end of this section; the 100% save also boots in Y's folder, so Y can ride the bike):
@@ -279,7 +356,7 @@ Pokémon X and Y players share the world, so the pair also runs as X + Y (script
   like the others; they need the Y game too (`XR_CCI_Y`, `XR_DATA_Y`, `XR_SAVE_Y`, see the test file) and skip without it. They
   assert the outfit, the bike speed, the whisper and the `reports.jsonl` line.
 
-- **Made characters (start-screen plan 2 Task 13).** `xy_created_looks` (A = X, B = Y) and `xy_created_looks_swapped`
+- **Made characters.** `xy_created_looks` (A = X, B = Y) and `xy_created_looks_swapped`
   (A = Y, B = X): each player is a character made as the creator makes one (`characters.json`, the 100% save in the
   character's folder, Y's in Y's title folder) started with `--character`, two boys whose skin, hair and eyes differ
   from the save's and from each other's. They assert that each game applied its own look, that each sees the other's
@@ -287,7 +364,7 @@ Pokémon X and Y players share the world, so the pair also runs as X + Y (script
   A's look>@3500`, standing in for a boutique) is kept as A's look and reaches B's puppet, and that the server's
   `accounts/` holds each dev id's character, A's in its new clothes.
 - **Girls.** `xy_created_girls`: an X girl and a Y girl, new games in the bedroom, each sees the other dressed on the
-  player set. `xy_created_girls_and_a_third` (final fix wave C1) adds a third girl beside A (`XR_FAKE_PEERS`, which
+  player set. `xy_created_girls_and_a_third` adds a third girl beside A (`XR_FAKE_PEERS`, which
   online is added to the world's players): A sees both dressed (B on the player set, the third on the NPC set) and
   leaves no girl out (`A's view: a/logs/top-cp-seen.png`).
 
@@ -311,7 +388,7 @@ the script clock until `puppets>=1`, `map!=0`, a memory word (`818290C=0`) or th
 - A removed character's copy stays on the server's account (no delete message yet) and still counts toward its 8.
 - A girl puppet can hold the game's second player heap. The game's own change of clothes in place, Mom's mirror in the
   intro (pyjamas to the starting outfit), went through with one on screen holding it (no fault, the player heaps
-  unchanged). A boutique's fitting room cannot meet it (final fix wave I4, a girl in the Laverre boutique, zone 206):
+  unchanged). A boutique's fitting room cannot meet it (a girl in the Laverre boutique, zone 206):
   the game unloads DllField before DllKisekae loads, the field's dress-up loader goes with it (`[0x5E9EE4]` reads 0
   while the field is closed, as in the party menu), and DllKisekae makes its own with both heaps free; the change went
   through and the field came back in the new hat. A dressed girl holding the second heap through a field close (the

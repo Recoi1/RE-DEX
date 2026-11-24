@@ -1,4 +1,4 @@
-//! Multiplayer over the game (plan 5 Task 4): names above the other players on the top screen, the Players list, the
+//! Multiplayer over the game: names above the other players on the top screen, the Players list, the
 //! player menu (Whisper, Add friend, Report), whispers and their log, and the server browser. The runtime hands a
 //! [`View`] over each frame (who is near, where their heads are on the top screen, new whispers, Steam's server list)
 //! and does the [`Request`]s; everything here is drawn by egui over the window, never into the 3DS screens. Every
@@ -12,6 +12,11 @@ use egui::{Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sense, Stroke, Vec
 
 use crate::menus::{self, Menus, ACCENT};
 use crate::settings::Orientation;
+
+#[path = "friends_ui.rs"]
+mod friends_ui;
+pub use friends_ui::{friends_sorted, FRIENDS_AGAIN, INVITE_ARM};
+pub use xr_net::friends::{Friend, FriendMsg, Limiter};
 
 /// A player on our map, as the runtime sees them this frame.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +79,15 @@ pub struct View {
     pub joining: Option<String>,
     /// what Steam's gamepad keyboard gave back (`Request::Type`)
     pub typed: Option<String>,
+    /// Steam friends online, as last asked (`Request::FriendsOpened`)
+    pub friends: Vec<Friend>,
+    /// friends' frames since the last frame, past the link's gate (taken once each, like whispers)
+    pub friend_msgs: Vec<(u64, FriendMsg)>,
+    /// where this Steam account's Ignore list is kept (`<data>/user/ignored-<steamid>.txt`), once Steam is up
+    pub ignore_file: Option<std::path::PathBuf>,
+    /// sends to friends that failed since the last frame: (to, the chat text when it was one, why); a session Steam gave
+    /// up on has no text (taken once each)
+    pub friend_failed: Vec<(u64, Option<String>, String)>,
 }
 
 /// Why a player is reported.
@@ -101,8 +115,20 @@ pub enum Request {
     Search,
     /// join a world: `steam:<id>` or `host:port`
     Join(String),
-    /// Steam's gamepad keyboard for the whisper box (a controller alone), starting from this text
+    /// Steam's gamepad keyboard for the whisper box or the chat (a controller alone), starting from this text
     Type(String),
+    /// chat text to a friend running RE:DEX (cleaned and rate-limited here)
+    FriendChat { to: u64, text: String },
+    /// "Invite to my world": the current (Steam) world's name and `steam:<id>` to this friend
+    Invite { to: u64 },
+    /// Join on a friend's invite: through the usual join, every check of it
+    AcceptInvite { from: u64, connect: String },
+    /// Not now on a friend's invite
+    DeclineInvite { from: u64 },
+    /// the Friends tab is open: ask friends' presence again (on opening, then every FRIENDS_AGAIN)
+    FriendsOpened,
+    /// the Steam accounts ignored now (the friends link refuses their sessions and frames)
+    Ignored(Vec<u64>),
 }
 
 /// One step of the keyboard or a controller in the panels.
@@ -110,6 +136,9 @@ pub enum Request {
 pub enum Nav {
     Up,
     Down,
+    /// tabs: Players nearby / Friends, and the chat's friends
+    Left,
+    Right,
     Accept,
     Back,
 }
@@ -137,23 +166,6 @@ const QUICK: f32 = 0.18;
 pub fn whisper_text(text: &str) -> Option<String> {
     let text: String = text.trim().chars().take(WHISPER_CHARS).collect();
     (!text.is_empty()).then_some(text)
-}
-
-/// At most `max` in `window`: true (and counted) when one more may go now.
-#[derive(Debug, Default)]
-pub struct Limiter(VecDeque<Instant>);
-
-impl Limiter {
-    pub fn allow(&mut self, now: Instant, max: usize, window: Duration) -> bool {
-        while self.0.front().is_some_and(|&t| now.duration_since(t) >= window) {
-            self.0.pop_front();
-        }
-        if self.0.len() >= max {
-            return false;
-        }
-        self.0.push_back(now);
-        true
-    }
 }
 
 /// A point of the top screen (console pixels, 400x240, y down) in the window, given where the presenter put the top
@@ -257,9 +269,11 @@ pub struct Online {
     was_online: Option<bool>,
     /// the world of the last frame (Some once seen): when it changes the panels about its players close
     world: Option<Option<String>>,
-    /// players whose whispers are dropped here, for the rest of the run: (Steam account, or 0 for a test id; world and
-    /// session, what a test id is known by). shortcut: not saved, a friend system's block list will keep it
+    /// players whose whispers, chat and invites are dropped here: (Steam account, or 0 for a test id; world and session,
+    /// what a test id is known by). Steam accounts are kept on disk per own account (friends_ui: load_ignored)
     ignored: Vec<(u64, Option<String>, u32)>,
+    /// the Friends tab, chats and invite prompt
+    fr: friends_ui::FriendsUi,
     nav: Vec<Nav>,
     pub requests: Vec<Request>,
     pub motion: bool,
@@ -292,6 +306,7 @@ impl Default for Online {
             was_online: None,
             world: None,
             ignored: Vec::new(),
+            fr: friends_ui::FriendsUi::default(),
             nav: Vec::new(),
             requests: Vec::new(),
             motion: true,
@@ -319,16 +334,23 @@ impl Online {
     fn toggle_ignore(&mut self, who: &Target, menus: &mut Menus) {
         if self.ignoring(who.session, who.steam, &who.world) {
             self.ignored.retain(|(s, w, id)| if *s != 0 { *s != who.steam } else { !(who.steam == 0 && *w == who.world && *id == who.session) });
-            menus.toast(format!("{}'s whispers come through again", who.name));
+            menus.toast(format!("{} comes through again", who.name));
         } else {
             self.ignored.push((who.steam, who.world.clone(), who.session));
-            menus.toast(format!("Ignoring {}: their whispers are dropped until RE:DEX closes", who.name));
+            menus.toast(if who.steam != 0 {
+                format!("Ignoring {}: their whispers, chat and invites are dropped", who.name)
+            } else {
+                format!("Ignoring {}: their whispers are dropped until RE:DEX closes", who.name)
+            });
+        }
+        if who.steam != 0 {
+            self.ignore_changed();
         }
     }
 
     /// a panel is up that takes the keyboard and the controller from the game (the game itself keeps running)
     pub fn takes_input(&self) -> bool {
-        self.players || self.menu_open || self.whisper_open || self.report_open || self.browser
+        self.players || self.menu_open || self.whisper_open || self.report_open || self.browser || self.fr.menu_open || self.fr.chat_open || self.fr.invite.is_some()
     }
 
     /// a controller's step, done on the next frame
@@ -360,6 +382,9 @@ impl Online {
         self.whisper_open = false;
         self.report_open = false;
         self.browser = false;
+        (self.fr.menu_open, self.fr.chat_open) = (false, false);
+        // the prompt goes too: Not now
+        self.decline_invite();
     }
 
     fn open_menu(&mut self, who: Target, at: Option<Pos2>) {
@@ -368,7 +393,7 @@ impl Online {
     }
 
     fn open_whisper(&mut self, who: Target, pad: bool) {
-        self.menu_open = false;
+        (self.menu_open, self.fr.chat_open) = (false, false);
         self.whisper = Some((who, String::new()));
         self.whisper_open = true;
         self.whisper_focus = true;
@@ -469,7 +494,8 @@ impl Online {
                 steps.push((Nav::Back, false));
             }
             if !typing {
-                for (key, nav) in [(egui::Key::ArrowUp, Nav::Up), (egui::Key::ArrowDown, Nav::Down), (egui::Key::Enter, Nav::Accept), (egui::Key::Space, Nav::Accept)] {
+                let keys = [(egui::Key::ArrowUp, Nav::Up), (egui::Key::ArrowDown, Nav::Down), (egui::Key::ArrowLeft, Nav::Left), (egui::Key::ArrowRight, Nav::Right), (egui::Key::Enter, Nav::Accept), (egui::Key::Space, Nav::Accept)];
+                for (key, nav) in keys {
                     if input.key_pressed(key) {
                         steps.push((nav, false));
                     }
@@ -481,6 +507,9 @@ impl Online {
 
     /// does a step in the panel on top
     fn step(&mut self, nav: Nav, pad: bool, view: &View, menus: &mut Menus) {
+        if self.friend_step(nav, pad, view, menus) {
+            return;
+        }
         if self.report_open {
             let Some(r) = &mut self.report else { return };
             match nav {
@@ -492,6 +521,7 @@ impl Online {
                 }
                 Nav::Accept if r.focus == 4 => self.send_report(menus),
                 Nav::Accept | Nav::Back => self.report_open = false,
+                Nav::Left | Nav::Right => {}
             }
         } else if self.whisper_open {
             // the box is typed into; with a controller, A types with Steam's keyboard, and sends once there is text
@@ -517,6 +547,7 @@ impl Online {
                     self.act(focus, menus, view.online, pad);
                 }
                 Nav::Back => self.menu_open = false,
+                Nav::Left | Nav::Right => {}
             }
         } else if self.browser {
             let rows = self.listed().len();
@@ -529,6 +560,7 @@ impl Online {
                     }
                 }
                 Nav::Back => self.browser = false,
+                Nav::Left | Nav::Right => {}
             }
         } else if self.players {
             // the peers, then Whispers, then Browse servers
@@ -538,6 +570,8 @@ impl Online {
                 Nav::Down => self.focus = (self.focus + 1).min(rows - 1),
                 Nav::Accept => self.pick_row(self.focus, view),
                 Nav::Back => self.players = false,
+                Nav::Right => self.show_friends_tab(true),
+                Nav::Left => {}
             }
         }
     }
@@ -581,6 +615,7 @@ impl Online {
         for note in &view.notes {
             menus.toast(note.clone());
         }
+        self.friends_frame(view, menus);
         for w in &view.whispers {
             if self.ignoring(w.from, w.steam, &view.world) {
                 continue;
@@ -626,6 +661,9 @@ impl Online {
         self.report_panel(ctx, menus);
         self.browser_panel(ctx, view, menus);
         self.log_panel(ctx);
+        self.friend_menu_panel(ctx, view, menus);
+        self.chat_panel(ctx, menus);
+        self.invite_panel(ctx, menus);
     }
 
     /// the names over the players' heads, fading in and out, a click opens the player menu
@@ -706,7 +744,8 @@ impl Online {
         let peers = sorted(&view.peers);
         let rows = peers.len() + 2;
         self.focus = self.focus.min(rows - 1);
-        let mut picked = None;
+        self.fr.focus = self.fr.focus.min(view.friends.len().saturating_sub(1));
+        let (mut picked, mut friend, mut tab) = (None, None, None);
         egui::Area::new(Id::new("players"))
             .anchor(Align2::LEFT_TOP, Vec2::new(12.0 - (1.0 - t) * 36.0, 12.0))
             .interactable(self.players)
@@ -714,7 +753,7 @@ impl Online {
             .show(ctx, |ui| {
                 ui.multiply_opacity(t);
                 card(ui, 280.0, |ui| {
-                    title(ui, "Players nearby", Some(peers.len()));
+                    tab = self.tabs(ui, peers.len());
                     let (status, color) = match (&view.world, view.online) {
                         _ if view.joining.is_some() => (format!("Joining {}\u{2026}", short(view.joining.as_deref().unwrap_or(""), 26)), menus::NOTE),
                         (Some(w), true) => (format!("Online \u{b7} {}", short(w, 30)), Color32::from_rgb(0x3C, 0xB3, 0x71)),
@@ -727,6 +766,10 @@ impl Online {
                         ui.label(RichText::new(status).small().weak());
                     });
                     ui.add_space(4.0);
+                    if self.fr.tab_friends {
+                        friend = self.friend_rows(ui, view);
+                        return;
+                    }
                     if peers.is_empty() {
                         let text = if view.world.is_none() { "Not in a world yet. Browse servers to join one." } else { "No one else on this map yet." };
                         ui.label(RichText::new(text).weak());
@@ -753,6 +796,13 @@ impl Online {
         if let Some(i) = picked {
             self.focus = i;
             self.pick_row(i, view);
+        }
+        if let Some(f) = friend.and_then(|i| friends_sorted(&view.friends).get(i).map(|f| (i, f.steam))) {
+            self.fr.focus = f.0;
+            self.open_friend_menu(f.1);
+        }
+        if let Some(on) = tab {
+            self.show_friends_tab(on);
         }
     }
 
@@ -1473,5 +1523,439 @@ mod tests {
         frame(&ctx, &mut online, &mut menus, &View::default(), &[Nav::Down, Nav::Accept]);
         assert_eq!(online.requests.last(), Some(&Request::Join("steam:7".into())));
         assert!(!online.browser);
+    }
+
+    // ---- friends ------------------------------------------------------------------------------------------------
+
+    const SERENA: u64 = 76_561_197_960_287_934;
+    const CALEM: u64 = 76_561_197_960_287_935;
+    const TIERNO: u64 = 76_561_197_960_287_936;
+
+    fn friend(steam: u64, name: &str, in_redex: bool) -> Friend {
+        Friend { steam, name: name.into(), in_redex, status: in_redex.then(|| "In Kalos".to_string()) }
+    }
+
+    fn friends_view() -> View {
+        View { world: Some("steam:5".into()), online: true, friends: vec![friend(TIERNO, "Tierno", false), friend(SERENA, "Serena", true), friend(CALEM, "calem", true)], ..View::default() }
+    }
+
+    fn quiet() -> (egui::Context, Online, Menus) {
+        let ctx = egui::Context::default();
+        menus::style(&ctx, true, false);
+        let mut menus = Menus::default();
+        menus.motion = false;
+        (ctx, Online { motion: false, ..Online::default() }, menus)
+    }
+
+    fn says(from: u64, text: &str) -> (u64, FriendMsg) {
+        (from, FriendMsg::Chat(text.into()))
+    }
+
+    fn invite(from: u64, world: &str, connect: &str) -> (u64, FriendMsg) {
+        (from, FriendMsg::Invite { world: world.into(), connect: connect.into() })
+    }
+
+    /// Friends running RE:DEX first, then the others (greyed), each by name whatever its case.
+    #[test]
+    fn friends_sorted_in_redex_first() {
+        let names: Vec<String> = friends_sorted(&friends_view().friends).into_iter().map(|f| f.name).collect();
+        assert_eq!(names, ["calem", "Serena", "Tierno"]);
+    }
+
+    /// A tab per friend who wrote, each with its unread count (cleaned like a whisper); showing a tab reads it.
+    #[test]
+    fn chat_tabs_and_unread() {
+        let (ctx, mut online, mut menus) = quiet();
+        let view = friends_view();
+        let msgs = vec![says(SERENA, " hi\u{202E} "), says(CALEM, "yo"), says(SERENA, "there"), says(SERENA, "   ")];
+        frame(&ctx, &mut online, &mut menus, &View { friend_msgs: msgs, ..view.clone() }, &[]);
+        assert_eq!(online.chat_tabs(), [("Serena".to_string(), 2), ("calem".to_string(), 1)]);
+        assert_eq!(online.friends_unread(), 3);
+        assert_eq!((online.fr.chats[0].lines[0].mine, online.fr.chats[0].lines[0].text.as_str()), (false, "hi"), "cleaned like a whisper");
+        online.open_chat(SERENA);
+        frame(&ctx, &mut online, &mut menus, &view, &[]);
+        assert_eq!(online.chat_tabs(), [("Serena".to_string(), 0), ("calem".to_string(), 1)]);
+        // a new line on the tab being read is read at once; on another tab it counts
+        frame(&ctx, &mut online, &mut menus, &View { friend_msgs: vec![says(SERENA, "a"), says(CALEM, "b")], ..view.clone() }, &[]);
+        assert_eq!(online.chat_tabs(), [("Serena".to_string(), 0), ("calem".to_string(), 2)]);
+    }
+
+    /// A friend who stops running RE:DEX while their chat is open: the tab stays, sending is off with a
+    /// reason, and comes back with them.
+    #[test]
+    fn chat_with_friend_who_left() {
+        let (ctx, mut online, mut menus) = quiet();
+        let view = friends_view();
+        frame(&ctx, &mut online, &mut menus, &view, &[]);
+        online.open_chat(SERENA);
+        frame(&ctx, &mut online, &mut menus, &view, &[]);
+        let gone = View { friends: vec![friend(SERENA, "Serena", false)], ..view.clone() };
+        frame(&ctx, &mut online, &mut menus, &gone, &[]);
+        assert!(online.fr.chat_open && online.chat_tabs().len() == 1);
+        assert_eq!(online.chat_blocked().as_deref(), Some("Serena isn't in RE:DEX"));
+        online.fr.chat_text = "hello?".into();
+        online.send_chat(&mut menus);
+        assert!(!online.requests.iter().any(|r| matches!(r, Request::FriendChat { .. })));
+        // off Steam altogether: the same
+        frame(&ctx, &mut online, &mut menus, &View { friends: vec![], ..view.clone() }, &[]);
+        assert!(online.chat_blocked().is_some());
+        frame(&ctx, &mut online, &mut menus, &view, &[]);
+        assert_eq!(online.chat_blocked(), None);
+        online.send_chat(&mut menus);
+        assert_eq!(online.requests.last(), Some(&Request::FriendChat { to: SERENA, text: "hello?".into() }));
+        assert_eq!(online.fr.chats[0].lines.last().map(|l| (l.mine, l.text.as_str())), Some((true, "hello?")));
+        // the send limit of whispers: 5 in 10 s
+        for i in 0..6 {
+            online.fr.chat_text = format!("{i}");
+            online.send_chat(&mut menus);
+        }
+        assert_eq!(online.requests.iter().filter(|r| matches!(r, Request::FriendChat { .. })).count(), WHISPER_MAX);
+    }
+
+    /// A second invite while a prompt is open replaces it; there is never more than one prompt.
+    #[test]
+    fn second_invite_replaces_prompt() {
+        let (ctx, mut online, mut menus) = quiet();
+        let view = friends_view();
+        frame(&ctx, &mut online, &mut menus, &View { friend_msgs: vec![invite(SERENA, "A", "steam:1"), invite(SERENA, "B", "steam:2")], ..view.clone() }, &[]);
+        let shown = |o: &Online| o.fr.invite.as_ref().map(|i| (i.from, i.world.clone(), i.connect.clone()));
+        assert_eq!(shown(&online), Some((SERENA, "B".into(), "steam:2".into())));
+        frame(&ctx, &mut online, &mut menus, &View { friend_msgs: vec![invite(CALEM, "C", "steam:3")], ..view.clone() }, &[]);
+        assert_eq!(shown(&online), Some((CALEM, "C".into(), "steam:3".into())));
+        assert!(online.takes_input());
+    }
+
+    /// Ignore on a friend drops their chat and invites; they stay listed, marked "ignored".
+    #[test]
+    fn ignored_friend_chat_and_invite_dropped_and_marked() {
+        let (ctx, mut online, mut menus) = quiet();
+        let view = friends_view();
+        frame(&ctx, &mut online, &mut menus, &view, &[]);
+        online.open_friend_menu(SERENA);
+        online.friend_act(2, &view, &mut menus);
+        assert_eq!(online.requests.last(), Some(&Request::Ignored(vec![SERENA])));
+        frame(&ctx, &mut online, &mut menus, &View { friend_msgs: vec![says(SERENA, "hi"), invite(SERENA, "w", "steam:1")], ..view.clone() }, &[]);
+        assert!(online.chat_tabs().is_empty() && online.fr.invite.is_none());
+        assert_eq!(online.friend_detail(&view.friends[1]), "ignored");
+        assert!(friends_sorted(&view.friends).iter().any(|f| f.steam == SERENA), "still listed");
+        // their whispers too (the same Ignore)
+        frame(&ctx, &mut online, &mut menus, &View { whispers: vec![Whisper { from: 9, steam: SERENA, name: "Serena".into(), text: "psst".into() }], ..view.clone() }, &[]);
+        assert!(online.log.is_empty());
+    }
+
+    /// The Ignore list is kept per Steam account (`<data>/user/ignored-<steamid>.txt`, one SteamID64 a line) and read
+    /// back at the next start.
+    #[test]
+    fn ignore_survives_reload() {
+        let (ctx, mut online, mut menus) = quiet();
+        let dir = std::env::temp_dir().join(format!("redex_ignore_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("user/ignored-76561197960287930.txt");
+        let view = View { ignore_file: Some(file.clone()), ..friends_view() };
+        frame(&ctx, &mut online, &mut menus, &view, &[]);
+        online.open_friend_menu(SERENA);
+        online.friend_act(2, &view, &mut menus);
+        assert_eq!(std::fs::read_to_string(&file).unwrap().trim(), SERENA.to_string());
+        let (_, mut again, _) = quiet();
+        frame(&ctx, &mut again, &mut menus, &view, &[]);
+        assert!(again.ignoring(0, SERENA, &None));
+        assert_eq!(again.requests.first(), Some(&Request::Ignored(vec![SERENA])), "the link hears the list at start");
+        again.open_friend_menu(SERENA);
+        again.friend_act(2, &view, &mut menus);
+        let (_, mut third, _) = quiet();
+        frame(&ctx, &mut third, &mut menus, &view, &[]);
+        assert!(!third.ignoring(0, SERENA, &None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The panels as the window draws them, over a field screenshot, for the screenshot critique:
+    /// `XR_UI_SHOTS=DIR [XR_UI_BG=<logs dir with top-cp-outside.png and bottom-cp-outside.png>] cargo test -p
+    /// xr-frontend --lib friends_screenshots -- --ignored`. shortcut: the software rasterizer is examples/glass_demo.rs's,
+    /// copied (an example can't reach these panels); share it if a third copy is ever needed.
+    #[test]
+    #[ignore]
+    fn friends_screenshots() {
+        use egui::epaint::Primitive;
+        let Some(dir) = std::env::var_os("XR_UI_SHOTS").map(std::path::PathBuf::from) else { return };
+        std::fs::create_dir_all(&dir).unwrap();
+        let (w, h) = (800usize, 960usize);
+        let read = |p: std::path::PathBuf| -> Option<(usize, Vec<u8>)> {
+            let mut r = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(p).ok()?)).read_info().ok()?;
+            let mut px = vec![0; r.output_buffer_size()?];
+            let info = r.next_frame(&mut px).ok()?;
+            Some((info.width as usize, px))
+        };
+        let bg = std::env::var_os("XR_UI_BG").map(std::path::PathBuf::from);
+        let mut back = vec![[0.09f32, 0.10, 0.12, 1.0]; w * h];
+        if let Some(bg) = bg {
+            for (name, ox, oy) in [("top-cp-outside.png", 0, 0), ("bottom-cp-outside.png", 80, 480)] {
+                let Some((sw, px)) = read(bg.join(name)) else { continue };
+                let sh = px.len() / 4 / sw;
+                for y in 0..sh * 2 {
+                    for x in 0..sw * 2 {
+                        let s = ((y / 2) * sw + x / 2) * 4;
+                        back[(oy + y) * w + ox + x] = [px[s] as f32 / 255.0, px[s + 1] as f32 / 255.0, px[s + 2] as f32 / 255.0, 1.0];
+                    }
+                }
+            }
+        }
+        let shot = |name: &str, online: &mut Online, views: &[View]| {
+            let ctx = egui::Context::default();
+            menus::style(&ctx, true, false);
+            let mut menus = Menus::default();
+            menus.motion = false;
+            let mut textures: HashMap<egui::TextureId, (usize, usize, Vec<Color32>)> = HashMap::new();
+            let mut last = None;
+            for view in views.iter().chain(std::iter::repeat_n(views.last().unwrap(), 3)) {
+                let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(w as f32, h as f32))), ..Default::default() };
+                let top = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 480.0));
+                let mut full = ctx.run_ui(input, |ui| online.ui(ui.ctx(), view, Some(top), Orientation::North, true, true, &mut menus));
+                for (id, delta) in std::mem::take(&mut full.textures_delta.set).into_iter().flat_map(|(id, d)| d.into_iter().map(move |d| (id, d))) {
+                    let egui::ImageData::Color(img) = &delta.image;
+                    match delta.pos {
+                        None => {
+                            textures.insert(id, (img.width(), img.height(), img.pixels.clone()));
+                        }
+                        Some([ox, oy]) => {
+                            let t = textures.get_mut(&id).unwrap();
+                            for y in 0..img.height() {
+                                for x in 0..img.width() {
+                                    t.2[(oy + y) * t.0 + ox + x] = img.pixels[y * img.width() + x];
+                                }
+                            }
+                        }
+                    }
+                }
+                last = Some(full.shapes);
+            }
+            let mut fb = back.clone();
+            for clipped in ctx.tessellate(last.unwrap(), 1.0) {
+                let Primitive::Mesh(mesh) = clipped.primitive else { continue };
+                let (tw, th, tpx) = &textures[&mesh.texture_id];
+                let clip = clipped.clip_rect;
+                for t in mesh.indices.chunks(3) {
+                    let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.vertices[i as usize]);
+                    let area = (b.pos - a.pos).x * (c.pos - a.pos).y - (b.pos - a.pos).y * (c.pos - a.pos).x;
+                    if area.abs() < 1e-6 {
+                        continue;
+                    }
+                    let (min, max) = (a.pos.min(b.pos).min(c.pos).max(clip.min), a.pos.max(b.pos).max(c.pos).min(clip.max));
+                    for y in (min.y.floor().max(0.0) as usize)..(max.y.ceil().min(h as f32) as usize) {
+                        for x in (min.x.floor().max(0.0) as usize)..(max.x.ceil().min(w as f32) as usize) {
+                            let p = Pos2::new(x as f32 + 0.5, y as f32 + 0.5);
+                            let w0 = ((b.pos - p).x * (c.pos - p).y - (b.pos - p).y * (c.pos - p).x) / area;
+                            let w1 = ((c.pos - p).x * (a.pos - p).y - (c.pos - p).y * (a.pos - p).x) / area;
+                            let w2 = 1.0 - w0 - w1;
+                            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                                continue;
+                            }
+                            let uv = a.uv.to_vec2() * w0 + b.uv.to_vec2() * w1 + c.uv.to_vec2() * w2;
+                            let tx = (uv.x * *tw as f32 - 0.5).round().clamp(0.0, *tw as f32 - 1.0) as usize;
+                            let ty = (uv.y * *th as f32 - 0.5).round().clamp(0.0, *th as f32 - 1.0) as usize;
+                            let tex = tpx[ty * tw + tx].to_array();
+                            let d = &mut fb[y * w + x];
+                            let src: [f32; 4] = std::array::from_fn(|k| {
+                                let col = [a, b, c].iter().zip([w0, w1, w2]).map(|(v, f)| v.color.to_array()[k] as f32 / 255.0 * f).sum::<f32>();
+                                tex[k] as f32 / 255.0 * col
+                            });
+                            for k in 0..4 {
+                                d[k] = src[k] + d[k] * (1.0 - src[3]);
+                            }
+                        }
+                    }
+                }
+            }
+            let bytes: Vec<u8> = fb.iter().flat_map(|p| [p[0], p[1], p[2], 1.0].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)).collect();
+            let mut enc = png::Encoder::new(std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{name}.png"))).unwrap()), w as u32, h as u32);
+            enc.set_color(png::ColorType::Rgba);
+            enc.write_header().unwrap().write_image_data(&bytes).unwrap();
+        };
+        let friends = vec![
+            Friend { steam: SERENA, name: "Serena".into(), in_redex: true, status: Some("Kalos Friends \u{b7} In Kalos".into()) },
+            Friend { steam: CALEM, name: "Calem".into(), in_redex: true, status: Some("Playing offline".into()) },
+            Friend { steam: TIERNO, name: "Tierno".into(), in_redex: false, status: None },
+            Friend { steam: 76_561_197_960_287_937, name: "Shauna".into(), in_redex: true, status: Some("In Kalos".into()) },
+            Friend { steam: 76_561_197_960_287_938, name: "Trevor".into(), in_redex: false, status: None },
+        ];
+        let view = View { world: Some("steam:90297831083063301".into()), online: true, peers: vec![peer(4, "Serena", 3.0), peer(3, "Calem", 6.0)], friends, ..View::default() };
+        // the existing panel, for comparison
+        let mut o = Online { motion: false, ..Online::default() };
+        o.toggle_players();
+        shot("online-players-nearby", &mut o, &[view.clone()]);
+        // the Friends tab: one ignored, two new messages from Calem
+        let mut o = Online { motion: false, ..Online::default() };
+        o.toggle_players();
+        o.show_friends_tab(true);
+        o.ignored.push((76_561_197_960_287_937, None, 0));
+        let first = View { friend_msgs: vec![says(CALEM, "are you near Lumiose?"), says(CALEM, "come to Kalos Friends")], ..view.clone() };
+        shot("friends-tab", &mut o, &[first.clone(), view.clone()]);
+        // a chat with two tabs
+        o.open_chat(CALEM);
+        o.fr.chat_text = "on my way".into();
+        let more = View { friend_msgs: vec![says(SERENA, "gg!")], ..view.clone() };
+        o.fr.chats[0].lines.push(friends_ui::ChatLine { mine: true, text: "yes, by the Pok\u{e9}mon Center".into(), failed: None });
+        shot("friends-chat", &mut o, &[more, view.clone()]);
+        // the invite prompt
+        let mut o = Online { motion: false, ..Online::default() };
+        let inv = View { friend_msgs: vec![invite(SERENA, "Kalos Friends", "steam:90297831083063301")], ..view.clone() };
+        shot("friends-invite", &mut o, &[inv, view.clone()]);
+    }
+
+    /// "Invite to my world" sends only while in a Steam world, and only to a friend running RE:DEX.
+    #[test]
+    fn invite_button_only_in_steam_world() {
+        for (world, on, to, ok) in [
+            (None, false, SERENA, false),
+            (Some("127.0.0.1:7777"), true, SERENA, false),
+            (Some("steam:5"), false, SERENA, false),
+            (Some("steam:5"), true, TIERNO, false),
+            (Some("steam:5"), true, SERENA, true),
+            // a friend whose RE:DEX speaks another protocol
+            (Some("steam:5"), true, 76_561_197_960_287_940, false),
+        ] {
+            let (ctx, mut online, mut menus) = quiet();
+            let view = View { world: world.map(String::from), online: on, ..friends_view() };
+            frame(&ctx, &mut online, &mut menus, &view, &[]);
+            online.open_friend_menu(to);
+            online.friend_act(1, &view, &mut menus);
+            assert_eq!(online.requests.contains(&Request::Invite { to }), ok, "{world:?} online {on} to {to}");
+        }
+    }
+
+    /// With a controller alone: right to the Friends tab (presence asked), down and A open the second friend's menu, A
+    /// chats with Steam's keyboard, A sends, B closes; an invite's prompt opens on Not now, takes no A in its first half
+    /// second, then Left and A join; B is Not now.
+    #[test]
+    fn a_controller_alone_goes_through_friends() {
+        let (ctx, mut online, mut menus) = quiet();
+        let view = friends_view();
+        online.toggle_players();
+        frame(&ctx, &mut online, &mut menus, &view, &[]);
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Right]);
+        assert!(online.fr.tab_friends && online.requests.contains(&Request::FriendsOpened));
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Down, Nav::Accept]);
+        assert_eq!(online.fr.menu.map(|m| m.0), Some(SERENA));
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Accept]);
+        assert!(online.fr.chat_open && online.requests.last() == Some(&Request::Type(String::new())));
+        frame(&ctx, &mut online, &mut menus, &View { typed: Some("hey".into()), ..view.clone() }, &[]);
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Accept]);
+        assert_eq!(online.requests.last(), Some(&Request::FriendChat { to: SERENA, text: "hey".into() }));
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Back]);
+        assert!(!online.fr.chat_open && online.players, "back on the list");
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Left]);
+        assert!(!online.fr.tab_friends);
+        frame(&ctx, &mut online, &mut menus, &View { friend_msgs: vec![invite(CALEM, "Calem's", "steam:9")], ..view.clone() }, &[]);
+        let asked = online.requests.len();
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Accept]);
+        assert!(online.fr.invite.is_some() && online.requests.len() == asked, "an A at once is not an answer");
+        online.age_invite(INVITE_ARM);
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Left, Nav::Accept]);
+        assert_eq!(online.requests.last(), Some(&Request::AcceptInvite { from: CALEM, connect: "steam:9".into() }));
+        assert!(online.fr.invite.is_none());
+        frame(&ctx, &mut online, &mut menus, &View { friend_msgs: vec![invite(CALEM, "Calem's", "steam:9")], ..view.clone() }, &[]);
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Back]);
+        assert_eq!(online.requests.last(), Some(&Request::DeclineInvite { from: CALEM }));
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Back]);
+        assert!(!online.takes_input());
+    }
+
+    /// An invite never takes a press that wasn't meant for it: it opens on Not now, A in its first half second does
+    /// nothing, and while the chat or whisper box is up their keys stay theirs (A sends, B closes the box).
+    #[test]
+    fn invite_prompt_ignores_early_and_typing_presses() {
+        let (ctx, mut online, mut menus) = quiet();
+        let view = friends_view();
+        frame(&ctx, &mut online, &mut menus, &view, &[]);
+        online.fr.pad = true;
+        online.open_chat(SERENA);
+        online.fr.chat_text = "omw".into();
+        frame(&ctx, &mut online, &mut menus, &View { friend_msgs: vec![invite(CALEM, "C", "steam:9")], ..view.clone() }, &[]);
+        assert_eq!(online.fr.invite_focus, 1, "Not now");
+        online.age_invite(INVITE_ARM);
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Accept]);
+        assert_eq!(online.requests.last(), Some(&Request::FriendChat { to: SERENA, text: "omw".into() }), "the chat's A");
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Back]);
+        assert!(!online.fr.chat_open && online.fr.invite.is_some(), "B closed the chat, not the prompt");
+        // the prompt answers now; a fresh one (replacing it) is armed again
+        frame(&ctx, &mut online, &mut menus, &View { friend_msgs: vec![invite(SERENA, "S", "steam:8")], ..view.clone() }, &[]);
+        let asked = online.requests.len();
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Left, Nav::Accept]);
+        assert_eq!(online.requests.len(), asked);
+        online.age_invite(INVITE_ARM);
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Accept]);
+        assert_eq!(online.requests.last(), Some(&Request::AcceptInvite { from: SERENA, connect: "steam:8".into() }));
+    }
+
+    /// A chat line the runtime could not send is marked with why; a session Steam gave up on marks the last one sent.
+    #[test]
+    fn failed_chat_line_is_marked() {
+        let (ctx, mut online, mut menus) = quiet();
+        let view = friends_view();
+        frame(&ctx, &mut online, &mut menus, &view, &[]);
+        online.open_chat(SERENA);
+        for text in ["one", "two"] {
+            online.fr.chat_text = text.into();
+            online.send_chat(&mut menus);
+        }
+        frame(&ctx, &mut online, &mut menus, &View { friend_failed: vec![(SERENA, Some("one".into()), "sending too fast".into())], ..view.clone() }, &[]);
+        let failed = |o: &Online| o.fr.chats[0].lines.iter().map(|l| l.failed.clone()).collect::<Vec<_>>();
+        assert_eq!(failed(&online), [Some("sending too fast".to_string()), None]);
+        frame(&ctx, &mut online, &mut menus, &View { friend_failed: vec![(SERENA, None, "connection failed".into())], ..view.clone() }, &[]);
+        assert_eq!(failed(&online), [Some("sending too fast".to_string()), Some("connection failed".to_string())]);
+    }
+
+    fn ignore_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("redex_ignore_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("user")).unwrap();
+        dir
+    }
+
+    /// A malformed or unreadable Ignore file is never overwritten with less: it is kept aside as .bad-<time>, its
+    /// readable ids count, and a BOM is no reason to lose the first id.
+    #[test]
+    fn a_bad_ignore_file_is_kept_aside() {
+        let (ctx, _, mut menus) = quiet();
+        let dir = ignore_dir("bad");
+        let file = dir.join("user/ignored-1.txt");
+        let view = View { ignore_file: Some(file.clone()), ..friends_view() };
+        let bad = |dir: &std::path::Path| std::fs::read_dir(dir.join("user")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).filter(|n| n.contains(".bad-")).count();
+        // a BOM, then fine ids: read whole, nothing set aside
+        std::fs::write(&file, format!("\u{feff}{SERENA}\n{CALEM}\n")).unwrap();
+        let (_, mut o, _) = quiet();
+        frame(&ctx, &mut o, &mut menus, &view, &[]);
+        assert!(o.ignoring(0, SERENA, &None) && o.ignoring(0, CALEM, &None));
+        assert_eq!(bad(&dir), 0);
+        // a line that isn't an id: the file is kept aside, the ids that read stay ignored and are saved again
+        std::fs::write(&file, format!("{SERENA}\nnot an id\n")).unwrap();
+        let (_, mut o, _) = quiet();
+        frame(&ctx, &mut o, &mut menus, &view, &[]);
+        assert!(o.ignoring(0, SERENA, &None));
+        assert_eq!(bad(&dir), 1);
+        assert_eq!(std::fs::read_to_string(&file).unwrap().trim(), SERENA.to_string());
+        // not UTF-8 (UTF-16 from a shell): kept aside, never emptied over
+        std::fs::write(&file, [0xFF, 0xFE, b'1', 0, b'2', 0]).unwrap();
+        let (_, mut o, _) = quiet();
+        frame(&ctx, &mut o, &mut menus, &view, &[]);
+        assert_eq!(bad(&dir), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ignores made before Steam was up (no file yet) are kept when the account's file loads, and saved with it.
+    #[test]
+    fn ignores_before_steam_are_kept_and_saved() {
+        let (ctx, mut online, mut menus) = quiet();
+        let dir = ignore_dir("early");
+        let file = dir.join("user/ignored-2.txt");
+        std::fs::write(&file, format!("{CALEM}\n")).unwrap();
+        frame(&ctx, &mut online, &mut menus, &friends_view(), &[]);
+        online.open_friend_menu(SERENA);
+        online.friend_act(2, &friends_view(), &mut menus);
+        frame(&ctx, &mut online, &mut menus, &View { ignore_file: Some(file.clone()), ..friends_view() }, &[]);
+        assert!(online.ignoring(0, SERENA, &None) && online.ignoring(0, CALEM, &None));
+        let saved: Vec<u64> = std::fs::read_to_string(&file).unwrap().lines().map(|l| l.parse().unwrap()).collect();
+        assert!(saved.contains(&SERENA) && saved.contains(&CALEM), "{saved:?}");
+        assert_eq!(online.requests.last(), Some(&Request::Ignored(saved)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

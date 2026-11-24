@@ -1,6 +1,6 @@
 # X's field move models (x-usa-v0.2.0)
 
-Plan 4 Task 1: the reverse engineering that the multiplayer puppets (Task 4) build on; plan 5 Task 1 added the
+The reverse engineering that the multiplayer puppets build on, with the
 appearance, the movement modes and the camera (sections at the end). Read accessors:
 `crates/xr-net/src/x/field.rs`. Test: `field_accessors_follow_a_walk` in `crates/xr-runtime/tests/exec.rs`, with
 the script `scripts/playthrough/mp-field-walk.txt`.
@@ -85,11 +85,11 @@ Its vtable is DllField ro+0x173C4 on foot and DllField ro+0x1A854 on skates. The
 | +0x38 | f32 | speed per frame: 2.571 walking (18/7), 4.5 running (18/4), 4.35 to 6.48 on skates | peek |
 
 `Mode` in field.rs: Skates if +0x24 == 2, Bike if +0x24 == 1, else Run if +0x20 & 0x20, else Walk. The bike was
-found in plan 5 Task 1 (see "Movement modes" below): the same controller class, form 1.
+found (see "Movement modes" below): the same controller class, form 1.
 
 ### Appearance
 
-See "Appearance (plan 5 Task 1)" below: gender and fashion are read live through GameData, and a puppet can be
+See "Appearance" below: gender and fashion are read live through GameData, and a puppet can be
 dressed with any outfit.
 
 ## The move-model pool
@@ -145,7 +145,7 @@ This is the add function NPCs use, and the player's own move model is created th
      fields.
   4. Returns the move model.
 - **Pool full:** it calls code.bin 0x11E864, which loops forever calling a fatal handler. **The game hangs.** It
-  would also write through a null pointer. Task 4 must count free slots itself before calling it (Review Focus 3).
+  would also write through a null pointer. Puppets must count free slots themselves before calling it.
 - **Callers:**
   - the zone NPC loader, code.bin 0x3D6DF0 (call at 0x3D6E9C), which DllField reaches through its import stub
     DllField+0x4718;
@@ -173,7 +173,7 @@ memory.
   the position changed. If the model is active, it re-syncs the drawn and collision position at +0x114 (code.bin
   0x3D2D44). DllField+0xA9718 calls it (stub DllField+0x1430) to place the player.
 - **code.bin 0x3D07F8 SetPosition(mm, const FieldPos\*).** It writes mm+0xE8 and then syncs +0x114 the same way.
-  (Task 4: its argument is not a vec3 but the field's position object, whose first word is a pointer; see Puppets.)
+  (Its argument is not a vec3 but the field's position object, whose first word is a pointer; see Puppets.)
   DllField import stub DllField+0x2538. Static only: a **hypothesis** that this is the per-frame "set position"
   (eidos's `FLDMMDL_SetPos`).
 - Walking NPCs are driven by their movement code (zone entry move permissions → +0x14/+0x18, and the per-frame
@@ -213,7 +213,7 @@ code.bin 0x3D037C SetStatusBit(mm, mask) does `status |= mask`. The DllField stu
   2. calls StoreAll(`[fieldctx+0x20]` = the manager);
   3. stores the rest of the field state (code.bin 0x4A1F88, ...).
 
-  It is called from code.bin 0x1D3B98 and 0x1D4060 (the save flows; which UI path is which is open). Task 4's
+  It is called from code.bin 0x1D3B98 and 0x1D4060 (the save flows; which UI path is which is open). The puppet
   sweep has to run before 0x433B20.
 - **LoadAll.** Around code.bin 0x3D6D3x:
   1. DeleteAll (0x3D6D40);
@@ -243,11 +243,11 @@ code.bin 0x3D037C SetStatusBit(mm, mask) does `status |= mask`. The DllField stu
   | +0xF8 | +0x8E4 (12 bytes) |
   | +0x104 | +0x8F0 |
 
-- **Consequence for puppets (Review Focus 1).** A puppet whose status2 has bit 0x100000 set is never written to
+- **Consequence for puppets.** A puppet whose status2 has bit 0x100000 set is never written to
   the save by the game itself. This is a **hypothesis from the code**: no save was made with such a model. Keep
   eidos's sweep before 0x433B20 anyway, and check the saved block against a lone save.
 
-## Hit checks and talk (Review Focus 2): found in Task 4
+## Hit checks and talk
 
 - **Status bit 0x100 = no hit.** The pool search code.bin 0x4AA98C(mgr, &index, flags) returns the next model in use;
   flag 2 skips models with status 0x100, flag 4 skips models with status 0x400 (the player has 0x400). The hit
@@ -259,7 +259,7 @@ code.bin 0x3D037C SetStatusBit(mm, mask) does `status |= mask`. The DllField stu
   has just emptied. A puppet made with it: facing it and pressing A shows nothing and the walk after it is not held.
   The talk check itself (in DllField) was not traced.
 
-## Puppets (plan 4 Task 4)
+## Puppets
 
 Code: `crates/xr-net/src/x/puppet.rs` (what to call), `crates/xr-runtime/src/hooks.rs` (where and how).
 
@@ -328,7 +328,7 @@ A puppet's: id 0x8000 and up, the player model, movement 0, script 2000, the rem
   Center the table held 20 models (2, 50, 41, 26, 3, 5, 71, ...), not 1.
 - The puppet drawn with model 2 wears the default look (red cap), not the local player's outfit.
 
-### How many (Review Focus 3)
+### How many
 
 - **The heap runs out before the pool.** 30 fake players in the Laverre Pokemon Center (9 slots used) gave 17 puppets
   with 6 slots still free, and the game froze: the main thread sat in the fatal loop, from a model's draw setup
@@ -359,7 +359,7 @@ A puppet's: id 0x8000 and up, the player model, movement 0, script 2000, the rem
 From the save (MyStatus 0x14000 + 0x05) at boot (`xr_net::x::gender`), sent as the first appearance byte. A live path
 to MyStatus is still not known.
 
-### Saving (Review Focus 1)
+### Saving
 
 - StoreAll 0x4AAE64 has one caller, the save 0x433B20 (`StoreAll([fieldctx+0x20], fieldctx)`, the block at
   `*fieldctx + 0x130C`).
@@ -371,7 +371,7 @@ to MyStatus is still not known.
 - Two separate runs, one with puppets and one without, save different bytes for the wandering NPCs (their facing,
   grid position and +0x8C4 state): the extra guest work shifts the game's timing. Their ids and count are the same.
 
-### Fix round 1 findings
+### Later findings
 
 - **The field disappears for a few ticks**, and puppets must survive it:
   - in a wild battle DllField unloads and comes back with the same pool, the puppets still in it;
@@ -403,7 +403,7 @@ to MyStatus is still not known.
   | Aquacorde 8 | 926,268 | 533,132 |
   | Route 2 259 | 1,127,164 | 574,560 |
 
-  The lowest is 0.80 MB free with 8 puppets (Shalour). Each heap on its own (final review fix, 2026-11-19; free,
+  The lowest is 0.80 MB free with 8 puppets (Shalour). Each heap on its own (measured 2026-11-19; free,
   then the largest block, with 8 puppets):
 
   | Map | 0x14B | 0x14C |
@@ -432,7 +432,7 @@ to MyStatus is still not known.
   that still holds the puppet.
 - **Swaps.** With more than 8 players, a nearest-8 swap happens at most once every 30 ticks (about a second).
 
-### Fix round 2
+### More findings
 
 - **Zone NPC ids in X's data.** The zone files (romfs a/0/1/2, a GARC of 361 LZ11 "ZO" files) were scanned. Section 1
   (offset at +0x08) starts with u32 length, u8 furniture count, u8 NPC count, u8 warps, u8 triggers, u32, then
@@ -456,12 +456,12 @@ to MyStatus is still not known.
   `field::slots` still validates it.
 - **A poisoned lock** (a panic while holding the puppets) is taken anyway and logged once (`hooks::try_puppets`).
 
-## Motions (plan 4 Task 5)
+## Motions
 
 **SetMotion (code.bin 0x3D6FF0) sets an action command**, not an animation: it calls DllField text+0x49428
 (through the import stub code.bin 0x19AEBC) with the model's action object (mm+0x8F4), the code (below 0xD4) and a
 direction from the byte table at code.bin 0x542F14 (`1 0 3 2 7 6 5 4`). So SetMotion's own directions are **0 down,
-1 up, 2 left, 3 right**; Task 4 passed the facing (0 up, 1 down), which turned a puppet's back to the camera when it
+1 up, 2 left, 3 right**; the first version passed the facing (0 up, 1 down), which turned a puppet's back to the camera when it
 faced down. The action state is the u32 at mm+0x8FC (1 playing, 2 ended); the u16 halves at mm+0x900 count the
 updates left and the action's length.
 
@@ -484,7 +484,7 @@ SetTransform put it; the screens checked by eye):
 player's speed per frame (walk 18/14, run 18/8), and play 26 (walk in place) or 27 (run in place) while they move,
 set again each time the action ends; they stand (0) after 8 frames without moving.
 
-## Appearance (plan 5 Task 1)
+## Appearance
 
 Accessors: `field::appearance` / `Appearance` (`validate`, `to_bytes`, `from_bytes`) and `puppet::dress`. Tests:
 `appearance_reads_through_gamedata`, `appearance_validates_like_the_game`, `dress_builds_the_players_header`, and
@@ -530,7 +530,7 @@ screen still comes up by 3150 and the keyboard taps at 3300-3400 land unchanged.
   - The new-game girl's dump gives gender 1 and her fashion.
   - The same path held on every map tried: 202, 200 and 2.
 
-### The intro's commit (start-screen plan 2 Task 8: no hook)
+### The intro's commit (no hook)
 
 Found with `XR_INTERP_ALL=1 XR_WATCH` on MyStatus (object 0x08C79C24: +0x0C, +0x38, +0x50) from a save state at
 `new-game.txt` frame 2700, once with the boy and once with `2765 RIGHT 4` (the girl). DllIntro is placed at 0x006A5000,
@@ -550,16 +550,42 @@ its code at +0x180; the offsets below are from its code segment, as in `function
     bits at GameData+0x1058.. and six outfit slots of 0x10 at +0x10C4.. (the default outfit).
 - Boy and girl memory at the `fletchling` checkpoint (GameData+0..+0x62000) differ only in MyStatus +0x0D..+0x0F, the
   outfit, and that clothes block. No event work records the gender: the rival comes from MyStatus at run time. Checked:
-  a girl character over a boy intro (Task 7's pre-field write) meets **Calem and Shauna** outside the house
+  a girl character over a boy intro (the pre-field write) meets **Calem and Shauna** outside the house
   (`art/ref/character-girl-over-boy-intro-rival-calem.png`).
 - **Why no hook:** every commit is DllIntro (a native CRO) calling code.bin through its import thunks. xgame.dll's
   `xr_lookup` resolves those calls to the code.bin function itself, so neither `xr_rt->hooks` (code.bin call sites
   only) nor the runtime's `hook_for` (interpreted call sites only) sees them. No code.bin function commits the choices,
   and no native code.bin call site reaches the setters during the intro. A hook would need the module code generation
   to route import calls through the hook table, which means a rebuild of every player's xgame.dll.
-- **Left to the pre-field write (Task 7):** it sets gender, outfit and the name at +0x50. It does not set the sprite
+- **Left to the pre-field write:** it sets gender, outfit and the name at +0x50. It does not set the sprite
   bytes +0x0E/+0x0F, the name copy at +0x6A, or the clothes block at GameData+0x1058, so these stay the intro's
   gender's and name's.
+
+### The intro's sequence (and how `--character` skips its questions)
+
+Read from DllIntro relocated in memory (an `XR_MEMDUMP=6A5000` dump while it is loaded; the jump tables and import
+stubs are only filled in at load) and checked with `XR_PEEK` on the work every 25 frames of `new-game.txt`.
+
+- **The work** (heap, X 0x081FB234; its vtable is DllIntro rodata + 0x9E0): +0x18 the game manager, +0x1C the message
+  window, +0x20 the 3D scene, +0x24 the sequence state, +0x28 the camera frame (f32), +0x2C/+0x30 counters (f32), +0x34
+  a flag, +0x3C the gender last shown, +0x3D the gender, +0x40 the look (0..2), +0x44.. the name entry's parameters
+  (+0x60 "entered"), +0x64 the name's StrBuf. Its constructor commits gender 0, look 0 (code+0x6E84) at once.
+- **The sequence** (code+0x6FC0, 40 states, run once a frame): 0x0A the mirrors are up; 0x0B the boy/girl question;
+  0x0C the pick; 0x0E..0x10 the look question and the pick (B goes back through 0x12); 0x13..0x14
+  the name question; 0x15 fade out; 0x16..0x17 the screens handed over (code.bin 0x358EA4,
+  then 0x4974CC until ready, 0x38B898, 0x358E40); 0x17 commits gender and look (code+0x6E84) and calls DllStrInput
+  (code.bin 0x3503A8 with the parameters); 0x18, back from it, copies the name to MyStatus if entered and rebuilds the
+  screens; 0x19..0x1B the mirror shows the player, a model built from MyStatus's outfit (scene commands 0x0A/0x0B), the
+  camera rising to its stop 13 (rodata + 0x218 holds the stops); 0x1B registers the name for the messages (message
+  command 0x14, code+0x5094) and says the name back; 0x1C the name confirm with yes/no; 0x1D reads the
+  answer (the window's +0x1E: 0 yes, 1 no): yes fills the starting clothes (code.bin 0x43582C) and goes on to 0x1E,
+  no goes back to 0x0B through a fade (0x20, 0x21); 0x1E.. the farewell, 0x27 the end.
+- **The skip** (`crates/xr-runtime/src/intro.rs`, from the per-frame hook): at 0x0A the gender goes into +0x3C/+0x3D and
+  the sequence to 0x15; at 0x17, once 0x4974CC says ready, it does 0x17's calls, commits the look through code+0x6E84
+  (the intro look nearest the character's, then the character's own outfit when no intro look is it), sets the StrBuf
+  to the name (code.bin 0x38E478) and "entered", and goes to 0x18 without DllStrInput; at 0x1B with the camera at its
+  stop it registers the name, answers yes and goes to 0x1D. MyStatus and the clothes block are then the intro's own
+  writes. X's and Y's DllIntro have the same function table.
 
 ### The game's ranges: code.bin 0x16A4F8(out, in, gender)
 
@@ -600,7 +626,7 @@ Bits the game never reads are 0 in every save seen, and `validate` requires 0 th
 - a girl's w0 31, w1 30..31, w2 31 and w3 8..31.
 
 The game does not check skin, and the skin value goes straight into the dress-up body. `validate` therefore allows
-only the values seen in saves, 1 to 3 (fix round 1). Widen it only after skin 0 has been tried live.
+only the values seen in saves, 1 to 3. Widen it only after skin 0 has been tried live.
 
 ### How the field dresses the player
 
@@ -651,7 +677,7 @@ only the values seen in saves, 1 to 3 (fix round 1). Widen it only after skin 0 
 - **DllField+0x52428 RequestDressUp(sys, param):** if a slot already holds the outfit, it sets that slot's request to
   1. Otherwise it takes a free slot, copies the parameter in and sets request 1.
 - **DllField+0x5250C ReleaseDressUp(sys, param):** sets the matching slot's request to 4 (unload), or to 0 if the slot
-  was unloading. Run live since plan 5 Task 3 (below, "Dressed puppets").
+  was unloading. Run live (below, "Dressed puppets").
 - In the Pokemon Center, slot 0 held the player's outfit (state 3) and the other 19 were free.
 
 ### Proved live
@@ -666,7 +692,7 @@ that folder. In each run one puppet (model 2, XR_FAKE_PEERS=1) stood in the Lave
 | `dress()` with Red's fashion (another outfit), no request | **not drawn**: no slot holds the outfit, and the model heaps did not change in 640 frames |
 | `dress()` with Red's fashion, after RequestDressUp(sys, param) | **dressed as Red**: blond hair, red cap with sunglasses, blue jacket (`puppet-default-vs-other-outfit-zoom.png`). Slot 1 took the request |
 
-### Contract for Task 3 (applying an appearance to a puppet)
+### Contract for applying an appearance to a puppet
 
 1. Call `Appearance::from_bytes(peer bytes)`. If it returns None, keep `extra` 0 (the plain boy or girl look).
 2. Pick the model: `MODEL_GIRL` if gender is 1, else `MODEL_BOY`. M1's residency fallback still applies: an absent
@@ -689,7 +715,7 @@ that folder. In each run one puppet (model 2, XR_FAKE_PEERS=1) stood in the Lave
      than with an undressed puppet;
    - how long a load takes. It had finished by the first checkpoint, 40 frames later.
 
-### Dressed puppets (plan 5 Task 3)
+### Dressed puppets
 
 Code: `Puppets::spawn` and `release_unworn` in `crates/xr-net/src/x/puppet.rs`.
 
@@ -701,7 +727,7 @@ Code: `Puppets::spawn` and `release_unworn` in `crates/xr-net/src/x/puppet.rs`.
   copy too); state 5 (unloading) sets request 0; any other state sets request 4 (unload).
 - **The parameter compare** (code.bin 0x4681C4, used by Request, Release and the draw lookup): header bytes 0, 1, 2
   and 3, the u16 at +4 and +6 (+4 not -1: equal without the body), then the 0x40-byte body.
-- **What xr-net does (fix round 1):**
+- **What xr-net does:**
   - a puppet's parameter has header byte 3 = 0 (`PUPPET_MARK`, the value the game's NPC default path writes; the
     player's is 1). So a puppet never shares a slot with the player, not even a twin in the player's exact outfit
     (live: 2 slots for one outfit, the twin drawn in it, `task3-shots/twin-pc-outside-gone.png`). The game's release
@@ -726,7 +752,7 @@ Code: `Puppets::spawn` and `release_unworn` in `crates/xr-net/src/x/puppet.rs`.
   0x0828BDE0 outside), with only the player's slot in the new one. xr-net's list of asked-for outfits is keyed by the
   system and starts over. After a twin (its own slot) left on the new map, the pool, the dress-up slots and both
   model heaps equalled the same run without any puppet (694,960 / 632,108).
-- **Across a wild battle (fix round 2).** Traced with a watch on a dressed puppet's draw binding and its slot
+- **Across a wild battle.** Traced with a watch on a dressed puppet's draw binding and its slot
   (DllField interpreted, `mp-puppet-battle.txt`):
   1. At the field close the game takes **every** move model's draw binding down first: code.bin 0x3D6818-0x3D6854
      clear mm+0xA04, +0xA08 and +0xA10, the draw handler, for the puppets too.
@@ -753,7 +779,7 @@ Code: `Puppets::spawn` and `release_unworn` in `crates/xr-net/src/x/puppet.rs`.
   save and carry status 2's NO_SAVE, so it never reaches the file (`a_save_with_puppets_reloads_clean` runs with
   two dressed bikers).
 
-### The bicycle on a puppet (plan 5 Task 3, time-boxed: not solved)
+### The bicycle on a puppet (time-boxed, not solved)
 
 How the player mounts, found by a watch on the player's mm+0xA24 (`XR_INTERP_MODULES=DllField`), during
 `mp-field-modes.txt`'s ride. The mount code is at DllField+0xABB7C..0xABC30 (r4 = a ride-state object: +8 manager,
@@ -773,15 +799,15 @@ DllField's import stubs were resolved with XR_PEEK at run time (DllField at 0x00
 Tried on a dressed puppet (an experiment build, not committed), with motion 77: mm+0xA24 = 3; plus the status bits;
 plus steps 1 and 2; plus the attachment entry (it returned entries 12 to 15). Indoors and outdoors (map 200), and
 spawned after the player had mounted (so the bike's resource was loaded): **always the riding pose with no bicycle**
-(`task3-shots/bike-*.png` in the plan 5 sdd folder). Still to look at: what fills and draws an attachment entry
+(shots not in the repo). Still to look at: what fills and draws an attachment entry
 (its 0x15C bytes after registration), and whether the bicycle is the player model's own mesh switched by the draw
 handler. An attachment entry must also be released before its puppet is deleted, which was not traced.
 
 **Shipped:** a puppet on the bike runs in place (motion 27) at the bike's speed, the ledger's fallback.
 
-**Skates (fix round 1, time-boxed):** SetMotion(mm, 210, dir) on a skating puppet (the player's skating code) was
+**Skates (time-boxed):** SetMotion(mm, 210, dir) on a skating puppet (the player's skating code) was
 called every step (XR_PUPPET_TRACE shows it), but frames 1440-1488 of the run were pixel for
-pixel the frames of the same run with the run-in-place motion (`task3-shots/skates-*.png`): without the skate form the
+pixel the frames of the same run with the run-in-place motion (shots not in the repo): without the skate form the
 model shows no skating pose. Shipped: skating puppets run in place (27) at the skates' speed.
 
 ### Known limits (accepted)
@@ -791,7 +817,7 @@ model shows no skating pose. Shipped: skating puppets run in place (27) at the s
 - **The twin path was proven across a map change only**, where the game rebuilds the player in the new outfit. A
   mid-map change (a boutique) was not run; with separate slots the game's release cannot reach a puppet's parts.
 
-## Movement modes (plan 5 Task 1)
+## Movement modes
 
 Measured from the 100% save outside the Laverre City Pokemon Center, with `mp-field-modes.txt` and a longer script
 with memory dumps at each checkpoint. The bike is the item wheel's RIGHT slot: press Y, then RIGHT.
@@ -821,7 +847,7 @@ with memory dumps at each checkpoint. The bike is the item wheel's RIGHT slot: p
   - The likely places to try: Coumarine's harbour (south of the lower town), or any route with water reachable after
     a Fly.
 
-## The field camera (plan 5 Task 1)
+## The field camera
 
 Accessor: `field::camera(g, data) -> Option<ViewProj>`, then `ViewProj::project([x, y, z]) -> Option<[f32; 2]>`.
 Tests: `camera_projects_onto_the_top_screen` (unit) and `field_appearance_bike_and_camera` (live).

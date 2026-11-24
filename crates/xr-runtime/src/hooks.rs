@@ -161,6 +161,13 @@ unsafe extern "C" fn tick(c: *mut XrCpu) {
         unsafe { GuestCalls::new(c, e) }.write(block, &merged);
         log::log(&format!("character: starting clothes filled at 0x{block:08X} (girl {girl})"));
     }
+    // --character on a new game: the intro's questions answered with the character
+    {
+        let s = &mut unsafe { exec().st() }.sys;
+        let intro = s.cro.modules.iter().rev().find(|m| m.name == "DllIntro").and_then(|m| Some((*m.segments.first()?, *m.segments.get(1)?)));
+        let heap = |rodata: u32| move || crate::intro::find_work(&mut unsafe { exec().st() }.sys.memory, rodata);
+        crate::intro::tick(&mut unsafe { GuestCalls::new(c, e) }, intro, heap(intro.map_or(0, |i| i.1)));
+    }
     // `redex --preview`: the creator's look, changed in place
     if crate::preview::ON.load(Ordering::Relaxed) {
         crate::preview::tick(&mut unsafe { GuestCalls::new(c, e) }, dll_field());

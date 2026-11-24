@@ -1,0 +1,10 @@
+[Unit]
+Description=RE:DEX health check (restarts unhealthy services)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+# the host names come from deploy/central/.env
+EnvironmentFile=/opt/redex/src/deploy/central/.env
+ExecStart=/opt/redex/src/deploy/central/ops/health.sh /opt/redex/src/deploy/central ${ACCOUNTS_HOST} ${WORLD_HOST}

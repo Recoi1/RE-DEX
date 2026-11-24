@@ -1,4 +1,4 @@
-//! The Steam transport (Task 3b): a world server listening on Steam Networking Sockets P2P only (`SteamTransport`, the
+//! The Steam transport: a world server listening on Steam Networking Sockets P2P only (`SteamTransport`, the
 //! game server's SteamID, Steam's relays, ICE off) and the client connecting with `steam:<steamid64>`, logging in
 //! with its Steam ticket and entering a map. The server is a second process (this test binary with
 //! STEAM_P2P_ROLE=server): in one process Steam short-cuts the connection instead of using the relays.

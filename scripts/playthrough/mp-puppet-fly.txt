@@ -1,4 +1,4 @@
-# 100% save (plan 4 Task 4 fix round 1), run with XR_FAKE_PEERS=30: fly.txt's inputs (Fly to Lumiose, Coumarine,
+# 100% save, run with XR_FAKE_PEERS=30: fly.txt's inputs (Fly to Lumiose, Coumarine,
 # Anistar, Shalour, Snowbelle and Vaniville) with 8 puppets in each city. The runner logs each checkpoint's puppets and
 # the free space of the field's model heaps ("heap NAME: ..."); the game must not hang.
 400 A

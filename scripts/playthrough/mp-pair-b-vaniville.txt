@@ -1,5 +1,5 @@
-# plan 4 Task 5, player B of the two-instance harness: a second trainer (the new game's chain, saved in the house in
-# Vaniville by new-game-shauna.txt; Task 7's data-p3t7\save-shauna). Continue, out of the door, Mom's send-off, then wait
+# Player B of the two-instance harness: a second trainer (the new game's chain, saved in the house in
+# Vaniville by new-game-shauna.txt). Continue, out of the door, Mom's send-off, then wait
 # for A to land. Walk a loop (3 tiles down, 1 left, 3 up, 1 right: the door path), leave north up Route 1 (UP held until
 # the map changes), come back down, and stay until A has gone (A's process ended).
 400 A

@@ -1,4 +1,4 @@
-# 100% save (plan 4 Task 4, Review Focus 2), run with XR_FAKE_PEERS=1 XR_FAKE_STILL=1 XR_FAKE_AT=480,507: a puppet stands
+# 100% save, run with XR_FAKE_PEERS=1 XR_FAKE_STILL=1 XR_FAKE_AT=480,507: a puppet stands
 # on the tile left of the player outside the Pokemon Center. The player faces it, presses A (talk) and walks left
 # through it: a puppet that blocked or ran a script would stop the walk.
 400 A

@@ -1,4 +1,4 @@
-# plan 4 Task 5, player A of the two-instance harness (crates/xr-runtime/tests/two_instances.rs): a copy of the 100%
+# Player A of the two-instance harness (crates/xr-runtime/tests/two_instances.rs): a copy of the 100%
 # save flies to Lumiose City (map 67) and waits there for player B. Each watch checkpoint logs the puppet's place in the
 # pool ("puppets watchNN: ... at X,Y,Z") and saves both screens while B walks. Then B leaves the map (the puppet must go),
 # comes back, and A SAVEs with the puppet in the room (XR_PUPPET_SAVECHECK=1 compares the move-model save with and

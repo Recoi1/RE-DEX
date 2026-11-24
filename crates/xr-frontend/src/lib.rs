@@ -7,6 +7,7 @@
 mod audio;
 mod emulation;
 mod framestats;
+mod gamebanana;
 mod gamepad;
 mod gui;
 #[allow(dead_code)]
@@ -796,7 +797,7 @@ impl<G: Game> App<G> {
                 self.online.toggle_players();
             } else if self.online.takes_input() {
                 let pad = &self.settings.pad;
-                let nav = [(pad.up, online::Nav::Up), (pad.down, online::Nav::Down), (pad.a, online::Nav::Accept), (pad.b, online::Nav::Back)];
+                let nav = [(pad.up, online::Nav::Up), (pad.down, online::Nav::Down), (pad.left, online::Nav::Left), (pad.right, online::Nav::Right), (pad.a, online::Nav::Accept), (pad.b, online::Nav::Back)];
                 if let Some(&(_, nav)) = nav.iter().find(|(bound, _)| *bound == button) {
                     self.online.nav(nav);
                 }
@@ -1515,7 +1516,7 @@ mod tests {
         assert!(!presents_now(false, false, true, ms(30)), "nor while a slow refresh runs: one present a refresh, as before");
         assert!(presents_now(false, false, false, FRAME_TIME), "a paused game's menus still get a console frame's presents");
         assert!(!presents_now(false, false, false, ms(5)));
-        // a 60 or 75 Hz monitor presents once a refresh, as before M0; 90 Hz and up repeat
+        // a 60 or 75 Hz monitor presents once a refresh, as before; 90 Hz and up repeat
         assert!(!repeats_at(vblank_of(Some(60_000))) && !repeats_at(vblank_of(Some(75_000))));
         assert!(repeats_at(vblank_of(Some(90_000))) && repeats_at(vblank_of(Some(200_000))) && repeats_at(vblank_of(Some(240_000))));
     }

@@ -83,8 +83,18 @@ pub struct Memory {
     /// per 4 KiB page, Permission bits plus MAPPED, 0 when unmapped
     pages: Vec<u8>,
     /// ranges the host GPU drew that guest memory doesn't have yet, start to end, apart and in order
-    /// written back right after the command list or transfer that drew them (System::flush_gpu_guards), TODO(phase 2): at the cpu access, thru page protection
+    /// eager (no `lazy`): written back right after the command list or transfer that drew them (System::flush_gpu_guards)
+    /// lazy: written back when something other than the GPU first touches them (see `lazy`)
     guards: BTreeMap<VAddr, VAddr>,
+    /// GPU coherency phase 2 (System::lazy_gpu): the guarded pages are LAZY, and the host protects them so native code's
+    /// first access faults into the runtime's handler (`fault`); every Rust access goes thru `prepare`. Both write the
+    /// range back (`settle`) before the access goes on, so whoever looks finds what the eager write-back would have left
+    lazy: Option<LazyGpu>,
+    /// GuestMemory's in progress (the GPU's own accesses): they see memory as it is, which the GPU's surfaces account
+    /// for; a guarded page they touch is opened (unprotected) till the last one ends
+    raw: u32,
+    /// page numbers opened while `raw`, protected again when it drops to 0 if still LAZY
+    opened: Vec<u32>,
 
     /// mappings by base addr, for svcQueryMemory and unmapping
     mappings: BTreeMap<VAddr, Mapping>,
@@ -100,6 +110,17 @@ pub struct Memory {
 
 /// a page has a mapping, whatever its permissions
 const MAPPED: u8 = 0x80;
+/// a page a guard covers, in lazy mode: its bytes may be behind what the host GPU drew (see Memory::lazy)
+const LAZY: u8 = 0x40;
+/// a LAZY page a raw (GPU) access unprotected for the time being
+const OPEN: u8 = 0x20;
+
+/// The GPU that settles guarded ranges in lazy mode. A raw pointer: Memory and the Gpu are siblings in System, which
+/// must stay put once lazy mode is on (xr-runtime's executor keeps it in a static).
+pub struct LazyGpu {
+    pub gpu: *mut zakuro_gpu::Gpu,
+    pub linear_base: u32,
+}
 const READ: u8 = Permission::READ.bits() as u8;
 const WRITE: u8 = Permission::WRITE.bits() as u8;
 
@@ -144,6 +165,7 @@ impl Memory {
         }
         self.pages.fill(0);
         self.guards.clear();
+        self.opened.clear();
         self.faults.clear();
         for mapping in state.mappings {
             if mapping.base as u64 + mapping.size as u64 > 1 << 32 {
@@ -167,6 +189,9 @@ impl Memory {
             region,
             pages: vec![0; PAGE_TABLE_ENTRIES],
             guards: BTreeMap::new(),
+            lazy: None,
+            raw: 0,
+            opened: Vec::new(),
             mappings: BTreeMap::new(),
             faults: BTreeMap::new(),
             write_log: None,
@@ -246,6 +271,7 @@ impl Memory {
         if size == 0 {
             return;
         }
+        self.settle_all();
         // whatever was mapped here goes first, its bytes back where they belong
         if (0..size / PAGE_SIZE).any(|page| self.has(vaddr + page * PAGE_SIZE, MAPPED)) {
             self.unmap(vaddr, size);
@@ -327,6 +353,7 @@ impl Memory {
     }
 
     pub fn unmap(&mut self, vaddr: VAddr, size: u32) {
+        self.settle_all();
         // map rounds a size up to pages, so unmapping the same size has to too
         let size = size.saturating_add(PAGE_MASK) & !PAGE_MASK;
         let end = vaddr as u64 + size as u64;
@@ -454,6 +481,7 @@ impl Memory {
         if !self.has(vaddr, MAPPED) || !self.has(vaddr.wrapping_add(3), MAPPED) {
             return false;
         }
+        self.prepare(vaddr, 4);
         // safe bc both pages it touches are mapped, so committed
         unsafe { (self.base.wrapping_add(vaddr as usize) as *mut u32).write_unaligned(value.to_le()) };
         true
@@ -478,6 +506,7 @@ impl Memory {
 
     /// copies a block of guest memory out page by page so it can straddle mappings, unmapped pages read as zero
     pub fn read_bytes(&mut self, vaddr: VAddr, out: &mut [u8]) {
+        self.prepare(vaddr, out.len());
         let mut done = 0usize;
         while done < out.len() {
             let addr = vaddr.wrapping_add(done as u32);
@@ -495,6 +524,7 @@ impl Memory {
     }
 
     pub fn write_bytes(&mut self, vaddr: VAddr, data: &[u8]) {
+        self.prepare(vaddr, data.len());
         let mut done = 0usize;
         while done < data.len() {
             let addr = vaddr.wrapping_add(done as u32);
@@ -519,6 +549,7 @@ impl Memory {
         if !pages.all(|page| self.pages[page as usize] & MAPPED != 0) {
             return None;
         }
+        self.prepare(vaddr, len as usize);
         // safe bc every page of it is committed, &mut self keeps other borrows off
         Some(unsafe { std::slice::from_raw_parts_mut(self.base.wrapping_add(vaddr as usize), len as usize) })
     }
@@ -571,6 +602,7 @@ impl Memory {
                 }
             }
             for vaddr in shown {
+                self.prepare((vaddr & !PAGE_MASK) + offset as u32, chunk);
                 // safe bc a mapped page is committed and the chunk stays in it
                 unsafe { std::ptr::copy_nonoverlapping(data[done..].as_ptr(), self.host_page(vaddr).add(offset), chunk) };
             }
@@ -586,7 +618,9 @@ impl Memory {
             let at = paddr.wrapping_add(done as u32);
             let offset = (at & PAGE_MASK) as usize;
             let chunk = (PAGE_SIZE as usize - offset).min(out.len() - done);
-            if let Some(vaddr) = aliases(&self.mappings, at).next() {
+            let shown = aliases(&self.mappings, at).next();
+            if let Some(vaddr) = shown {
+                self.prepare((vaddr & !PAGE_MASK) + offset as u32, chunk);
                 // safe, same as in write_physical
                 unsafe { std::ptr::copy_nonoverlapping(self.host_page(vaddr).add(offset), out[done..].as_mut_ptr(), chunk) };
             } else if let Some(slice) = self.phys.host_slice_mut(at, chunk as u32) {
@@ -612,6 +646,7 @@ impl Memory {
     /// every mapped page's bytes into the physical buffers, for a saved state; a page several mappings show keeps the
     /// bytes its copies split from there (see map, unmap merges against them), each copy's own are `alias_copies`
     pub fn flush_to_physical(&mut self) {
+        self.settle_all();
         let mappings: Vec<Mapping> = self.mappings.values().copied().collect();
         for mapping in mappings {
             for page in 0..mapping.size / PAGE_SIZE {
@@ -672,11 +707,13 @@ impl Memory {
     /// xr-hle phase 1: it comes down right after the command list or transfer (System::flush_gpu_guards), not at the cpu's next read
     pub fn guard_cpu_reads(&mut self, vaddr: VAddr, len: u32) {
         add_guard(&mut self.guards, vaddr, len);
+        self.mark_lazy(vaddr, len);
     }
 
     /// same for writes, see guard_cpu_reads
     pub fn guard_cpu_writes(&mut self, vaddr: VAddr, len: u32) {
         add_guard(&mut self.guards, vaddr, len);
+        self.mark_lazy(vaddr, len);
     }
 
     /// the guarded ranges, start to end, unguarded now
@@ -686,8 +723,9 @@ impl Memory {
 
     /// the word at addr when a cpu read there would just read it
     pub fn plain_read32(&self, addr: VAddr) -> Option<u32> {
-        // safe bc both pages it touches are mapped readable, so committed
-        (self.has(addr, READ) && self.has(addr.wrapping_add(3), READ))
+        let plain = |a: VAddr| self.pages[(a >> PAGE_BITS) as usize] & (READ | LAZY) == READ;
+        // safe bc both pages it touches are mapped readable, so committed (and not LAZY, so not protected)
+        (plain(addr) && plain(addr.wrapping_add(3)))
             .then(|| u32::from_le(unsafe { (self.base.wrapping_add(addr as usize) as *const u32).read_unaligned() }))
     }
 
@@ -715,8 +753,190 @@ impl Memory {
     /// the host addr of a cpu access of N bytes at addr, when it stays in one page that has bits
     #[inline(always)]
     fn fast<const N: usize>(&self, addr: VAddr, bits: u8) -> Option<*mut u8> {
-        ((addr & PAGE_MASK) as usize <= PAGE_SIZE as usize - N && self.has(addr, bits)).then(|| self.base.wrapping_add(addr as usize))
+        let page = self.pages[(addr >> PAGE_BITS) as usize];
+        ((addr & PAGE_MASK) as usize <= PAGE_SIZE as usize - N && page & (bits | LAZY) == bits).then(|| self.base.wrapping_add(addr as usize))
     }
+
+    // GPU coherency phase 2 (lazy write-back), see `lazy`
+
+    /// lazy mode on: guarded ranges stay on the GPU till something other than the GPU touches them
+    pub fn set_lazy(&mut self, lazy: LazyGpu) {
+        self.lazy = Some(lazy);
+    }
+
+    pub fn is_lazy(&self) -> bool {
+        self.lazy.is_some()
+    }
+
+    /// the bits Memory keeps for the page `a` is in (permissions, MAPPED, LAZY, OPEN), for fault messages
+    pub fn page_bits(&self, a: VAddr) -> u8 {
+        self.pages[(a >> PAGE_BITS) as usize]
+    }
+
+    /// raw (GPU) accesses in progress, for tests
+    #[cfg(test)]
+    pub(crate) fn raw_depth(&self) -> u32 {
+        self.raw
+    }
+
+    /// marks the mapped pages of a new guard LAZY, protected unless a raw access has them open
+    fn mark_lazy(&mut self, vaddr: VAddr, len: u32) {
+        if self.lazy.is_none() || len == 0 {
+            return;
+        }
+        let (first, last) = page_span(vaddr, len as usize);
+        let fresh: Vec<u32> = (first..=last).filter(|&p| self.pages[p as usize] & (MAPPED | LAZY) == MAPPED).collect();
+        for &p in &fresh {
+            self.pages[p as usize] |= if self.raw > 0 { LAZY | OPEN } else { LAZY };
+        }
+        if self.raw > 0 {
+            self.opened.extend(fresh);
+        } else {
+            self.protect_pages(&fresh, Permission::empty());
+        }
+    }
+
+    /// protects (no permission) or unprotects sorted page numbers, a call per run of neighbours
+    fn protect_pages(&self, pages: &[u32], permission: Permission) {
+        let mut i = 0;
+        while i < pages.len() {
+            let mut j = i + 1;
+            while j < pages.len() && pages[j] == pages[j - 1] + 1 {
+                j += 1;
+            }
+            self.region.protect(pages[i] << PAGE_BITS, (j - i) as u32 * PAGE_SIZE, permission);
+            i = j;
+        }
+    }
+
+    /// before Rust code touches [vaddr, vaddr+len) thru the host pointer: a raw (GPU) access opens LAZY pages there,
+    /// anyone else settles them
+    #[inline]
+    fn prepare(&mut self, vaddr: VAddr, len: usize) {
+        if self.guards.is_empty() || self.lazy.is_none() || len == 0 {
+            return;
+        }
+        let (first, last) = page_span(vaddr, len);
+        if (first..=last).any(|p| self.pages[p as usize] & (LAZY | OPEN) == LAZY) {
+            if self.raw > 0 {
+                self.open(first, last);
+            } else {
+                self.settle(vaddr, len);
+            }
+        }
+    }
+
+    /// unprotects the LAZY pages first..=last for the raw accesses in progress
+    fn open(&mut self, first: u32, last: u32) {
+        let closed: Vec<u32> = (first..=last).filter(|&p| self.pages[p as usize] & (LAZY | OPEN) == LAZY).collect();
+        for &p in &closed {
+            self.pages[p as usize] |= OPEN;
+        }
+        self.protect_pages(&closed, Permission::RW);
+        self.opened.extend(closed);
+    }
+
+    /// a raw (GPU) access starts, see GuestMemory
+    pub(crate) fn begin_raw(&mut self) {
+        self.raw += 1;
+    }
+
+    /// one ends: at the last one, the pages opened meanwhile that are still LAZY get protected again
+    pub(crate) fn end_raw(&mut self) {
+        debug_assert!(self.raw > 0, "a raw access ended that never began");
+        // a release build stays at 0 rather than wrap, which would leave every later fault opening pages unsettled
+        self.raw = self.raw.saturating_sub(1);
+        if self.raw > 0 || self.opened.is_empty() {
+            return;
+        }
+        let mut opened = std::mem::take(&mut self.opened);
+        opened.sort_unstable();
+        opened.dedup();
+        opened.retain(|&p| {
+            let bits = &mut self.pages[p as usize];
+            let was = *bits & OPEN != 0;
+            *bits &= !OPEN;
+            was && *bits & LAZY != 0
+        });
+        self.protect_pages(&opened, Permission::empty());
+        opened.clear();
+        self.opened = opened; // keeps its room for the next one
+    }
+
+    /// writes back what the GPU drew over the guards touching the pages of [vaddr, vaddr+len)
+    fn settle(&mut self, vaddr: VAddr, len: usize) {
+        let (first, last) = page_span(vaddr, len);
+        let (lo, hi) = ((first as u64) << PAGE_BITS, ((last as u64) + 1) << PAGE_BITS);
+        let taken: Vec<(VAddr, VAddr)> =
+            self.guards.iter().filter(|(&a, &b)| (a as u64) < hi && b as u64 > lo).map(|(&a, &b)| (a, b)).collect();
+        for &(a, _) in &taken {
+            self.guards.remove(&a);
+        }
+        self.settled(&taken);
+    }
+
+    /// writes back every guard (map, unmap, save states)
+    pub fn settle_all(&mut self) {
+        if self.lazy.is_none() || self.guards.is_empty() {
+            return;
+        }
+        let taken: Vec<(VAddr, VAddr)> = std::mem::take(&mut self.guards).into_iter().collect();
+        self.settled(&taken);
+    }
+
+    /// the guards taken out of `guards`: their pages no guard covers any more go back to plain (unprotected), then
+    /// the GPU writes them back, in address order as the eager flush did
+    fn settled(&mut self, taken: &[(VAddr, VAddr)]) {
+        let Some((gpu, linear_base)) = self.lazy.as_ref().map(|l| (l.gpu, l.linear_base)) else {
+            return;
+        };
+        let mut plain = Vec::new();
+        for &(a, b) in taken {
+            let (first, last) = page_span(a, (b - a) as usize);
+            for p in first..=last {
+                let at = p << PAGE_BITS;
+                let still = self.guards.range(..at.saturating_add(PAGE_SIZE)).next_back().is_some_and(|(_, &to)| to > at);
+                let bits = &mut self.pages[p as usize];
+                if *bits & LAZY != 0 && !still {
+                    let was_open = *bits & OPEN != 0;
+                    *bits &= !(LAZY | OPEN);
+                    if !was_open {
+                        plain.push(p);
+                    }
+                }
+            }
+        }
+        plain.sort_unstable();
+        plain.dedup();
+        self.protect_pages(&plain, Permission::RW);
+        for &(a, b) in taken {
+            let mut guest = crate::GuestMemory::new(self, linear_base);
+            // safe bc the Gpu outlives lazy mode (System stays put), and no GPU call is in progress here: those reach
+            // memory thru GuestMemory, whose accesses are raw and never settle
+            unsafe { (*gpu).sync_memory(&mut guest, a, b - a) };
+        }
+    }
+
+    /// From the runtime's fault handler: an access to guest addr `a` faulted. True when it hit a protected LAZY page,
+    /// which is now settled (or opened, during a raw access) so the access can be retried.
+    pub fn fault(&mut self, a: VAddr) -> bool {
+        let p = a >> PAGE_BITS;
+        if self.pages[p as usize] & (LAZY | OPEN) != LAZY {
+            return false;
+        }
+        if self.raw > 0 {
+            self.open(p, p);
+        } else {
+            self.settle(a, 1);
+        }
+        true
+    }
+}
+
+/// the first and last page numbers of [vaddr, vaddr+len), len > 0, capped at the 4 GB end
+fn page_span(vaddr: VAddr, len: usize) -> (u32, u32) {
+    let last = (vaddr as u64 + len as u64 - 1).min(u32::MAX as u64) as u32;
+    (vaddr >> PAGE_BITS, last >> PAGE_BITS)
 }
 
 /// adds a range to the guarded ones (one range out of those it overlaps)
@@ -751,9 +971,11 @@ impl Bus for Memory {
         match self.fast::<1>(addr, READ) {
             // safe bc fast found the page mapped readable, so committed
             Some(at) => unsafe { at.read() },
+            // unmapped (noted, reads 0) or LAZY (settled first)
             None => {
-                self.note_fault(addr);
-                0
+                let mut buf = [0u8];
+                self.read_bytes(addr, &mut buf);
+                buf[0]
             }
         }
     }
@@ -792,7 +1014,7 @@ impl Bus for Memory {
         match self.fast::<1>(addr, WRITE) {
             // safe bc fast found the page mapped writable, so committed
             Some(at) => unsafe { at.write(value) },
-            None => self.note_fault(addr),
+            None => self.write_bytes(addr, &[value]),
         }
     }
 
@@ -931,5 +1153,33 @@ mod tests {
         memory.guard_cpu_reads(0x1F00_4000, 0x10);
         assert_eq!(memory.take_guards(), vec![(0x1F00_1000, 0x1F00_1C00), (0x1F00_4000, 0x1F00_4010)]);
         assert!(memory.take_guards().is_empty());
+    }
+
+    /// lazy mode: a guarded page is protected, the GPU's own (raw) access opens it for its time and leaves the guard,
+    /// anyone else's access writes the range back (the guard goes) and leaves the page plain
+    #[test]
+    fn lazy_guards_open_for_the_gpu_and_settle_for_the_rest() {
+        let (mut memory, block) = memory_with_block(0x3000);
+        memory.map(0x0010_0000, block.addr, 0x3000, Permission::RW, MemoryState::Private);
+        let mut gpu = Box::new(zakuro_gpu::Gpu::new());
+        memory.set_lazy(LazyGpu { gpu: &mut *gpu, linear_base: 0 });
+        memory.guard_cpu_writes(0x0010_1000, 0x1800);
+        let lazy = |m: &Memory, p: u32| m.pages[(p >> PAGE_BITS) as usize] & (LAZY | OPEN);
+        assert_eq!((lazy(&memory, 0x0010_0000), lazy(&memory, 0x0010_1000), lazy(&memory, 0x0010_2000)), (0, LAZY, LAZY));
+        assert!(memory.plain_read32(0x0010_1000).is_none());
+        // the GPU's access: opened, still guarded; protected again when it ends
+        memory.begin_raw();
+        memory.write_bytes(0x0010_2004, &[7]);
+        assert_eq!(lazy(&memory, 0x0010_2000), LAZY | OPEN);
+        memory.end_raw();
+        assert_eq!(lazy(&memory, 0x0010_2000), LAZY);
+        assert_eq!(memory.guards.len(), 1);
+        // a fault on a page outside any guard is not ours
+        assert!(!memory.fault(0x0010_0000));
+        // the cpu's access: written back, plain again (host reads work w/o faulting)
+        assert_eq!(memory.read8(0x0010_2004), 7);
+        assert!(memory.guards.is_empty());
+        assert_eq!((lazy(&memory, 0x0010_1000), lazy(&memory, 0x0010_2000)), (0, 0));
+        assert_eq!(unsafe { memory.base().add(0x0010_2004).read() }, 7);
     }
 }

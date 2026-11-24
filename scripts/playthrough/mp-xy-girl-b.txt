@@ -1,5 +1,5 @@
 # Driven by crates/xr-runtime/tests/two_instances.rs (xy_created_girls), which sets the env and makes the asserts: the checkpoints here have no expects.
-# start-screen plan 2 Task 13, the walker of the girls' pair: a new game as a girl character to first control in the bedroom, wait for the
+# The walker of the girls' pair: a new game as a girl character to first control in the bedroom, wait for the
 # other girl, step away from the bed (so the two are not drawn on one spot), watch her puppet, then wait until she is gone.
 # new game: language (English), Begin game, title, Sycamore's intro, boy, name
 400 A

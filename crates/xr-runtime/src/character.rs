@@ -210,7 +210,7 @@ impl LookSync {
 pub const FILL_CLOTHES: u32 = 0x0043_582C;
 /// GameData + this: the starting-clothes block `FILL_CLOTHES` fills, and its length (to GameData+0x1120). The filler
 /// only sets bits, so the hook takes the intro gender's fill off and puts the character's on: a girl over the boy's
-/// intro then equals a girl's intro byte for byte (checked against Task 8's dumps).
+/// intro then equals a girl's intro byte for byte (checked against dumps of the real game).
 const GD_CLOTHES: u32 = 0x1058;
 pub const CLOTHES_LEN: usize = 0xC8;
 /// A fill the per-frame hook makes on the game's thread: block << 1 | is_girl; 0 for none.
@@ -234,7 +234,9 @@ impl Played {
     /// a look out of the game's ranges (characters.json's loader drops those).
     pub fn new(c: &redex_proto::Character, data: &std::path::Path, user: &std::path::Path, title: u64) -> Option<Played> {
         let new_game = !played_save(&user.join(format!("savedata/{title:016X}/main")));
-        let sync = LookSync::new(Appearance::from_bytes(&c.look)?, &c.name, new_game);
+        let look = Appearance::from_bytes(&c.look)?;
+        let sync = LookSync::new(look, &c.name, new_game);
+        crate::intro::arm(look, &c.name);
         Some(Played { sync, data: data.to_path_buf(), id: c.id })
     }
 
@@ -401,6 +403,19 @@ mod tests {
         s.step(Some(&mut ms), None);
         assert_eq!(ms, mystatus(0, boy().fashion, "Tobin"));
         assert_eq!(s.step(Some(&mut ms), Some(boy())), None);
+    }
+
+    /// A save another program changed (Pokémon Storage, PKHeX: a new trainer name, another outfit) is a Continue: only
+    /// the character's outfit goes in, the save's name stays, and nothing is reported back into characters.json
+    /// until the game itself changes the look.
+    #[test]
+    fn a_save_changed_by_another_program_keeps_its_name_and_reports_nothing() {
+        let mut s = LookSync::new(boy(), "Calem", false);
+        let mut ms = mystatus(0, TOBIN, "Edited");
+        assert_eq!(s.step(Some(&mut ms), None), None);
+        assert_eq!(ms, mystatus(0, boy().fashion, "Edited"));
+        assert_eq!(s.step(None, Some(boy())), None, "the field shows the character: no change to keep");
+        assert_eq!(s.step(None, Some(boy())), None);
     }
 
     #[test]

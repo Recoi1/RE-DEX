@@ -124,6 +124,19 @@ impl Pack {
         Some(Pack { hashing: config.hashing, materials })
     }
 
+    /// the packs in dirs as one, a later pack's picture winning over an earlier one's for the same texture,
+    /// each read w/ its own pack.json; none when none holds a picture
+    pub fn open_all(dirs: &[&Path]) -> Option<Pack> {
+        let mut packs = dirs.iter().filter_map(|dir| Pack::open(dir));
+        let mut all = packs.next()?;
+        for pack in packs {
+            // find tries both hashes, so the last pack's choice of which first is all that is kept
+            all.hashing = pack.hashing;
+            all.materials.extend(pack.materials);
+        }
+        Some(all)
+    }
+
     /// the picture replacing a texture of these bytes, format and size,
     /// w/ rows where the texture is laid out for the hash when the pack hashes them like Citra did
     /// the hash pack.json doesn't ask for gets tried too, packs carry Citra's pack.json made for the other one, or pictures of both
@@ -845,6 +858,26 @@ mod tests {
         assert!(pack.materials[&0xAA].path.ends_with("UI/PAL/tex1_8x8_00000000000000AA_13.png"));
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(Pack::open(&dir).is_none());
+    }
+
+    /// packs opened together: a later pack's picture of a hash wins, and each keeps its own pack.json's flip
+    #[test]
+    fn a_later_pack_wins() {
+        let dir = std::env::temp_dir().join(format!("zakuro-pack-all-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (first, second) = (dir.join("first"), dir.join("second"));
+        for pack in [&first, &second] {
+            std::fs::create_dir_all(pack).unwrap();
+            write_png(&pack.join("tex1_8x8_00000000000000AA_13.png"), 1, 1, &[1, 2, 3, 255]);
+        }
+        write_png(&first.join("tex1_8x8_00000000000000BB_13.png"), 1, 1, &[1, 2, 3, 255]);
+        std::fs::write(second.join("pack.json"), "{\"options\": {\"use_new_hash\": true, \"flip_png_files\": false}}").unwrap();
+        let pack = Pack::open_all(&[&first, &dir.join("missing"), &second]).unwrap();
+        assert!(pack.materials[&0xAA].path.starts_with(&second));
+        assert!(pack.materials[&0xAA].flipped);
+        assert!(pack.materials[&0xBB].path.starts_with(&first) && !pack.materials[&0xBB].flipped);
+        assert!(Pack::open_all(&[&dir.join("missing")]).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// a pack put in w/ its title id's folder around it (how packs come) still gets its pack.json read,

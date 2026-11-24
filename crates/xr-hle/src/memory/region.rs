@@ -11,7 +11,8 @@ pub trait GuestRegion: Send {
     fn commit(&self, addr: u32, size: u32) -> bool;
     /// gives [addr, addr+size) back, it reads as zero once committed again
     fn decommit(&self, addr: u32, size: u32);
-    /// TODO(phase 2): host page protection for GPU coherency (guarded pages fault into the runtime's handler)
+    /// host page protection for GPU coherency phase 2 (Memory::lazy): no permission makes [addr, addr+size) fault
+    /// into the runtime's handler, any other makes it plain read/write again; the pages are committed
     fn protect(&self, _addr: u32, _size: u32, _permission: Permission) {}
 }
 
@@ -27,6 +28,12 @@ impl GuestRegion for xr_mem::GuestMem {
     fn decommit(&self, addr: u32, size: u32) {
         if let Err(error) = xr_mem::GuestMem::decommit(self, addr, size) {
             log::error!("decommit 0x{addr:08X}+0x{size:X}: {error}");
+        }
+    }
+
+    fn protect(&self, addr: u32, size: u32, permission: Permission) {
+        if let Err(error) = xr_mem::GuestMem::protect(self, addr, size, !permission.is_empty()) {
+            log::error!("protect 0x{addr:08X}+0x{size:X}: {error}");
         }
     }
 }

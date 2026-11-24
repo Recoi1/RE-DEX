@@ -1,4 +1,4 @@
-//! Remote players as puppets: NPCs in X's own move-model pool (plan 4 Task 4). Layouts and evidence:
+//! Remote players as puppets: NPCs in X's own move-model pool. Layouts and evidence:
 //! docs/re/x-field-move-models.md, "Puppets".
 //!
 //! The runtime calls [`Puppets::tick`] once per pass of the game's main loop and [`Puppets::sweep`] right before the
@@ -40,7 +40,7 @@ pub const SET_DIR: u32 = 0x003D_33D4;
 /// (DllField+0x705F4..0x70624) passes the same codes to it.
 pub const SET_MOTION: u32 = 0x003D_6FF0;
 /// Motions: action commands (codes below 0xD4, DllField text+0x49428 sets them). Walk (12) and run (13) are the
-/// player's one-tile steps and move the model themselves (Task 5), so puppets use the in-place ones, found by a scan
+/// player's one-tile steps and move the model themselves, so puppets use the in-place ones, found by a scan
 /// of the codes (docs/re/x-field-move-models.md, "Motions"): 25 to 28 step in place for 15, 7, 3 and 1 field updates
 /// (+1); 26 lasts as long as a walk step (12: 8 updates), 27 as a run step. 8 and 9 hang the game, 50 hides the model.
 pub const MOTION_STAND: u32 = 0;
@@ -176,7 +176,7 @@ struct Puppet {
     model: u16,
 }
 
-/// How the puppets moved (Review Focus 5, smoothness under jitter): steps taken, the longest step in a tick (world
+/// How the puppets moved (smoothness under jitter): steps taken, the longest step in a tick (world
 /// units; walking is TILE/14), jumps (steps over two tiles: the snap) and reversals (a step against the one before it,
 /// faster than walking: a rubber band; a lagging puppet cutting a corner turns back at walking speed or slower).
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -696,7 +696,7 @@ pub const RELEASE_DRESS: u32 = 0x5250C;
 pub const DRESS_SLOT_SIZE: u32 = 0x10;
 /// Free dress-up slots left to the game (the player's next outfit at a boutique, cutscene trainers).
 pub const DRESS_KEEP: u32 = 2;
-/// The model heap an outfit adds to a puppet (PUPPET_HEAP), in the worse heap. Laverre Pokemon Center, fix round 1: a
+/// The model heap an outfit adds to a puppet (PUPPET_HEAP), in the worse heap. Laverre Pokemon Center: a
 /// dressed puppet with PUPPET_MARK took 73,024 (0x14B) and 134,592 (0x14C) bytes in all, a plain one 54,224 and
 /// 16,480 (with the player's byte 3 a dressed one had taken 34,896 and 6,048), so 160 KB.
 pub const DRESS_HEAP: u32 = 160 * 1024;
@@ -708,10 +708,10 @@ pub const PARAM_SIZE: usize = 0x4C;
 /// Header byte 3 of a boy puppet's parameter: 0, the value the game's NPC default path writes (the player's own is 1).
 /// The game's compare (code.bin 0x4681C4: bytes 0-3, the two u16, then the body) then never matches a puppet's
 /// outfit with the player's, so the two never share a dress-up slot: the game's ReleaseDressUp of the player's old
-/// outfit cannot unload parts a puppet wears, and xr-net's cannot unload the player's. A girl's is PLAYER_MARK
-/// (Task 13): on the NPC set (0) her long hair is drawn as a plank and short hair not at all, as the wardrobe found;
+/// outfit cannot unload parts a puppet wears, and xr-net's cannot unload the player's. A girl's is PLAYER_MARK:
+/// on the NPC set (0) her long hair is drawn as a plank and short hair not at all, as the wardrobe found;
 /// the player's set takes one of the game's two player heaps, so `spawn` gates it (and never shares the game's slot):
-/// a girl who can't have it wears her outfit on the NPC set (final fix wave C1), seen with the plank.
+/// a girl who can't have it wears her outfit on the NPC set, seen with the plank.
 pub const PUPPET_MARK: u8 = 0;
 
 /// A parameter's bytes for matching (the body pointer zeroed, the body after the header). None when unreadable.
@@ -869,7 +869,7 @@ pub fn speed(mode: u8) -> f32 {
     match mode {
         redex_proto::MODE_RUN => TILE / 8.0,
         redex_proto::MODE_SKATES => 2.7,
-        // the bike: 9 per field update (DllField controller +0x38 on the 100% save's bike, plan 5 Task 1)
+        // the bike: 9 per field update (DllField controller +0x38 on the 100% save's bike)
         redex_proto::MODE_BIKE => TILE / 4.0,
         _ => TILE / 14.0,
     }
@@ -950,7 +950,7 @@ fn step(g: &mut impl Calls, pup: &mut Puppet, t: &Target) {
     let motion = match (pup.still < STAND_AFTER, t.mode) {
         (false, _) => MOTION_STAND,
         (true, redex_proto::MODE_WALK) => MOTION_WALK_IN_PLACE,
-        // the bike and the skates too, at their own speed: the bicycle is not drawn under a puppet (plan 5 Task 3: the
+        // the bike and the skates too, at their own speed: the bicycle is not drawn under a puppet (the
         // riding motion 77 without it looks wrong; docs/re/x-field-move-models.md, "The bicycle on a puppet")
         (true, _) => MOTION_RUN_IN_PLACE,
     };
@@ -1178,7 +1178,7 @@ mod tests {
             g.put(mgr + MGR_RES, &MODEL_BOY.to_le_bytes());
             g.put(mgr + MGR_RES + RES_SIZE, &MODEL_GIRL.to_le_bytes());
             g.set_map(map);
-            // the local player wears the save trainer's outfit (the 100% save's), loaded in dress-up slot 0
+            // the local player wears the 100% save's outfit, loaded in dress-up slot 0
             g.put(mgr + MGR_MODEL_SYS, &SYS.to_le_bytes());
             g.put(PLAYER_HEAPS, &HEAPS.to_le_bytes());
             g.put(HEAPS + 0x2C, &0x0B80_0000u32.to_le_bytes());
@@ -1798,7 +1798,7 @@ mod tests {
         Target { look: Some(look), ..target(x, look.gender) }
     }
 
-    /// Task 3: a remote player's outfit goes to Create (`extra`, so the model's +0x998 holds it) after RequestDressUp
+    /// A remote player's outfit goes to Create (`extra`, so the model's +0x998 holds it) after RequestDressUp
     /// asked for its parts, and is released through the game when nobody wears it; the local player's own outfit is
     /// never asked for nor released (its slot is the game's).
     #[test]
@@ -1818,7 +1818,7 @@ mod tests {
         g.put(SYS + SYS_DRESS_SLOTS + i * DRESS_SLOT_SIZE, &[0, 3]);
         // the header as the player's own (boy layout) but for PUPPET_MARK, its body pointer moved into the model
         assert_eq!(g.u32(shown[0] + MM_DRESS), Some(0x00_FF_01_00));
-        // the save trainer's twin of the local player gets a slot of its own: the player's (header byte 3 = 1) is never shared
+        // The local player's twin gets a slot of its own: the player's (header byte 3 = 1) is never shared
         assert_eq!(g.count(CODE + REQUEST_DRESS), 2);
         assert_eq!(g.dress_used(), 3);
         assert_ne!(g.slot_of(shown[1]), 0);
@@ -1844,10 +1844,10 @@ mod tests {
         g.u8(mm + MM_DRESS + 3)
     }
 
-    /// Task 13: a girl's outfit loads the player's part set (PLAYER_MARK; on the NPC set her long hair is a plank and
+    /// A girl's outfit loads the player's part set (PLAYER_MARK; on the NPC set her long hair is a plank and
     /// short hair is not drawn), which takes one of the game's two player heaps. The local player's outfit holds one,
     /// so one girl outfit of ours at a time on the player's set: another girl in another outfit wears hers on the NPC
-    /// set (final fix wave C1: seen, not a ghost), one in the same outfit shares its slot. A boy's keeps PUPPET_MARK.
+    /// set (seen, not a ghost), one in the same outfit shares its slot. A boy's keeps PUPPET_MARK.
     /// Once every girl in it leaves, the heap is free again for the next girl.
     #[test]
     fn a_girls_outfit_takes_the_free_player_heap_only() {
@@ -1898,7 +1898,7 @@ mod tests {
         assert_eq!(p.wanted.as_ref().map(|w| (w.0, w.1.len())), Some((201, 1)));
     }
 
-    /// C1: the local player's twin (a girl puppet in the local player's exact outfit, whose slot the game holds) wears
+    /// The local player's twin (a girl puppet in the local player's exact outfit, whose slot the game holds) wears
     /// hers on the NPC set, in a slot of her own; never the game's.
     #[test]
     fn a_girl_twin_wears_her_outfit_on_the_npc_set() {
@@ -1919,7 +1919,7 @@ mod tests {
         assert!(g.dress[0].is_some() && g.dress_used() == 1);
     }
 
-    /// C1/I3: a shared girl outfit whose slot a field close emptied, while another outfit took the free player heap: a
+    /// A shared girl outfit whose slot a field close emptied, while another outfit took the free player heap: a
     /// new girl in it waits (no RequestDressUp with both heaps taken, which the fake panics on as the loader faults), the
     /// worn one is not asked for again either; once the heap is free it is asked for again and she comes, sharing it.
     #[test]
@@ -1946,7 +1946,7 @@ mod tests {
         assert_eq!(mark(&mut g, shown[1]), Some(PLAYER_MARK));
     }
 
-    /// C1: a girl model that would wear nothing is not made (only her shadow, held item and name would show): a plain
+    /// A girl model that would wear nothing is not made (only her shadow, held item and name would show): a plain
     /// girl, and a boy on a girl stand-in model. Logged once.
     #[test]
     fn a_girl_model_without_an_outfit_is_not_made() {
@@ -2020,7 +2020,7 @@ mod tests {
     }
 
     /// Each mode spawns and plays its motion in place: walking 26, running 27; the bike and the skates run in place
-    /// at their own speed (no bicycle under a puppet yet: Task 3's fallback). A surfing player is not shown, and comes
+    /// at their own speed (no bicycle under a puppet yet: the fallback). A surfing player is not shown, and comes
     /// back when they leave the water.
     #[test]
     fn each_mode_shows_with_its_motion_and_surfers_hide() {
@@ -2112,7 +2112,7 @@ mod tests {
         let twin = g.puppets()[0];
         let slot = g.slot_of(twin);
         assert_ne!(slot, 0);
-        // the local player changes clothes: the game asks for Red and releases the save trainer (its own parameter)
+        // the local player changes clothes: the game asks for Red and releases the save's trainer (its own parameter)
         g.set_local(RED);
         let (red, jorge) = (g.local_outfit(RED), g.local_outfit(TOBIN));
         g.put_slot(1 + DRESS_SLOTS - 2, Some(red));
@@ -2213,7 +2213,7 @@ mod tests {
         assert_eq!(g.calls.len(), before);
     }
 
-    /// plan 5 final fix wave, M1: when the game needs a slot and no puppet's parts are safe to delete first, the newest
+    /// When the game needs a slot and no puppet's parts are safe to delete first, the newest
     /// goes as before; but a newest puppet whose outfit's slot is unloading is passed over for one whose parts are in.
     #[test]
     fn make_room_deletes_a_puppet_with_loaded_parts_first() {
@@ -2240,7 +2240,7 @@ mod tests {
         assert_eq!(g.puppets(), vec![dressed_mm], "the plain puppet went, the one with going parts stayed (plain was {plain:#x})");
     }
 
-    /// M6: a session id reused after a world switch by a player of the other gender is made again (the model differs).
+    /// A session id reused after a world switch by a player of the other gender is made again (the model differs).
     #[test]
     fn a_reused_session_of_the_other_gender_is_made_again() {
         let mut g = Game::new(10, 200);
@@ -2255,7 +2255,7 @@ mod tests {
         assert!(p.events.iter().any(|e| e.contains("outfit change")), "{:?}", p.events);
     }
 
-    /// M2: a puppet wearing the parameter counts too: another puppet's outfit slot is never released under it.
+    /// A puppet wearing the parameter counts too: another puppet's outfit slot is never released under it.
     #[test]
     fn a_puppet_wearing_the_parameter_keeps_the_slot() {
         let mut g = Game::new(10, 200);

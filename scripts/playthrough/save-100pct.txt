@@ -14,6 +14,6 @@
 1050 checkpoint pokecenter
 expect pokecenter 1a3e3d3ebd9a3a10
 1250 checkpoint outside
-expect outside fc5c82e9bdc15675
+expect outside 481a6319b3e410fd
 1600 checkpoint menu
-expect menu e90668f904de15f2
+expect menu 55c78757717aebf5

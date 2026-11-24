@@ -1,6 +1,6 @@
 # expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
-# new game, EDITED SAVE: after new-game-santalune-gym.txt (it saves in front of Viola), with the save edited as the
-# notes say: Fennekin, party slot 1, raised to Lv 19 by
+# new game, EDITED SAVE: after new-game-santalune-gym.txt (it saves in front of Viola), with the save edited:
+# Fennekin, party slot 1, raised to Lv 19 by
 # tools/save6/pk6_box.py --party 1=4575,19,40/45/40/62/60/60 (experience, level and recomputed stats; nothing else).
 # The playthrough checks the recomp, not the bot's battling: a lone Lv 12 Fennekin lost to Viola 15 times (runs 1-3).
 # Continue, talk to Viola: her Surskit and Vivillon, Ember (`autobattle`, Potions below 40%), the Bug Badge (its

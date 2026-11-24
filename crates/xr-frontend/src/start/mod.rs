@@ -1,13 +1,15 @@
 //! The start screen: RE:DEX's own front door when it opens with no arguments. Game cards (a built game shows a blurred,
 //! dimmed picture of its own title screen, made on this PC), "Add your game" (a file picker, then the builder's
-//! progress), a row for characters (plan 2), online or offline, the world, and Play. It paints with the liquid glass
+//! progress), a row for characters, online or offline, the world, and Play. It paints with the liquid glass
 //! look (glass.rs) on the same winit window + presenter the game uses, with no game booted: Play hands a [`Launch`]
 //! back and the runtime starts the game in a fresh process.
 pub mod characters;
 pub mod creator;
 pub mod glass;
 pub mod library;
+pub mod mods;
 pub mod preview;
+pub mod storage;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -55,6 +57,27 @@ pub fn run_start(data: PathBuf, tools: Result<Toolchain, String>) -> Result<Opti
         // for the log, not the screen
         log::info!("start screen: building games is off, {why}");
     }
+    let mut app = Start::new(data, tools, settings);
+    #[cfg(windows)]
+    let event_loop = {
+        use winit::platform::windows::EventLoopBuilderExtWindows;
+        EventLoop::builder().with_any_thread(true).build()
+    };
+    #[cfg(not(windows))]
+    let event_loop = EventLoop::new();
+    let event_loop = event_loop.map_err(|e| format!("create an event loop: {e}"))?;
+    event_loop.set_control_flow(ControlFlow::Poll);
+    event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
+    match app.failure.take() {
+        Some(e) => Err(e),
+        None => Ok(app.launch.take()),
+    }
+}
+
+impl Start {
+    /// the screen's state, before its window opens: the data folder's games and characters, the first character chosen
+    fn new(data: PathBuf, tools: Result<Toolchain, String>, settings: Settings) -> Start {
+    let storage = storage::Storage::new(&data);
     let mut app = Start {
         library: Library::load(&data),
         store: Store::load(&data),
@@ -74,7 +97,10 @@ pub fn run_start(data: PathBuf, tools: Result<Toolchain, String>) -> Result<Opti
         faces: HashMap::new(),
         creator_request: None,
         creator: None,
+        mods: None,
+        installer: mods::Installer::new(),
         warm: None,
+        storage,
         focus: 0,
         show_focus: false,
         job: None,
@@ -95,20 +121,8 @@ pub fn run_start(data: PathBuf, tools: Result<Toolchain, String>) -> Result<Opti
         backend: None,
         window: None,
     };
-    #[cfg(windows)]
-    let event_loop = {
-        use winit::platform::windows::EventLoopBuilderExtWindows;
-        EventLoop::builder().with_any_thread(true).build()
-    };
-    #[cfg(not(windows))]
-    let event_loop = EventLoop::new();
     app.character = app.store.characters.first().map(|c| c.id);
-    let event_loop = event_loop.map_err(|e| format!("create an event loop: {e}"))?;
-    event_loop.set_control_flow(ControlFlow::Poll);
-    event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
-    match app.failure.take() {
-        Some(e) => Err(e),
-        None => Ok(app.launch.take()),
+    app
     }
 }
 
@@ -165,8 +179,14 @@ struct Start {
     creator_request: Option<Option<u64>>,
     /// the creator, while it is open (it covers the screen under the logo)
     creator: Option<Creator>,
+    /// the Mods screen, while it is open (it covers the screen under the logo, like the creator)
+    mods: Option<mods::Mods>,
+    /// a mod install, kept here so it outlives the Mods screen; Play waits for it
+    installer: mods::Installer,
     /// both preview states being made after a build, so the creator opens on a ready one
     warm: Option<Warm>,
+    /// Pokémon Storage (PKVault, a program of its own): its note, download, or the process while it runs
+    storage: storage::Storage,
     focus: usize,
     show_focus: bool,
     job: Option<Running>,
@@ -471,11 +491,11 @@ impl Start {
         let (w, h) = (full.width(), full.height());
         glass.paint_backdrop(ui.painter(), full);
         let n = self.library.games.len();
-        // focus order: the games, Add, the character row (Import, three cards, New, the page arrows, Edit look, Remove),
-        // online or offline, World, Play
+        // focus order: the games, Add, the character row (Import, three cards, New, the page arrows, Edit look, Remove,
+        // Pokémon Storage), online or offline, World, Settings, Mods, Play
         let (add, chars) = (n, n + 1);
-        let (toggle, world, settings, play) = (n + 10, n + 11, n + 12, n + 13);
-        let count = n + 14;
+        let (toggle, world, settings, mods_item, play) = (n + 11, n + 12, n + 13, n + 14, n + 15);
+        let count = n + 16;
         let (pages, visible) = self.row();
         let selected_here = self.character.and_then(|id| self.store.characters.iter().position(|c| c.id == id)).is_some_and(|i| i / 3 == self.page);
         let mut present = vec![true; count];
@@ -486,8 +506,12 @@ impl Start {
         present[chars + 8] = self.character.is_some();
         if self.removing.is_some() || self.removed.is_some() {
             // the confirm (or its answer) stands in for the row: Keep (or OK) at the row's head, Remove after it
-            (chars + 1..=chars + 8).for_each(|i| present[i] = false);
+            (chars + 1..=chars + 9).for_each(|i| present[i] = false);
             present[chars + 1] = self.removing.is_some();
+        } else if self.storage.asking() {
+            // its note's three buttons stand in for the row
+            (chars + 3..=chars + 9).for_each(|i| present[i] = false);
+            (present[chars + 1], present[chars + 2]) = (true, true);
         }
         if self.menus.configure_open {
             // Configure has the keys while it is open
@@ -571,6 +595,15 @@ impl Start {
             (self.cards, self.warm) = (None, None);
             self.creator = Some(Creator::new(&self.store, editing));
         }
+        if let Some(screen) = &mut self.mods {
+            // the Mods screen takes the moves (up and down its list), A and B
+            let nav = mods::ModsNav { up: self.nav.prev, down: self.nav.next, select: self.nav.select, back: self.nav.back };
+            self.nav = Nav::default();
+            if screen.ui(ui, glass, nav, &mut self.installer) == mods::ModsAction::Close {
+                self.mods = None;
+            }
+            return;
+        }
         if let Some(c) = &mut self.creator {
             c.pad = self.nav.pad;
             match c.ui(ui, glass, &self.data, &self.library) {
@@ -648,7 +681,7 @@ impl Start {
             self.add_game();
         }
 
-        // characters (plan 2), or the build's progress while one runs
+        // characters, or the build's progress while one runs
         let low = top + card_h + 32.0;
         if let Some(run) = &self.job {
             let heading = run.build_id.as_deref().map_or("Adding your game".to_owned(), |id| format!("Building {}", game_name(id)));
@@ -694,6 +727,8 @@ impl Start {
             }
         } else if self.removing.is_some() || self.removed.is_some() {
             self.remove_panel(ui, glass, low, chars);
+        } else if self.storage.panel_up() {
+            self.storage_panel(ui, glass, low, chars);
         } else {
             glass.title(ui.painter(), pos2(32.0, low), "Characters", 14.0);
             self.characters(ui, glass, low, chars);
@@ -736,6 +771,10 @@ impl Start {
                 if self.item(ui, &r, settings, 20.0) {
                     self.menus.configure_open = true;
                 }
+                let r = glass.pill(ui, "Mods", Some(112.0), true);
+                if self.item(ui, &r, mods_item, 20.0) {
+                    self.mods = Some(mods::Mods::new(self.data.clone()));
+                }
             }
         });
         self.editing = editing;
@@ -752,7 +791,9 @@ impl Start {
         }
 
         // Play: the only primary action
-        let playable = self.playable();
+        // never beside Pokémon Storage: the game and PKVault would both write the saves
+        let blocked = self.storage.blocks_play().or_else(|| self.installer.busy().then_some("Wait for the mod install"));
+        let playable = self.playable().filter(|_| blocked.is_none());
         let ready = self.ready();
         let selected = self.library.games.get(self.selected).map(|g| g.build_id.clone());
         let selected_name = selected.as_deref().map(game_name);
@@ -766,6 +807,7 @@ impl Start {
             (None, Some(name)) => (format!("Build {name} to play"), BODY),
             _ => ("Add a game to play".to_owned(), BODY),
         };
+        let caption = blocked.filter(|_| ready).map_or(caption, |why| (why.to_owned(), BODY));
         text(ui, pos2(c.x - 48.0 - 16.0, cy), Align2::RIGHT_CENTER, &caption.0, 16.0, caption.1);
         if let Some(name) = &selected_name {
             let building = self.job.as_ref().is_some_and(|r| r.build_id.is_some() && r.build_id == selected);
@@ -846,6 +888,12 @@ impl Start {
                 (self.removing, self.focus) = (Some(id), base);
                 return;
             }
+        }
+        // every character's boxes in PKVault (storage.rs), after Remove
+        let x = if self.character.is_some() { 432.0 } else { 280.0 };
+        self.storage_pill(ui, glass, Rect::from_min_size(pos2(x, low - 4.0), vec2(136.0, 24.0)), base);
+        if self.storage.asking() {
+            return;
         }
 
         for k in 0..visible {
@@ -1054,7 +1102,9 @@ impl Start {
 
     fn frame(&mut self, event_loop: &ActiveEventLoop) {
         self.pump();
+        self.installer.pump();
         self.pump_cards();
+        self.pump_storage();
         use gilrs::Button;
         // the pad is read always (gilrs keeps its own state) but only heard while this window has the focus: a game
         // played meanwhile with the same controller must not change anything here
@@ -1210,5 +1260,46 @@ mod tests {
         assert_eq!(l.build_dir, data.join("build").join("x-abc"));
         // offline plays offline even when a world is saved
         assert_eq!(launch_for(data, Some(&game), true, Some(7), true, "host:1").unwrap().world, None);
+    }
+
+    /// the focus list (Mods and Pokémon Storage both in it) is built and stepped through all the way round, w/ and w/o
+    /// a character chosen and while Storage's note is up, without an index past its end
+    #[test]
+    fn the_focus_list_holds_every_item() {
+        let data = std::env::temp_dir().join(format!("redex-start-focus-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(data.join("build/x-usa-v0.2.0")).unwrap();
+        std::fs::write(data.join("library.json"), r#"{"games":[{"build_id":"x-usa-v0.2.0","dump":"x.cci"}]}"#).unwrap();
+        let mut store = Store::load(&data);
+        let look = xr_net::x::look::Look { gender: 1, skin: 1, hair_style: 2, hair_colour: 0, eyes: 0 };
+        for name in ["Ana", "Bea", "Cy", "Dee"] {
+            store.create(name, look.appearance().unwrap(), 1).unwrap();
+        }
+        store.save(&data).unwrap();
+        let mut app = Start::new(data.clone(), Err("a test".into()), Settings::default());
+        let ctx = egui::Context::default();
+        let glass = Glass::new(&ctx, [1040, 640]);
+        let frame = |app: &mut Start, next: bool| {
+            app.nav.next = next;
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1040.0, 640.0))), ..Default::default() };
+            let _ = ctx.run_ui(input, |ui| app.ui(ui, &glass));
+            app.nav = Nav::default();
+        };
+        for (character, asking) in [(app.character, false), (None, false), (app.character, true)] {
+            app.character = character;
+            if asking {
+                app.storage = storage::Storage::Asking;
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for _ in 0..24 {
+                frame(&mut app, true);
+                seen.insert(app.focus);
+            }
+            // one game: Pokémon Storage (chars + 9 = 11), online or offline, World, Settings, Mods and Play (16) are reached
+            // (while Storage's note is up its buttons stand in for the row, the pill among them)
+            let first = if asking { 12 } else { 11 };
+            assert!((first..=16).all(|i| seen.contains(&i)), "{seen:?}");
+        }
+        let _ = std::fs::remove_dir_all(&data);
     }
 }

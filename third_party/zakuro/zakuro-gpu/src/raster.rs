@@ -3055,6 +3055,11 @@ fn rasterize<M: GpuMemory>(registers: &[u32], memory: &mut M, resources: &mut Re
                 .filter(|texture| hardware.holds(texture) || (one_size(texture) && hardware.holds_unchanged(memory, texture)));
             if let Some(texture) = drawn {
                 past[unit] = !hardware.covers(texture);
+                if past[unit] {
+                    if let Err(error) = hardware.prepare_past(memory, texture) {
+                        log::error!("the GPU could not write back a buffer, {error}");
+                    }
+                }
                 continue;
             }
             if let Some((addr, len)) = texture_range(registers, memory, unit) {
@@ -3981,6 +3986,60 @@ mod tests {
         assert_eq!(differing, 0);
     }
 
+    /// a lit triangle whose quaternions sit on opposite sides (q and -q are the same orientation) lights on the GPU like
+    /// in software, which turns them to one side first, instead of going dark where the interpolated quaternion nears zero
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn the_gpu_lights_quaternions_of_either_sign_like_the_cpu() {
+        let Ok(hardware) = hardware::Hardware::new() else { return };
+        const SIZE: u32 = 32;
+        let mut registers = target_registers();
+        registers[REG_VIEWPORT_WIDTH] = float24(SIZE as f32 / 2.0);
+        registers[REG_VIEWPORT_HEIGHT] = float24(SIZE as f32 / 2.0);
+        registers[REG_FRAMEBUFFER_DIMENSIONS] = SIZE | ((SIZE - 1) << 12) | 1 << 24;
+        // combiner 0 takes the lit primary color, the others pass it on
+        registers[0x0C0] = 1 | 1 << 16;
+        for base in [0x0C8, 0x0D0, 0x0D8, 0x0F0, 0x0F8] {
+            registers[base] = 0xF | 0xF << 16;
+        }
+        // lighting on, one light (light 0), white diffuse, directional along z, w/o tables, spotlight, distance or shadow
+        registers[crate::lighting::REG_ENABLE] = 1;
+        registers[0x140 + 2] = 255 << 20 | 255 << 10 | 255;
+        registers[0x140 + 5] = 0x3C00;
+        registers[0x140 + 9] = 1;
+        registers[0x1C4] = 1 << 16 | 1 << 17 | 1 << 19 | 1 << 20 | 1 << 21 | 1 << 22 | 1 << 8 | 1 << 24 | 1;
+        // turned 20 degrees about x and about y, the second one's quaternion negated
+        let (s, c) = 10f32.to_radians().sin_cos();
+        let corner = |[x, y]: [f32; 2], quaternion: Vec4| Vertex {
+            clip: [x, y, -0.5, 1.0],
+            color: RED,
+            texcoords: [[0.0; 2]; 3],
+            quaternion,
+            view: [0.0, 0.0, 1.0],
+            texcoord0_w: 1.0,
+        };
+        let triangle = [
+            corner([-0.9, -0.9], [0.0, 0.0, 0.0, 1.0]),
+            corner([0.9, -0.9], [-s, 0.0, 0.0, -c]),
+            corner([-0.9, 0.9], [0.0, s, 0.0, c]),
+        ];
+        let (mut software, mut gpu) = (ConsoleMemory::default(), ConsoleMemory::default());
+        rasterize_shaded(&registers, &mut software, &mut Resources::default(), &triangle);
+        let mut resources = Resources { hardware: Some(hardware), ..Default::default() };
+        rasterize_shaded(&registers, &mut gpu, &mut resources, &triangle);
+        resources.hardware.as_mut().unwrap().flush(&mut gpu).unwrap();
+        let (mut lit, mut apart) = (0, 0);
+        for i in 0..SIZE * SIZE {
+            let (mut a, mut b) = ([0u8; 4], [0u8; 4]);
+            software.read(COLOR + i * 4, &mut a);
+            gpu.read(COLOR + i * 4, &mut b);
+            lit += (a[1] > 200) as u32;
+            apart = apart.max(a.iter().zip(&b).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0));
+        }
+        assert!(lit > 300, "only {lit} pixels lit");
+        assert!(apart <= 1, "a pixel is {apart} apart");
+    }
+
     /// blending, color masks and logic ops come out on the GPU like in software,
     /// over draws one after another that each do something else,
     /// like draws sharing a pipeline do when the GPU sets that as it goes
@@ -4426,6 +4485,88 @@ mod tests {
         ColorFormat::Rgba8.encode([0, 255, 0, 255], &mut green);
         memory.write(COLOR, &green);
         assert!(!hardware.holds_unchanged(&mut memory, &texture), "the CPU wrote over it");
+    }
+
+    /// lazy write-back: a drawing past a point where the eager write-back would have taken it (held) is decided about as
+    /// if memory had it, but only for the rows drawn; a write to rows it never drew reaches the texture as always
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn a_held_drawing_still_sees_writes_to_rows_it_did_not_draw() {
+        let Ok(hardware) = hardware::Hardware::new() else { return };
+        let mut registers = target_registers();
+        sized(&mut registers, 8, 16);
+        // the buffer is 16 rows, the draw covers 8 of them
+        registers[REG_VIEWPORT_HEIGHT] = float24(4.0);
+        let mut memory = ConsoleMemory::default();
+        let mut resources = Resources { hardware: Some(hardware), ..Default::default() };
+        rasterize_shaded(&registers, &mut memory, &mut resources, &cover(-0.5, RED));
+        let hardware = resources.hardware.as_mut().unwrap();
+        hardware.flush_point().unwrap();
+        let texture = DrawnTexture { addr: COLOR, width: 8, height: 16, format: ColorFormat::Rgba8 };
+        assert!(!hardware.holds(&texture), "held: as if memory had it");
+        assert!(hardware.holds_unchanged(&mut memory, &texture), "nothing wrote there");
+        // one pixel at each end of the buffer: one of them is in rows the GPU never drew
+        memory.write(COLOR, &[0x12; 4]);
+        memory.write(COLOR + 8 * 16 * 4 - 4, &[0x12; 4]);
+        assert!(!hardware.holds_unchanged(&mut memory, &texture), "the CPU wrote rows the drawing doesn't cover");
+    }
+
+    /// lazy write-back: a held buffer drawn over the same memory as an older one would have reached memory eagerly, so
+    /// the older one's image is no longer what memory holds
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn a_held_drawing_over_another_buffer_makes_it_unlike_memory() {
+        let Ok(hardware) = hardware::Hardware::new() else { return };
+        let mut memory = ConsoleMemory::default();
+        let mut resources = Resources { hardware: Some(hardware), ..Default::default() };
+        let mut tall = target_registers();
+        sized(&mut tall, 8, 16);
+        rasterize_shaded(&tall, &mut memory, &mut resources, &cover(-0.5, RED));
+        resources.hardware.as_mut().unwrap().flush_point().unwrap();
+        // the same memory as a wider, shorter buffer, drawn and held too
+        let mut wide = target_registers();
+        sized(&mut wide, 16, 8);
+        rasterize_shaded(&wide, &mut memory, &mut resources, &cover(-0.5, GREEN));
+        let hardware = resources.hardware.as_mut().unwrap();
+        hardware.flush_point().unwrap();
+        let texture = DrawnTexture { addr: COLOR, width: 8, height: 16, format: ColorFormat::Rgba8 };
+        assert!(!hardware.holds_unchanged(&mut memory, &texture), "the wide buffer drew over it");
+    }
+
+    /// lazy write-back: a held buffer of another shape drawn over some rows of a buffer that is then drawn again in other
+    /// rows only never reached memory, so that buffer's image is old there; a texture of it isn't copied from the image
+    /// (eager mode had re-read those rows from memory, with the other buffer's drawing)
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn a_drawing_redrawn_elsewhere_is_not_copied_over_rows_a_held_one_drew() {
+        let Ok(hardware) = hardware::Hardware::new() else { return };
+        let mut memory = ConsoleMemory::default();
+        let mut resources = Resources { hardware: Some(hardware), ..Default::default() };
+        // 1. S, 8x32, drawn all over
+        let mut tall = target_registers();
+        sized(&mut tall, 8, 32);
+        rasterize_shaded(&tall, &mut memory, &mut resources, &cover(-0.5, RED));
+        resources.hardware.as_mut().unwrap().flush_point().unwrap();
+        // 2. X, 16x8, over S's last 16 rows of memory, drawn and held
+        let mut wide = target_registers();
+        sized(&mut wide, 16, 8);
+        wide[REG_COLOR_BUFFER_ADDRESS] = (COLOR + 16 * 8 * 4) >> 3;
+        rasterize_shaded(&wide, &mut memory, &mut resources, &cover(-0.5, GREEN));
+        resources.hardware.as_mut().unwrap().flush_point().unwrap();
+        // 3. S drawn again in its first 16 rows of memory only (the window's top half)
+        let mut top = tall.clone();
+        top[REG_VIEWPORT_XY] = 16 << 16;
+        top[REG_VIEWPORT_HEIGHT] = float24(8.0);
+        rasterize_shaded(&top, &mut memory, &mut resources, &cover(-0.5, BLUE));
+        // 4. a texture of all of S
+        let hardware = resources.hardware.as_mut().unwrap();
+        let texture = DrawnTexture { addr: COLOR, width: 8, height: 32, format: ColorFormat::Rgba8 };
+        assert!(!hardware.holds(&texture), "X's drawing is over S's last rows, S's image is old there");
+        // so the draw reads the texture from memory, once what's drawn over its rows came down: X's colour in those rows
+        hardware.prepare_read(&mut memory, COLOR, 8 * 32 * 4).unwrap();
+        let mut texel = [0u8; 4];
+        memory.read(COLOR + 24 * 8 * 4, &mut texel);
+        assert_eq!(ColorFormat::Rgba8.decode(&texel), [0, 255, 0, 255], "a texel in S's last rows is X's green");
     }
 
     /// the same for a depth buffer written back for the CPU and then read as a texture, like Pokémon X's outlines read theirs

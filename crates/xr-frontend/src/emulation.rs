@@ -1,4 +1,4 @@
-//! The emulation's own thread (high fps M1, research doc §3): it boots the game and keeps it (System isn't Send), runs
+//! The emulation's own thread: it boots the game and keeps it (System isn't Send), runs
 //! its refreshes on the console's schedule, plays its sound and hands the window each refresh's pictures. The window
 //! keeps winit, egui and the presenter, so it presents at the monitor's rate however long a refresh takes, and a menu of
 //! the bar held open (Windows' own message loop) no longer stops the game.
@@ -113,7 +113,7 @@ pub(crate) struct Link {
     pub pictures: Mutex<VecDeque<Pictures>>,
     /// rung w/ each set put in pictures
     pub published: Condvar,
-    /// multiplayer as of the last refresh, w/ the whispers, notes and typed text the window hasn't taken yet
+    /// multiplayer as of the last refresh, w/ the whispers, friends' frames, notes and typed text the window hasn't taken yet
     pub online: Mutex<Option<crate::online::View>>,
 }
 
@@ -122,7 +122,7 @@ pub(crate) fn take_online(link: &Link) -> Option<crate::online::View> {
     let mut slot = lock(&link.online);
     let view = slot.as_mut()?;
     let now = view.clone();
-    (view.whispers, view.notes, view.typed) = (Vec::new(), Vec::new(), None);
+    (view.whispers, view.notes, view.typed, view.friend_msgs, view.friend_failed) = (Vec::new(), Vec::new(), None, Vec::new(), Vec::new());
     Some(now)
 }
 
@@ -131,6 +131,8 @@ fn put_online(slot: &mut Option<crate::online::View>, mut now: crate::online::Vi
     if let Some(old) = slot.take() {
         now.whispers.splice(0..0, old.whispers);
         now.notes.splice(0..0, old.notes);
+        now.friend_msgs.splice(0..0, old.friend_msgs);
+        now.friend_failed.splice(0..0, old.friend_failed);
         now.typed = old.typed.or(now.typed);
     }
     *slot = Some(now);

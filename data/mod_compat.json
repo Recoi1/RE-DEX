@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "about": "What the RE:DEX developers have tested. status: verified (works), partial (works for part of the mod), broken. Mods not listed are untested. Keyed by GameBanana mod id (game 7496, Pokemon X and Y).",
+  "mods": {
+    "610259": {
+      "status": "verified",
+      "note": "Player skin (a/0/8/8, a/0/8/9): installs from the Mods screen and the female player wears it in her bedroom on a new game (Pokemon X 1.0, USA). Its files are on the cosmetic list, so it plays online."
+    },
+    "578206": {
+      "status": "verified",
+      "note": "Texture pack (v2.5, 2,012 pictures): installs from the Mods screen and the intro's dialogue box is drawn from it with the Vulkan renderer; 84 of the textures the intro and the first menu use are in the pack (Pokemon X 1.0, USA; only the intro was looked at). Plays online."
+    }
+  }
+}

@@ -1,4 +1,4 @@
-# plan 4 Task 5, Review Focus 4, player B (the new game's trainer in Vaniville, as mp-pair-b-vaniville.txt): meets A,
+# Player B (the new game's trainer in Vaniville, as mp-pair-b-vaniville.txt): meets A,
 # loses the puppet when the harness kills the server, sees it again after the restart, and stays until A has gone.
 400 A
 440 A

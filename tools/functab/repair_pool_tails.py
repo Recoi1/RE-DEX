@@ -1,4 +1,4 @@
-"""Task 5 code.txt repair, round 2: Ghidra ends some ARM functions at a literal pool in their middle; the code after
+"""code.txt repair: Ghidra ends some ARM functions at a literal pool in their middle; the code after
 the pool (reached by a B from the function, e.g. its shared epilogue) became separate repair-added functions, which
 run with a stale entry lr and return through the interpreter. Extend such a function F over the gap after it when a
 repair-added function in the gap was reached by a plain B from F: up to the next listed start, or the first address

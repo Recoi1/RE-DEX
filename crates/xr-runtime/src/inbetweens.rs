@@ -1,5 +1,5 @@
 //! XR_INBETWEENS=DIR, headless: Smooth motion's pictures in between as a window at XR_SMOOTH_HZ Hz (default 240) would
-//! show them, saved for plan 6's M2 checks (research doc §3 M2: the endpoint test, monotonic motion, GIF strips). For
+//! show them, saved for checks (the endpoint test, monotonic motion, GIF strips). For
 //! each new top picture between script frames XR_INBETWEENS_FROM and XR_INBETWEENS_TO (default all):
 //! `DIR/NNNNNN-k.png`, k = 1..K-1 in between and K the game's own (and `NNNNNN-k-bottom.png`, the bottom screen as the
 //! window shows it w/ each; K = 1 for a picture shown w/o any, so strips show what a window does), and a row of

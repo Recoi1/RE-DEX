@@ -88,7 +88,7 @@
 //!   base + case offset), so the dispatch switches on `dt - mb` against the function's offsets; anything else
 //!   (another function of this module, code.bin, another module) goes to `xr_lookup(dt)` (absolute), as do
 //!   indirect calls (`blx rX`, `mov lr, pc` + PC write, the import thunks `ldr pc, [pc, #-4]` + patched word).
-//!   `xr_lookup` must map addresses inside placed modules to their functions (plan 3 Task 3).
+//!   `xr_lookup` must map addresses inside placed modules to their functions.
 //! * `GenOptions::hooks` are ignored (they are code.bin addresses).
 //! * Thumb (absent from the game's CROs, supported anyway): the decoder's PC folds (`ADR`, hi-register ops with
 //!   Rm = PC) are turned back into PC reads (`rebase_thumb_pc`).

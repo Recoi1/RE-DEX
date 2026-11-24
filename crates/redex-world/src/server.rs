@@ -1,4 +1,5 @@
 //! Accept loop and one thread per connection (std threads; the load is a few hundred 10 Hz senders).
+#[cfg(feature = "steam")]
 use crate::steam::Steam;
 use crate::transport::{Link, Recv, Transport};
 use crate::world::{Deny, World, allow, outbox};
@@ -27,6 +28,7 @@ pub struct Config {
     pub max_frames_per_sec: u32,
     /// Accept dev ids (`Auth::DevId`): two instances on one PC, never a public server (main allows it on localhost only).
     pub dev: bool,
+    #[cfg(feature = "steam")]
     /// Steam login (`Auth::SteamTicket`); without it every ticket is refused. Over TCP only on a `dev` server: a ticket
     /// is not bound to the server it is sent to, so a TCP server could replay it to another one (`steam:` binds it).
     pub steam: Option<Arc<Steam>>,
@@ -35,9 +37,20 @@ pub struct Config {
     /// Where `reports.jsonl` goes (created on the first report), `accounts/` (each account's characters) and
     /// `bans.txt` (SteamID64s kept out, read at each Steam login).
     pub data: PathBuf,
-    /// `--allow FILE`: only the SteamID64s in it log in with Steam (read at each login). Moderation (M8) does not
+    /// `--allow FILE`: only the SteamID64s in it log in with Steam (read at each login). Moderation does not
     /// exist yet, so main refuses `--p2p` without it: a public world is invite-only.
     pub allow: Option<PathBuf>,
+    /// Account login (`Auth::WorldTicket`), each ticket checked with the account backend; without it every ticket is
+    /// refused.
+    #[cfg(feature = "central")]
+    pub tickets: Option<Arc<crate::tickets::Tickets>>,
+    /// How often an account login's backend session is asked about again (`Tickets::dead`).
+    #[cfg(feature = "central")]
+    pub account_recheck: Duration,
+    /// How long an account session may go without one successful check before it is ended (the world stays open to
+    /// players through shorter backend outages).
+    #[cfg(feature = "central")]
+    pub account_unchecked_max: Duration,
 }
 
 impl Default for Config {
@@ -49,10 +62,17 @@ impl Default for Config {
             max_per_peer: 8,
             max_frames_per_sec: 60,
             dev: false,
+            #[cfg(feature = "steam")]
             steam: None,
             max_logins_per_min: 3,
             data: PathBuf::from("redex-world-data"),
             allow: None,
+            #[cfg(feature = "central")]
+            tickets: None,
+            #[cfg(feature = "central")]
+            account_recheck: Duration::from_secs(30),
+            #[cfg(feature = "central")]
+            account_unchecked_max: Duration::from_secs(600),
         }
     }
 }
@@ -67,6 +87,7 @@ struct Shared {
     /// held while an account file is read, merged and written, so two sessions of one account never interleave
     accounts: Mutex<()>,
     conns: Mutex<HashMap<String, usize>>,
+    #[cfg_attr(not(feature = "steam"), allow(dead_code))] // the Steam login's
     logins: Mutex<Logins>,
     stop: AtomicBool,
 }
@@ -75,6 +96,7 @@ struct Shared {
 #[derive(Default)]
 struct Logins(HashMap<u64, Vec<Instant>>);
 
+#[cfg_attr(not(feature = "steam"), allow(dead_code))] // the Steam login's
 impl Logins {
     const WINDOW: Duration = Duration::from_secs(60);
 
@@ -189,7 +211,10 @@ fn admit(sh: &Arc<Shared>, cfg: &Config, mut link: Box<dyn Link>) {
             if *mine == 0 {
                 c.remove(&peer);
             }
-            let _ = link.send(&Msg::Refuse { code: code::FULL, reason: "server full".into() });
+            // never TLS I/O on the accept thread: a refused TLS peer that never speaks would hold it in the handshake
+            if link.refusable() {
+                let _ = link.send(&Msg::Refuse { code: code::FULL, reason: "server full".into() });
+            }
             return;
         }
         *mine += 1;
@@ -202,7 +227,7 @@ fn admit(sh: &Arc<Shared>, cfg: &Config, mut link: Box<dyn Link>) {
         let _ = connection(&sh, &cfg, link); // errors just end this connection
     });
     if spawned.is_err() {
-        if let Some((mut link, _slot)) = lock(&cell).take() {
+        if let Some((mut link, _slot)) = lock(&cell).take().filter(|(l, _)| l.refusable()) {
             let _ = link.send(&Msg::Refuse { code: code::FULL, reason: "server busy".into() });
         }
     }
@@ -245,6 +270,25 @@ fn clean_character(c: Character, game: u8, now_ms: u64) -> Option<Character> {
     ok.then(|| Character { name: clean_name(&c.name), look, ..c })
 }
 
+/// On the central world an account login's characters live in the account backend: its list (after merging `put`, which
+/// the backend checks again), or None for any other login (Steam and dev ids keep their account files). A backend that
+/// does not answer gives an empty list (nothing merged), as an unreadable file does.
+#[cfg_attr(not(feature = "central"), allow(unused_variables))]
+fn backend_characters(cfg: &Config, key: u128, put: Option<&Character>) -> Option<Vec<Character>> {
+    #[cfg(feature = "central")]
+    if let (Some(t), redex_proto::PlayerId::Account(id)) = (&cfg.tickets, crate::world::player_id(key)) {
+        let r = match put {
+            Some(c) => t.put_character(id, c),
+            None => t.characters(id),
+        };
+        return Some(r.unwrap_or_else(|e| {
+            eprintln!("redex-world: account {id}'s characters: {e}");
+            Vec::new()
+        }));
+    }
+    None
+}
+
 /// Merges a clean put into the account's file (written when the list changed); the account's list as stored. An
 /// account file that cannot be read now (nor kept aside) is left alone: nothing is merged and the answer is empty.
 fn put_character(sh: &Shared, data: &std::path::Path, key: u128, c: Character) -> Vec<Character> {
@@ -264,48 +308,15 @@ fn unix_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-/// Names nobody may show (they pass for the server's staff or the game's makers), compared `fold`ed, with only
-/// letters and digits kept.
-const RESERVED: [&str; 8] = ["admin", "moderator", "redex", "nintendo", "gamefreak", "pokemon", "system", "server"];
-
-/// A character as `clean_name` compares it: full-width forms as ASCII, lower case, and common look-alikes (digits,
-/// symbols, Cyrillic) as the letter they pass for.
-fn fold(c: char) -> char {
-    let c = match c as u32 {
-        0xFF01..=0xFF5E => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
-        _ => c,
-    };
-    match c.to_lowercase().next().unwrap_or(c) {
-        '0' => 'o',
-        '1' | 'l' | '|' | '!' => 'i',
-        '3' | 'é' | 'è' | 'ê' => 'e',
-        '4' | '@' => 'a',
-        '5' | '$' => 's',
-        '7' => 't',
-        'а' => 'a',
-        'е' => 'e',
-        'о' => 'o',
-        'р' => 'p',
-        'с' => 'c',
-        'х' => 'x',
-        'у' => 'y',
-        'і' => 'i',
-        'ѕ' => 's',
-        'к' => 'k',
-        'м' => 'm',
-        'т' => 't',
-        c => c,
-    }
-}
 
 fn clean_name(n: &str) -> String {
     let n = clean_text(n, NAME_CHARS);
-    let key: String = n.chars().map(fold).filter(|c| c.is_alphanumeric()).collect();
-    if key.is_empty() || RESERVED.contains(&key.as_str()) { "Trainer".into() } else { n }
+    if redex_proto::names::reserved(&n) { "Trainer".into() } else { n }
 }
 
 /// The SteamID64 one list line names: the SteamID64 itself, `STEAM_X:Y:Z`, `[U:1:N]` or a
 /// `steamcommunity.com/profiles/<id64>` URL.
+#[cfg_attr(not(feature = "steam"), allow(dead_code))] // the Steam login's
 fn steam_id_of(s: &str) -> Option<u64> {
     const BASE: u64 = 76_561_197_960_265_728; // the SteamID64 of account 0 (individual, public universe)
     if let Some(r) = s.strip_prefix("STEAM_") {
@@ -322,6 +333,7 @@ fn steam_id_of(s: &str) -> Option<u64> {
 
 /// An allow or ban list's ids, and the numbers (from 1) of the lines that name none. A BOM, spaces, blank lines and
 /// `#` comments are fine.
+#[cfg_attr(not(feature = "steam"), allow(dead_code))] // the Steam login's
 fn parse_ids(text: &str) -> (HashSet<u64>, Vec<usize>) {
     let (mut ids, mut bad) = (HashSet::new(), Vec::new());
     for (i, l) in text.trim_start_matches('\u{FEFF}').lines().enumerate() {
@@ -337,6 +349,7 @@ fn parse_ids(text: &str) -> (HashSet<u64>, Vec<usize>) {
 
 /// A list file's ids (None when there is no file), parsed again only when its size or time changed: it is read at
 /// every login and every `RECHECK`, and a line that names no id is warned about once per change, by number.
+#[cfg_attr(not(feature = "steam"), allow(dead_code))] // the Steam login's
 fn read_ids(path: &std::path::Path) -> io::Result<Option<HashSet<u64>>> {
     type Cached = (PathBuf, (u64, Option<std::time::SystemTime>), HashSet<u64>);
     static CACHE: Mutex<Vec<Cached>> = Mutex::new(Vec::new());
@@ -359,16 +372,18 @@ fn read_ids(path: &std::path::Path) -> io::Result<Option<HashSet<u64>>> {
 }
 
 /// How often a connected Steam player is checked against the lists again (a ban then disconnects them).
+#[cfg_attr(not(feature = "steam"), allow(dead_code))] // the Steam login's
 const RECHECK: Duration = Duration::from_secs(30);
 
 /// Whether a verified Steam account may play: listed in `allow` when there is a list, and not in `bans`. Both are read
 /// now (at login and every `RECHECK`), so an edit counts at once. A list that can't be read refuses everyone (a missing
 /// bans file bans nobody).
+#[cfg_attr(not(feature = "steam"), allow(dead_code))] // the Steam login's
 fn admitted(steam_id: u64, allow: Option<&std::path::Path>, bans: &std::path::Path) -> Result<(), &'static str> {
     if let Some(a) = allow {
         match read_ids(a) {
             Ok(Some(ids)) if ids.contains(&steam_id) => {}
-            Ok(Some(_)) => return Err("this world is invite-only, and you are not on its list"),
+            Ok(Some(_)) => return Err("You're not on this world's list; ask its host"),
             r => {
                 eprintln!("redex-world: cannot read the allow list {}: {}; refusing logins", a.display(), r.err().map_or("no such file".into(), |e| e.to_string()));
                 return Err("this world cannot check its invite list just now");
@@ -407,6 +422,10 @@ fn refusal(e: &io::Error) -> (u8, String) {
 }
 
 fn refuse(link: &mut dyn Link, (code, reason): (u8, impl Into<String>)) -> io::Result<()> {
+    // a TLS link whose handshake failed or never finished gets no Refuse: writing it would run the handshake again
+    if !link.refusable() {
+        return Ok(());
+    }
     link.send(&Msg::Refuse { code, reason: reason.into() })
 }
 
@@ -423,14 +442,36 @@ fn connection(sh: &Shared, cfg: &Config, mut link: Box<dyn Link>) -> io::Result<
         }
     };
     let Msg::Hello { auth, name, game, title, appearance, .. } = hello else { unreachable!() };
-    // the world's login key; its top bit keeps a SteamID and a dev id from ever standing for each other
-    let (key, steam) = match auth {
+    // the world's login key; its tag bits keep a SteamID, an account and a dev id from ever standing for each other
+    // (world::player_id)
+    // an account login's backend session, asked about again every `account_recheck`
+    #[cfg_attr(not(feature = "central"), allow(unused_mut))]
+    let mut backend_session = None::<u64>;
+    let (key, steam): (u128, Option<SteamLogin>) = match auth {
         // never over Steam P2P, which is reachable from anywhere
         Auth::DevId(id) if cfg.dev && link.steam_id().is_none() => (id & !(1 << 127), None),
         Auth::DevId(_) => return refuse(&mut *link, (code::AUTH, "dev ids are accepted only by a --dev server over TCP")),
+        // the backend says whose ticket it is (and uses it up): the client never names its account
+        #[cfg(feature = "central")]
+        Auth::WorldTicket(ticket) => {
+            let Some(t) = &cfg.tickets else { return refuse(&mut *link, (code::AUTH, "this world has no account login")) };
+            match t.verify(&ticket) {
+                Ok((account, session)) => {
+                    backend_session = Some(session);
+                    (crate::world::ACCOUNT_KEY | u128::from(account), None)
+                }
+                Err(r) => return refuse(&mut *link, r),
+            }
+        }
+        #[cfg(not(feature = "central"))]
+        Auth::WorldTicket(_) => return refuse(&mut *link, (code::AUTH, "this world has no account login")),
+        #[cfg(not(feature = "steam"))]
+        Auth::SteamTicket { .. } => return refuse(&mut *link, (code::AUTH, "this server has no Steam login")),
+        #[cfg(feature = "steam")]
         Auth::SteamTicket { .. } if link.steam_id().is_none() && !cfg.dev => {
             return refuse(&mut *link, (code::AUTH, "a Steam ticket over TCP is not bound to this server: log in over steam:<id> (TCP takes Steam logins on a --dev server only)"));
         }
+        #[cfg(feature = "steam")]
         Auth::SteamTicket { steam_id, ticket } => {
             let Some(s) = &cfg.steam else { return refuse(&mut *link, (code::AUTH, "this server has no Steam login")) };
             // over Steam P2P the connection's own account must be the one the ticket claims
@@ -448,7 +489,7 @@ fn connection(sh: &Shared, cfg: &Config, mut link: Box<dyn Link>) -> io::Result<
                     if let Err(r) = admitted(steam_id, cfg.allow.as_deref(), &cfg.data.join("bans.txt")) {
                         return refuse(&mut *link, (code::AUTH, r));
                     }
-                    (1 << 127 | u128::from(steam_id), Some(login))
+                    (crate::world::STEAM_KEY | u128::from(steam_id), Some(login))
                 }
                 Err(r) => return refuse(&mut *link, r),
             }
@@ -460,11 +501,20 @@ fn connection(sh: &Shared, cfg: &Config, mut link: Box<dyn Link>) -> io::Result<
     };
     let _gone = Gone(sh, sid);
     link.set_live();
-    session(sh, cfg, &mut *link, sid, key, game, &rx, steam.as_ref())
+    session(sh, cfg, &mut *link, sid, key, game, &rx, steam.as_ref(), backend_session)
 }
 
+/// The account backend failed a session check and has not answered one since (logged once an outage).
+#[cfg(feature = "central")]
+static BACKEND_DOWN: AtomicBool = AtomicBool::new(false);
+
 /// A verified Steam login (Steam, SteamID, token): `EndAuthSession` however the connection ends.
+#[cfg(feature = "steam")]
 struct SteamLogin(Arc<Steam>, u64, u64);
+/// Without Steam there is no Steam login.
+#[cfg(not(feature = "steam"))]
+enum SteamLogin {}
+#[cfg(feature = "steam")]
 impl Drop for SteamLogin {
     fn drop(&mut self) {
         self.0.end(self.1, self.2);
@@ -473,31 +523,64 @@ impl Drop for SteamLogin {
 
 /// `key`: the verified login's (a Steam account or a dev id), the only thing an account file is found by.
 #[allow(clippy::too_many_arguments)]
-fn session(sh: &Shared, cfg: &Config, link: &mut dyn Link, sid: u32, key: u128, game: u8, rx: &Receiver<Msg>, steam: Option<&SteamLogin>) -> io::Result<()> {
+#[cfg_attr(not(feature = "central"), allow(unused_variables))]
+fn session(sh: &Shared, cfg: &Config, link: &mut dyn Link, sid: u32, key: u128, game: u8, rx: &Receiver<Msg>, steam: Option<&SteamLogin>, backend_session: Option<u64>) -> io::Result<()> {
     link.send(&Msg::Welcome { session: sid })?;
-    let list = {
+    let list = backend_characters(cfg, key, None).unwrap_or_else(|| {
         let _held = lock(&sh.accounts);
         crate::accounts::load(&cfg.data, key).unwrap_or_default() // unreadable now: an empty list, the file left alone
-    };
+    });
     link.send(&Msg::Characters { list })?;
     let mut puts = VecDeque::new();
     let (mut last_rx, mut last_ping) = (Instant::now(), Instant::now());
     let (mut window, mut frames) = (Instant::now(), 0u32);
     let mut checked = Instant::now();
+    #[cfg(feature = "central")]
+    let (mut account_checked, mut account_ok) = (Instant::now(), Instant::now());
     loop {
         if sh.stop.load(Ordering::Relaxed) {
             return link.send(&Msg::Bye);
         }
         // the lists again (cached until they change): a ban, or leaving the allow list, ends a session in play
+        #[cfg(feature = "steam")]
         if let Some(s) = steam.filter(|_| checked.elapsed() >= RECHECK) {
             checked = Instant::now();
             if let Err(r) = admitted(s.1, cfg.allow.as_deref(), &cfg.data.join("bans.txt")) {
                 return refuse(link, (code::AUTH, r));
             }
         }
+        #[cfg(feature = "steam")]
         if steam.is_some_and(|s| s.0.revoked(s.2)) {
             // Steam's answer names only the account: the client may try once more in case it was its old connection's
             return refuse(link, (code::AUTH, format!("{}: Steam ended it (offline, ticket cancelled or banned)", redex_proto::refuse::STEAM_ANSWER)));
+        }
+        #[cfg(not(feature = "steam"))]
+        let _ = (steam, &mut checked);
+        // an account login's backend session again: logged out, logged out everywhere, a password change or reset, or a
+        // disabled account ends the world session too (a backend that does not answer leaves the player in)
+        #[cfg(feature = "central")]
+        if let (Some(t), Some(bs)) = (&cfg.tickets, backend_session.filter(|_| account_checked.elapsed() >= cfg.account_recheck)) {
+            account_checked = Instant::now();
+            match t.dead(&[bs]) {
+                Ok(dead) if dead.contains(&bs) => return refuse(link, (code::AUTH, "your login ended (logged out, password changed or account disabled)")),
+                Ok(_) => {
+                    account_ok = Instant::now();
+                    if BACKEND_DOWN.swap(false, Ordering::Relaxed) {
+                        eprintln!("redex-world: the account backend answers session checks again");
+                    }
+                }
+                Err(e) => {
+                    // one line an outage, not one a player every check
+                    if !BACKEND_DOWN.swap(true, Ordering::Relaxed) {
+                        eprintln!("redex-world: ACCOUNT BACKEND UNREACHABLE for session checks ({e}); players stay in for up to {:?}", cfg.account_unchecked_max);
+                    }
+                    // open through a short outage, closed after a long one: a banned or hijacked login cannot stay in by
+                    // keeping the checks failing
+                    if account_ok.elapsed() >= cfg.account_unchecked_max {
+                        return refuse(link, (code::AUTH, "your login could not be confirmed with the account service; log in again"));
+                    }
+                }
+            }
         }
         match link.recv(Duration::from_millis(25)) {
             Ok(Recv::Closed) => return Ok(()),
@@ -532,8 +615,8 @@ fn session(sh: &Shared, cfg: &Config, link: &mut dyn Link, sid: u32, key: u128, 
                         lock(&sh.world).whisper(sid, to_session, clean_text(&text, WHISPER_CHARS), now);
                         None
                     }
-                    Msg::Report { session, steam_id, reason, note } => {
-                        let line = lock(&sh.world).report(sid, session, steam_id, reason, &clean_text(&note, NOTE_CHARS), now);
+                    Msg::Report { session, who, reason, note } => {
+                        let line = lock(&sh.world).report(sid, session, who, reason, &clean_text(&note, NOTE_CHARS), now);
                         if let Some(l) = line {
                             write_report(&cfg.data, &l, REPORTS_MAX);
                         }
@@ -543,7 +626,8 @@ fn session(sh: &Shared, cfg: &Config, link: &mut dyn Link, sid: u32, key: u128, 
                         // dropped without an answer: over the rate, or failing a check
                         if allow(&mut puts, PUTS_MAX, PUTS_WINDOW, now) {
                             if let Some(c) = clean_character(character, game, unix_ms()) {
-                                link.send(&Msg::Characters { list: put_character(sh, &cfg.data, key, c) })?;
+                                let list = backend_characters(cfg, key, Some(&c)).unwrap_or_else(|| put_character(sh, &cfg.data, key, c));
+                                link.send(&Msg::Characters { list })?;
                             }
                         }
                         None

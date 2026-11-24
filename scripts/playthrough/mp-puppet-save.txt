@@ -1,4 +1,4 @@
-# 100% save (plan 4 Task 4, Review Focus 1), run with XR_FAKE_PEERS: SAVE from the menu inside the Laverre Pokemon
+# 100% save, run with XR_FAKE_PEERS: SAVE from the menu inside the Laverre Pokemon
 # Center with puppets in the room. mp-puppet-reload.txt then loads that save with no puppets.
 400 A
 440 A

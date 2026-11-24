@@ -61,16 +61,23 @@ impl std::fmt::Debug for Layered {
 impl Layered {
     /// romfs, a RomFS in image, w/ the mod in dir over it, None when the mod changes nothing in it
     pub fn new(romfs: &RomFs, image: &[u8], dir: &Path) -> Result<Option<Layered>, FsError> {
+        Self::stack(romfs, image, &[dir])
+    }
+
+    /// romfs w/ several mods over it, one after another, so a later mod's file wins over an earlier one's
+    pub fn stack(romfs: &RomFs, image: &[u8], dirs: &[&Path]) -> Result<Option<Layered>, FsError> {
         let mut tree = Tree::read(romfs)?;
         let content = tree.content();
         let mut changes = Changes::default();
-        let files = dir.join("romfs");
-        if files.is_dir() {
-            tree.lay(&files, content, &mut changes)?;
-        }
-        let patches = dir.join("romfs_ext");
-        if patches.is_dir() {
-            tree.patch(&patches, content, (romfs, image), &mut changes)?;
+        for dir in dirs {
+            let files = dir.join("romfs");
+            if files.is_dir() {
+                tree.lay(&files, content, &mut changes)?;
+            }
+            let patches = dir.join("romfs_ext");
+            if patches.is_dir() {
+                tree.patch(&patches, content, (romfs, image), &mut changes)?;
+            }
         }
         if !changes.any() {
             return Ok(None);
@@ -366,7 +373,13 @@ fn join(path: &str, name: &str) -> String {
 fn entries(host: &Path) -> Result<Vec<(PathBuf, String)>, FsError> {
     let mut entries = Vec::new();
     for entry in std::fs::read_dir(host)? {
-        let path = entry?.path();
+        let entry = entry?;
+        let path = entry.path();
+        // a link (or a junction) in a mod's folder is not followed: what it points at isn't the mod's to check
+        if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+            log::warn!("mods: {} is a link, it is left out", path.display());
+            continue;
+        }
         match path.file_name().and_then(|name| name.to_str()) {
             Some(name) => entries.push((path.clone(), name.to_owned())),
             None => log::warn!("mods: {} has a name a RomFS can't hold", path.display()),
@@ -546,6 +559,27 @@ mod tests {
         assert_eq!(modules, expected.map(|(path, bytes)| (path.to_owned(), bytes.to_vec())));
         assert_eq!(layered.modded_files(|_| true).len(), 4);
         std::fs::remove_dir_all(mods).unwrap();
+    }
+
+    /// mods laid one after another: the later one's file wins, and a patch in it goes over the earlier one's file
+    #[test]
+    fn a_later_mod_wins() {
+        let image = game(&[("a.bin", b"game"), ("b.bin", b"game b")]);
+        let romfs = RomFs::parse_level3(&image, 0).unwrap();
+        let (first, second) = (folder("first"), folder("second"));
+        put(&first, "romfs/a.bin", b"first");
+        put(&first, "romfs/b.bin", b"first b");
+        put(&second, "romfs/A.bin", b"second");
+        let mut ips = b"PATCH".to_vec();
+        ips.extend_from_slice(&[0, 0, 0, 0, 1, b'F']);
+        ips.extend_from_slice(b"EOF");
+        put(&second, "romfs_ext/b.bin.ips", &ips);
+        let layered = Layered::stack(&romfs, &image, &[&first, &second]).unwrap().unwrap();
+        let all = whole(&layered, &image);
+        assert_eq!(file(&all, "a.bin").unwrap(), b"second");
+        assert_eq!(file(&all, "b.bin").unwrap(), b"First b");
+        std::fs::remove_dir_all(first).unwrap();
+        std::fs::remove_dir_all(second).unwrap();
     }
 
     #[test]

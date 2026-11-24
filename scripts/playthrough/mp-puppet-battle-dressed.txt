@@ -1,4 +1,4 @@
-# 100% save (plan 5 Task 3 fix round 2), run with XR_FAKE_PEERS=1 XR_FAKE_LOOK=<an outfit> XR_FAKE_FROM=3700
+# 100% save, run with XR_FAKE_PEERS=1 XR_FAKE_LOOK=<an outfit> XR_FAKE_FROM=3700
 # XR_FAKE_TO=4750 (or no puppet, for the baseline): mp-puppet-battle.txt's way into the Route 2 grass and its first wild
 # battle (autobattle; the script clock waits while it lasts), with a dressed puppet beside the player from before the
 # battle until after it. The runner logs "puppets/dress/heap NAME: ..." at each checkpoint.

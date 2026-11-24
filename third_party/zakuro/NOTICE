@@ -23,7 +23,7 @@ Changes to the vendored code (all of them):
    VMLA/VMLS/VNMLA/VNMLS round and flush their product before adding it (`Arithmetic::apply` takes the product
    rounding). Test added in zakuro-cpu/tests/vfp.rs: `flush_to_zero_flushes_operands_and_the_mac_product`.
 
-5. zakuro-gpu, for RE:DEX's settings menu (plan 4): backend/mod.rs adds the StackedSwapped, SideBySideSwapped and
+5. zakuro-gpu, for RE:DEX's settings menu: backend/mod.rs adds the StackedSwapped, SideBySideSwapped and
    LargeBottom arrangements (swap screens) to ScreenLayout and `layout`, with their cases in its layout test;
    backend/vulkan.rs adds `VulkanPresenter::set_vsync` (off prefers the immediate present mode) and logs the present
    mode whenever it changes; raster/hardware.rs lets `set_scale` go up to 10x instead of 8x (still capped by the
@@ -34,6 +34,11 @@ Changes to the vendored code (all of them):
    texture while memory still holds what was written is copied on the GPU at the drawn scale, instead of being read
    from memory at the console's res (which drew Pokémon X's outlines in blocks of console pixels at any internal
    resolution). Test added in zakuro-gpu/src/raster.rs: `a_depth_buffer_written_back_unchanged_is_still_copied_on_the_gpu`.
+
+7. Several mods at once, for RE:DEX's Mods screen: zakuro-fs/src/layered.rs adds `Layered::stack` (mods laid one
+   after another, a later one's file winning; `new` calls it with one) and `Title::lay_mods` takes the list; test
+   `a_later_mod_wins`. zakuro-gpu/src/pack.rs adds `Pack::open_all` (several texture packs as one, a later pack's
+   picture winning); test `a_later_pack_wins`. layered.rs `entries` leaves out links and junctions in a mod's folder.
 
 No other file under third_party/zakuro differs from upstream fdf67b2.
 

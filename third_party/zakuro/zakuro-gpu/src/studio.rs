@@ -1,4 +1,4 @@
-//! The character creator's studio view (studio design 2026-11-23, spike `p10-studio-spike`): the player's draws drawn
+//! The character creator's studio view: the player's draws drawn
 //! again with an orbit camera into a target of our own, cleared to transparent.
 //! - **Marking.** Each draw's shaded vertices are taken back to the world through the game's own view-projection; the
 //!   draw is the player's when most of them lie in a cylinder standing on the player's feet (a flat piece too, unless it
@@ -332,7 +332,7 @@ pub(crate) fn render<M: GpuMemory>(memory: &mut M, resources: &mut Resources, ya
             std::mem::swap(&mut resources.light_tables, t);
         }
         // shortcut: the lights stay in the game's view space; the field's light gives ambient only (diffuse and
-        // specular 0, spike report), so a turned light draws the same pixels. Turn them if a lit state is ever used.
+        // specular 0), so a turned light draws the same pixels. Turn them if a lit state is ever used.
         let mut target = Redirect { inner: &mut *memory, target: &mut st.target };
         raster::studio_redraw(&regs, &mut target, resources, &d.seen, &c);
         if let Some(t) = d.tables.as_mut() {

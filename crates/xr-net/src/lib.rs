@@ -1,6 +1,9 @@
-//! RE:DEX multiplayer: what runs inside redex (plan 4). `x` holds Pokemon X's game-specific layouts, `client` talks
-//! to the world server, `id` keeps the player's stable identity, `steam` proves it is their Steam account.
+//! RE:DEX multiplayer: what runs inside redex. `x` holds Pokemon X's game-specific layouts, `client` talks
+//! to the world server, `id` keeps the player's stable identity, `steam` proves it is their Steam account, `account`
+//! logs in to the account backend (central worlds).
+pub mod account;
 pub mod client;
+pub mod friends;
 pub mod id;
 pub mod steam;
 pub mod x;

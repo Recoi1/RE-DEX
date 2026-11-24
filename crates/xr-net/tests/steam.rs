@@ -19,12 +19,12 @@ impl Raw {
         r.s.write_all(&Msg::Hello { version: VERSION, auth, name: "Steamer".into(), game: GEN_X, title: TITLE_X, appearance: vec![] }.encode()).unwrap();
         r
     }
-    /// Next message other than a Ping, within `wait`.
+    /// Next message other than a Ping or the account's character list (sent after every Welcome), within `wait`.
     fn next(&mut self, wait: Duration) -> Option<Msg> {
         let end = Instant::now() + wait;
         while Instant::now() < end {
             match self.d.next().unwrap() {
-                Some(Msg::Ping(_)) => continue,
+                Some(Msg::Ping(_) | Msg::Characters { .. }) => continue,
                 Some(m) => return Some(m),
                 None => {}
             }

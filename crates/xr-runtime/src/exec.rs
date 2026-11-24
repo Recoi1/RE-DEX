@@ -29,7 +29,7 @@ pub struct Exec {
 
 // Safety: `state` is only touched by the baton holder, one host thread at a time; the hand-over goes through
 // `turn`'s mutex. (System isn't Send because of its renderer trait object; the software renderer has no thread
-// affinity. A GL renderer would, see the Task 4 report.)
+// affinity. A GL renderer might.)
 unsafe impl Sync for Exec {}
 unsafe impl Send for Exec {}
 
@@ -122,6 +122,26 @@ fn resume_of(park: Park, hooks: u32, word_at_pc: impl FnOnce() -> u32) -> Result
 
 static EXEC: OnceLock<Exec> = OnceLock::new();
 
+/// From the fault handler, on the faulting thread: true when guest addr `a` is on a page lazy GPU coherency protects,
+/// now written back (or opened for the GPU's own access) so the access can be retried. Only the baton holder runs
+/// guest code or touches System, so the faulting thread holds it.
+pub fn lazy_fault(a: u32) -> bool {
+    let Some(x) = EXEC.get() else { return false };
+    unsafe { x.st() }.sys.memory.fault(a)
+}
+
+/// The page bits Memory keeps for guest addr `a` (permissions, MAPPED, LAZY, OPEN), for the fault handler's message.
+pub fn page_bits(a: u32) -> Option<u8> {
+    Some(unsafe { EXEC.get()?.st() }.sys.memory.page_bits(a))
+}
+
+fn turn_key(t: Turn) -> u64 {
+    match t {
+        Turn::Main => 0,
+        Turn::Host(i) => i as u64 + 1,
+    }
+}
+
 pub fn exec() -> &'static Exec {
     EXEC.get().expect("executor booted")
 }
@@ -144,6 +164,9 @@ impl Exec {
     }
 
     fn wait(&self, me: Turn) {
+        if crate::hostprof::on() {
+            crate::hostprof::register(turn_key(me));
+        }
         // registered before the check, so a give after it finds us and its unpark ends the park below
         self.waiters.lock().unwrap().insert(me, std::thread::current());
         while *self.turn.lock().unwrap() != me {
@@ -304,6 +327,14 @@ impl Machine {
         let state = State { sys, hosts: Vec::new(), host_tid: Vec::new(), deadline, camera: Default::default(), parked: Vec::new(), in_hook: Vec::new(), resume: Default::default() };
         EXEC.set(Exec { turn: Mutex::new(Turn::Main), waiters: Mutex::default(), state: UnsafeCell::new(state), lookup })
             .map_err(|_| "a Machine is already booted in this process".to_string())?;
+        // GPU coherency phase 2 (XR_EAGER_GPU=1 keeps phase 1's write-back after every command list, for bisecting)
+        if std::env::var_os("XR_EAGER_GPU").is_none() {
+            unsafe { exec().st() }.sys.lazy_gpu();
+        }
+        if crate::hostprof::on() {
+            let logs = build_dir.parent().and_then(|p| p.parent()).map_or_else(|| build_dir.to_path_buf(), |d| d.join("logs"));
+            crate::hostprof::start(logs, || turn_key(*exec().turn.lock().unwrap()));
+        }
         Ok(Machine { build, title_id })
     }
 
@@ -312,7 +343,7 @@ impl Machine {
         &mut unsafe { exec().st() }.sys
     }
 
-    #[allow(dead_code)] // set_input/take_audio/screen: the frontend's (Task 5+), headless redex doesn't need them
+    #[allow(dead_code)] // set_input/take_audio/screen: the frontend's, headless redex doesn't need them
     pub fn set_input(&mut self, input: xr_hle::services::hid::InputState) {
         self.system().set_input(input);
     }
@@ -418,6 +449,7 @@ impl Machine {
     /// (Zakuro's `System::run_frame`, with guest threads running on their own host threads).
     pub fn run_frame(&mut self) -> FrameOutcome {
         let x = exec();
+        crate::hostprof::FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         {
             let st = unsafe { x.st() };
             let s = &mut st.sys;
@@ -483,7 +515,7 @@ impl Machine {
     }
 }
 
-/// Frame interpolation's cut hint (research doc section 3 M3), once a refresh b4 its pacing: X's field camera, read
+/// Frame interpolation's cut hint, once a refresh b4 its pacing: X's field camera, read
 /// (never written) through DllField's camera block, breaking from its own motion (CameraCuts: a door, a warp, a
 /// scripted cut) tells the pacing it cut elsewhere, and no pictures in between are shown across it. The last camera is
 /// kept while there's none (a map's load), so a warp is seen when the next map's comes.

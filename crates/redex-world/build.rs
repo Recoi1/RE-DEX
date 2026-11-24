@@ -8,6 +8,10 @@ fn main() {
     if !std::env::var("TARGET").unwrap_or_default().contains("windows") {
         return;
     }
+    // a redex-world built without Steam (the central world) loads no Steam DLL
+    if std::env::var("CARGO_PKG_NAME").is_ok_and(|n| n == "redex-world") && std::env::var_os("CARGO_FEATURE_STEAM").is_none() {
+        return;
+    }
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../..");
     let lock = std::fs::read_to_string(root.join("Cargo.lock")).expect("Cargo.lock");
     println!("cargo::rerun-if-changed={}", root.join("Cargo.lock").display());

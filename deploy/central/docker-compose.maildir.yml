@@ -1,0 +1,19 @@
+# No SMTP account yet: the backend writes each mail as an .eml file to /data/mail in the `backendmail` volume instead of
+# sending it, and needs no secrets/smtp_url.txt. Players cannot confirm their address this way: confirm test accounts
+# with ops/verify-account.sh. Use it by setting in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.maildir.yml
+services:
+  backend:
+    environment:
+      REDEX_SMTP_URL_FILE: ""
+      REDEX_MAIL_DIR: /data/mail
+    secrets: !override [database_url, world_secret]
+    volumes:
+      # /data is the image's home of uid 10001, so the new volume is owned by it
+      - backendmail:/data
+
+secrets:
+  smtp_url: !reset null
+
+volumes:
+  backendmail: {}

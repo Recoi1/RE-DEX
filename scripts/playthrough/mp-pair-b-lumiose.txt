@@ -1,4 +1,4 @@
-# plan 4 Task 5, player B of the two-instance harness in Lumiose City (map 67): a second copy of the 100% save (another
+# Player B of the two-instance harness in Lumiose City (map 67): a second copy of the 100% save (another
 # dev id; the new-game trainer cannot reach Lumiose: Santalune Forest's exit was never found). Fly to Lumiose, wait for
 # A, walk away from the Pokemon Center and back (Lumiose's camera turns the D-pad and its walls stop a square), Fly to
 # Vaniville (leaves the map), Fly back, and stay until A has gone.

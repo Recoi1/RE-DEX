@@ -1,0 +1,7 @@
+[Unit]
+Description=Render the RE:DEX status page and progress card
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/usr/bin/python3 -I /opt/redex/src/deploy/status/render.py /opt/redex/status/progress.json /opt/redex/status/site

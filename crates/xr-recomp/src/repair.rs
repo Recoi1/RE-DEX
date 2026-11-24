@@ -1,4 +1,4 @@
-//! Plan-1 function-table repairs, shared by `xr-recomp` (code.bin) and `xr-crotab` (CRO code segments).
+//! Function-table repairs, shared by `xr-recomp` (code.bin) and `xr-crotab` (CRO code segments).
 use std::collections::{BTreeMap, HashSet};
 use xr_arm::{decode_arm, decode_thumb, Cond, DpOp, Insn, Operand2, Reg, Shift};
 use xr_codegen::{gen_function, GenOptions};

@@ -1,0 +1,23 @@
+{
+  "updated": "2026-11-24",
+  "release": { "current": "v0.1.0", "next": "v0.1.1", "next_status": "in progress" },
+  "milestones": [
+    { "name": "Groundwork: a full check of the project", "status": "done" },
+    { "name": "Player accounts and the online server", "status": "done" },
+    { "name": "Sign up and log in from the launcher", "status": "next" },
+    { "name": "Your characters and saves kept online", "status": "planned" },
+    { "name": "Every Pokémon stored safely online", "status": "planned" },
+    { "name": "Trading and online battles", "status": "planned" },
+    { "name": "Chat, parties, guilds and a market", "status": "planned" },
+    { "name": "Omega Ruby and Alpha Sapphire (Hoenn)", "status": "planned" },
+    { "name": "The full launcher with automatic updates", "status": "planned" },
+    { "name": "Load tests, moderation and the public beta", "status": "planned" }
+  ],
+  "features": [
+    "Pokémon X and Y running natively on PC",
+    "See other trainers walking around Kalos with you",
+    "High frame rate and resolution scaling",
+    "Character creator with up to 8 trainers",
+    "Player accounts on the RE:DEX server"
+  ]
+}

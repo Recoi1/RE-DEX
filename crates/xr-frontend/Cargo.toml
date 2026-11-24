@@ -13,6 +13,8 @@ xr-net = { path = "../xr-net" }
 redex-proto = { path = "../redex-proto" }
 getrandom = "0.3"
 serde_json = "1"
+# Pokémon Storage checks PKVault's download against its release's SHA-256
+sha2 = "0.10"
 zakuro-common.workspace = true
 zakuro-gpu.workspace = true
 log.workspace = true
@@ -28,12 +30,14 @@ gilrs = { version = "0.11.2", features = ["serde-serialize"] }
 egui = { version = "0.36", default-features = false, features = ["default_fonts"] }
 egui-winit = { version = "0.36", default-features = false, features = ["clipboard"] }
 png = "0.18.1"
+# the Mods screen's pictures from GameBanana (JPEGs)
+zune-jpeg = "0.5"
 
 [target.'cfg(windows)'.dependencies]
 # the native menu bar across the window, like Azahar's (Windows only for now, elsewhere menubar.rs has a stub)
 muda = { version = "0.17", default-features = false }
 # reads Windows' "Show animations" setting, the menus keep still w/o it
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls_Dialogs"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls_Dialogs", "Win32_Security", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # the Switch's Pro Controller read from its own reports, opened shared w/ the system, which puts it in a mode gilrs reads wrong

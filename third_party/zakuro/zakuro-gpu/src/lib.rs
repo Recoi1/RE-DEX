@@ -848,6 +848,16 @@ impl Gpu {
         None
     }
 
+    /// lazy write-back: where the eager one would write back everything drawn so far (Hardware::flush_point)
+    pub fn flush_point(&mut self) {
+        #[cfg(feature = "vulkan")]
+        if let Some(hardware) = self.resources.hardware.as_mut() {
+            if let Err(error) = hardware.flush_point() {
+                log::error!("the GPU could not end a batch, {error}");
+            }
+        }
+    }
+
     /// makes guest memory right over a range something other than a draw is about to read or write,
     /// the host GPU keeps what it draws till then
     pub fn sync_memory<M: GpuMemory>(&mut self, memory: &mut M, addr: u32, len: u32) {

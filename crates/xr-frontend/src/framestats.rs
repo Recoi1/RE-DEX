@@ -1,4 +1,4 @@
-//! XR_FRAMESTATS=1 (or =DIR): the window's frame costs and presents, for the high fps work (research doc, M0).
+//! XR_FRAMESTATS=1 (or =DIR): the window's frame costs and presents, for the high fps work.
 //! Writes `framestats-presents.csv` (one row per present) and `framestats-seconds.csv` (one per second) to DIR, else
 //! `<XR_DATA>/logs`, else the current directory, and logs the second's line.
 

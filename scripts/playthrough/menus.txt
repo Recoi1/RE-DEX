@@ -26,9 +26,9 @@
 2800 TOUCH:80,180   # SAVE
 2950 A   # YES
 1250 checkpoint outside
-expect outside fc5c82e9bdc15675
+expect outside 481a6319b3e410fd
 1580 checkpoint menu
-expect menu 0eb1b9b9885070c5
+expect menu ffaf3089e062e13c
 1700 checkpoint party
 expect party 15e980941462318a
 1950 checkpoint summary
@@ -38,8 +38,8 @@ expect bag-items aeddd1173ebe211f
 2620 checkpoint bag-medicine
 expect bag-medicine 4c5fbc170a9f0b19
 2900 checkpoint save-ask
-expect save-ask c611d7da3e5bc38e
+expect save-ask 7dc2ff9f8793b7c5
 3050 checkpoint saved
-expect saved 86b8812c84dc0fbb
+expect saved 880b5c295f5e08af
 3300 checkpoint field
-expect field 8b9878e26ce53b6b
+expect field b6bacc5b68092e3e

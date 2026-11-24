@@ -1,4 +1,4 @@
-//! plan 4 Task 5: two real game instances meet through a `redex-world` server (the multiplayer M1 proof). Each test
+//! Two real game instances meet through a `redex-world` server (the multiplayer M1 proof). Each test
 //! starts the server binary (`--dev`, loopback) and two headless games held to real time (`--realtime`), each in a data
 //! dir of its own with its own dev id, and scripts them with `wait_until` (scripts/playthrough/mp-pair-*.txt): the
 //! scripts wait on each other, never on frame numbers. Long (minutes each) and they need saves, so they are ignored by
@@ -337,7 +337,7 @@ fn lumiose() {
     smooth(&seen.a_log);
 }
 
-/// Review Focus 5: the server delays every send by 50-150 ms and drops 10% of the positions.
+/// the server delays every send by 50-150 ms and drops 10% of the positions.
 #[test]
 #[ignore = "two games for minutes; run with --ignored (see the file's doc)"]
 fn vaniville_jitter() {
@@ -347,7 +347,7 @@ fn vaniville_jitter() {
     smooth(&seen.a_log);
 }
 
-/// Review Focus 4: the server is killed with both players on the map and started again 3 s later.
+/// the server is killed with both players on the map and started again 3 s later.
 #[test]
 #[ignore = "two games for minutes; run with --ignored (see the file's doc)"]
 fn server_restart() {
@@ -362,7 +362,41 @@ fn server_restart() {
     }
 }
 
-// ---- X and Y together (plan 5 Task 5) -------------------------------------------------------------------------------
+/// Mods from the Mods screen and worlds: a game with a skin on (a player model GARC, on the cosmetic list) joins; one
+/// with a mod that changes game data (the English text) plays offline and says which mod. The mods are copies of the
+/// game's own files (XR_DUMP, the unpacked RomFS), so the game runs as it would without them.
+#[test]
+#[ignore = "boots the game twice; run with --ignored (see the file's doc)"]
+fn a_skin_joins_and_a_data_mod_does_not() {
+    let Some((cci, data, full, trainer2)) = setup() else { return };
+    let Ok(dump) = std::env::var("XR_DUMP") else { return println!("skipping: XR_DUMP not set") };
+    let out = std::env::var("XR_MP_OUT").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir().join("redex_pair")).join("mods");
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut srv = server(port, None);
+    for (id, name, file) in [(610259, "Delta over Serena", "a/0/8/8"), (724531, "A text mod", "a/0/7/4")] {
+        let dir = out.join(id.to_string());
+        data_dir(&dir, &data, &Save::Full, &full, &trainer2);
+        let unpacked = dir.join("mods/installed/.unpack");
+        std::fs::create_dir_all(unpacked.join("romfs").join(file).parent().unwrap()).unwrap();
+        std::fs::copy(Path::new(&dump).join("romfs").join(file), unpacked.join("romfs").join(file)).unwrap();
+        xr_hle::modlist::install(&dir, id, name, "", &unpacked).unwrap();
+        let mut g = Command::new(env!("CARGO_BIN_EXE_redex"));
+        g.arg("--cci").arg(&cci).arg("--build").arg(dir.join("build/x-usa-v0.2.0"));
+        g.args(["--headless", "--frames", "60", "--world", &format!("127.0.0.1:{port}"), "--dev-id", "--name", "Modder"]);
+        let status = g.stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+        let l = log(&dir);
+        assert!(status.success(), "{name}: exited {status}\n{}", tail(&l));
+        if file == "a/0/8/8" {
+            assert!(l.contains(&format!("world: joining 127.0.0.1:{port}")) && !l.contains("not joining"), "{name} did not join\n{}", tail(&l));
+        } else {
+            assert!(l.contains(&format!("not joining 127.0.0.1:{port}: Turn off mods to play online: {name} changes the game")), "{name} was not refused\n{}", tail(&l));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    let _ = srv.kill();
+}
+
+// ---- X and Y together -------------------------------------------------------------------------------
 //
 // Every multiplayer test pairs X with Y. B (the biker) wears an outfit that is not its save's (XR_SET_FASHION, written
 // once the field is up) and rides the bike; A watches B's puppet (the observer scripts); B whispers to A and A reports B
@@ -517,7 +551,7 @@ fn xy_a_y_b_x() {
     xy_pair("xy-a-y-b-x", G::Y, G::X);
 }
 
-// ---- start-screen plan 2 Task 13: made looks, X with Y ---------------------------------------------------------------
+// ---- made looks, X with Y ---------------------------------------------------------------
 //
 // Each player plays a character made as the creator makes one (characters.json and the 100% save in the character's
 // folder, Y's in Y's title folder) with `--character`, not XR_SET_FASHION. The two looks are boys whose skin, hair and
@@ -602,7 +636,7 @@ fn xy_created_looks_swapped() {
     xy_created("xy-created-a-y-b-x", G::Y, G::X);
 }
 
-/// Two girls (Task 13: a girl's outfit must load the player's part set, or her long hair is a plank): A on X and B on Y,
+/// Two girls (a girl's outfit must load the player's part set, or her long hair is a plank): A on X and B on Y,
 /// each a new game as a girl character to first control in the bedroom (the same map in both games). Each sees the
 /// other on the girl model, dressed in her made look; the screens at `look2` are each side's view
 /// (`XR_MP_OUT/<name>/{a,b}/logs/top-cp-look2.png`).
@@ -649,7 +683,7 @@ fn xy_girls(name: &str, a: G, b: G, third: Option<Look>) {
         assert!(!dress.ends_with("0x00000000 (globals") && !dress.contains(" 0x00000000 (globals"), "{who}: the puppet's outfit holds no player heap: {dress}");
     }
     if let Some(t) = third {
-        // final fix wave C1: all three girls are seen; none is left out for want of an outfit
+        // all three girls are seen; none is left out for want of an outfit
         let want = format!("(model 1) dressed {}", bytes_hex(&t.appearance().unwrap().fashion));
         assert!(la.lines().any(|l| l.starts_with("puppets: spawn session") && l.contains(&want)), "A never saw the third girl dressed\n{}", tail(&la));
         assert!(!la.contains("a girl model with no outfit"), "A left a girl out\n{}", tail(&la));
@@ -665,7 +699,7 @@ fn xy_created_girls() {
     xy_girls("xy-girls-a-x-b-y", G::X, G::Y, None);
 }
 
-/// Final fix wave C1: three girls on one map, X + Y + a fake peer beside A: A sees both, dressed (B on the player set, the
+/// three girls on one map, X + Y + a fake peer beside A: A sees both, dressed (B on the player set, the
 /// third on the NPC set), none left out.
 #[test]
 #[ignore]

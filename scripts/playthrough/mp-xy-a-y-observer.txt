@@ -1,5 +1,5 @@
 # Driven by crates/xr-runtime/tests/two_instances.rs (xy_a_y_b_x), which sets the env and makes the asserts: the checkpoints here have no expects.
-# plan 5 Task 5, observer of the X+Y pair when A is Pokemon Y (the xy-cross new-game trainer saved in the Vaniville house;
+# Observer of the X+Y pair when A is Pokemon Y (the xy-cross new-game trainer saved in the Vaniville house;
 # the Y chain is scripts/playthrough/y/new-game*.txt): continue, out of the door, Mom's send-off, then watch the other
 # player's puppet (an X biker flown to Vaniville) then end (the other player's script ends when it sees them gone).
 400 A

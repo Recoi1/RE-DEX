@@ -18,6 +18,8 @@
 
 **Your character.** The start screen keeps your characters, up to 8. *New character* opens the creator: pick a boy or a girl, skin, hair style and colour, and eyes, and name them. The preview is the game itself drawing your trainer, so what you see is what you get; drag it to turn the model, scroll to zoom. A character plays in both X and Y: a new game starts as them (their name, gender and look), and *Import a save* brings in an existing `main` save (copied, never moved) from RE:DEX's own save folder, Citra or Azahar, or a Checkpoint backup. *Remove character* takes one off the list (after asking) and leaves its saves on disk. Each character has its own saves, and RE:DEX backs them up before every launch. Clothes you buy in a boutique stay with the character, in the other game too. Online, your characters live on your account, so they are there on any PC you sign in on, and other players see the look you made.
 
+**Mods.** The start screen's *Mods* button lists the Pokémon X and Y mods on GameBanana and installs texture packs and skins with one press; turn them on and off there. Skins and texture packs play online (only you see them); mods that change game data are marked *Offline only*. See [docs/mods.md](docs/mods.md).
+
 Status: early development. Community: [Discord](https://discord.gg/NTSvuGWnWj).
 
 Unofficial fan project, not affiliated with or endorsed by Nintendo, Game Freak, Creatures Inc. or The Pokémon Company.

@@ -2,7 +2,7 @@
 # new game, after new-game-route2.txt (same data dir; it saves at the Santalune Forest entrance). `autobattle`: each wild
 # battle on the way is fought with Ember (FIGHT, the bottom-left move) while the script's clock waits. Through the forest
 # grass to the north-east, where Shauna finds a Paralyze Heal and gives it to the player, then on to the loop in the
-# north. Then SAVE. The forest's exit to Route 3 was not found
+# north. Then SAVE. The forest's exit to Route 3 was not found.
 autobattle
 400 A
 440 A

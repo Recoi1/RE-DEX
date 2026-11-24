@@ -317,7 +317,7 @@ expect changed 3bdfe0b4b2f655a3
 10600 checkpoint mom-neighbors
 expect mom-neighbors f50c5885e9d30b0c
 11900 checkpoint serena-shauna
-expect serena-shauna edbef40b18163a52
+expect serena-shauna e175f37b7a2bd536
 12800 checkpoint next-town
 expect next-town 11cf618227e4cd0c
 13500 checkpoint street

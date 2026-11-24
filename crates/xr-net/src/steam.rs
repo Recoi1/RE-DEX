@@ -1,4 +1,4 @@
-//! Steam on the player's side (plan 4 Task 3b). Online, the player is their SteamID64: the Steam client must be running
+//! Steam on the player's side. Online, the player is their SteamID64: the Steam client must be running
 //! and logged on, and every connection to the world server proves it with a fresh auth session ticket (Steamworks app
 //! 480, Spacewar). A world server address `steam:<steamid64>` is reached over Steam's relays (`connect`). Needs
 //! `steam_api64.dll` next to redex.exe (the build puts it there); redex.exe delay-loads it (xr-runtime/build.rs), so
@@ -147,9 +147,11 @@ impl Steam {
     }
 
     /// What friends see: `status` in the friends list, and `connect` (`steam:<server id>`), which makes "Join game"
-    /// work; None clears it.
+    /// work; None clears it. The `redex` key (the protocol version) is always set: it is what makes a friend "in
+    /// RE:DEX" (crate::friends), online or offline.
     pub fn set_presence(&self, status: Option<&str>, connect: Option<&str>) {
         let f = self.client.friends();
+        f.set_rich_presence(crate::friends::PRESENCE_KEY, Some(&redex_proto::VERSION.to_string()));
         f.set_rich_presence("status", status);
         f.set_rich_presence("connect", connect);
     }

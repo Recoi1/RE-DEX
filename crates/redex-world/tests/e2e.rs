@@ -417,8 +417,8 @@ fn a_report_is_written_with_its_context() {
     a.send(Msg::Pos(pos(4, 1.0)));
     std::thread::sleep(Duration::from_millis(300));
     // naming another account than the session's: dropped
-    a.send(Msg::Report { session: sb, steam_id: 76561197960287930, reason: redex_proto::REPORT_CHAT, note: "wrong".into() });
-    a.send(Msg::Report { session: sb, steam_id: 0, reason: redex_proto::REPORT_CHAT, note: "rude".into() });
+    a.send(Msg::Report { session: sb, who: redex_proto::PlayerId::Steam(76561197960287930), reason: redex_proto::REPORT_CHAT, note: "wrong".into() });
+    a.send(Msg::Report { session: sb, who: redex_proto::PlayerId::Dev, reason: redex_proto::REPORT_CHAT, note: "rude".into() });
     let file = dir.join("reports.jsonl");
     let until = Instant::now() + Duration::from_secs(3);
     while !file.exists() && Instant::now() < until {
@@ -448,7 +448,7 @@ fn a_report_is_written_with_its_context() {
     }
     // the cap is 3 a minute per reporter: one was written, 3 more are sent, only 2 of them are
     for _ in 0..3 {
-        a.send(Msg::Report { session: sb, steam_id: 0, reason: 0, note: "again".into() });
+        a.send(Msg::Report { session: sb, who: redex_proto::PlayerId::Dev, reason: 0, note: "again".into() });
     }
     std::thread::sleep(Duration::from_millis(500));
     let all = std::fs::read_to_string(&file).unwrap();
@@ -503,7 +503,7 @@ fn characters_are_kept_per_account() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Review Focus 4: a PC clock far ahead cannot pin a character forever (a `changed` more than a day ahead of the
+/// a PC clock far ahead cannot pin a character forever (a `changed` more than a day ahead of the
 /// server is dropped), and only looks that pass `Appearance::from_bytes` are kept. Dropped puts get no answer.
 #[test]
 fn a_put_from_the_future_or_with_a_bad_look_is_dropped() {

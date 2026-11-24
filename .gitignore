@@ -20,3 +20,9 @@ exefs/
 # release toolchain staging (tools/release/make-toolchain.ps1)
 /release/
 
+# central server secrets and host names (deploy/central/docker-compose.yml)
+deploy/central/secrets/
+deploy/central/.env
+
+# rendered public status page (deploy/status/render.py)
+deploy/status/site/

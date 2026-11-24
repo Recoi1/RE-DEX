@@ -1,5 +1,5 @@
 # Driven by crates/xr-runtime/tests/two_instances.rs (xy_created_girls), which sets the env and makes the asserts: the checkpoints here have no expects.
-# start-screen plan 2 Task 13, the watcher of the girls' pair: a new game as a girl character (--character; the intro picks the boy, the character's
+# The watcher of the girls' pair: a new game as a girl character (--character; the intro picks the boy, the character's
 # gender wins) to first control in the bedroom, wait for the other girl, watch her puppet (its hair: the player part set), then end.
 # new game: language (English), Begin game, title, Sycamore's intro, boy, name
 400 A

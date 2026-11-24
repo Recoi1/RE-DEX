@@ -1,5 +1,5 @@
 # Driven by crates/xr-runtime/tests/two_instances.rs (xy_a_x_b_y), which sets the env and makes the asserts: the checkpoints here have no expects.
-# plan 5 Task 5, observer of the X+Y pair when A is Pokemon X (the 100% save): fly to Vaniville, wait for the other
+# Observer of the X+Y pair when A is Pokemon X (the 100% save): fly to Vaniville, wait for the other
 # player (a Y trainer or an X biker), watch their puppet (dress, motion, screens) then end (the other player's script ends when it sees them gone).
 400 A
 440 A

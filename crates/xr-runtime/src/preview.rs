@@ -1,4 +1,4 @@
-//! `redex --preview STATE --cci DUMP --build DIR`: the character creator's live preview (start-screen plan 2 Task 5).
+//! `redex --preview STATE --cci DUMP --build DIR`: the character creator's live preview.
 //! A headless game from a bedroom save state (`--make-preview`), at 60 frames a second, deterministic clock, software
 //! renderer, no sound, logging to `<data>/logs/preview.log`. The start screen drives it:
 //! - stdin, one command per line: `look <seq> <38 hex>` (the 19 appearance wire bytes; dropped with a log line unless

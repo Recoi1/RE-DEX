@@ -5,14 +5,24 @@ license.workspace = true
 version.workspace = true
 
 [features]
+# community worlds: Steam login and Steam P2P relays (desktop builds)
+default = ["steam"]
+steam = ["dep:steamworks"]
+# the central world: TCP + TLS (rustls) and account world tickets verified with the account backend; builds without
+# Steam (`--no-default-features --features central`)
+central = ["dep:rustls", "dep:ureq", "dep:serde_json"]
 # the MP test harness: `--dev` (unverified dev ids on a localhost TCP server); never in a release
 mp-tests = []
-# jitter/loss simulation in the TCP transport, for tests (Review Focus 5); a dev server's
+# jitter/loss simulation in the TCP transport, for tests; a dev server's
 sim = ["mp-tests"]
 
 [dependencies]
 redex-proto = { path = "../redex-proto" }
-steamworks = "=0.13.1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+serde_json = { version = "1", optional = true }
+steamworks = { version = "=0.13.1", optional = true }
+ureq = { version = "3", default-features = false, features = ["rustls", "json"], optional = true }
 
 [dev-dependencies]
-redex-world = { path = ".", features = ["sim"] }
+rcgen = "0.13"
+redex-world = { path = ".", default-features = false, features = ["sim", "central"] }
