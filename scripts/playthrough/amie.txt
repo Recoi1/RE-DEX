@@ -1,0 +1,72 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# 100% save: the PSS bottom screen's right arrow goes to Pokemon-Amie (its room, Talonflame walking), a touch brings up
+# DECORATE/PLAY/SWITCH, PLAY loads DllKawaigari (Talonflame in the meadow, the camera captures one picture), then stroking it
+# OPEN: the Pokemon is shown from behind (same with everything interpreted, the software renderer, or a face picture)
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A   # Continue; the PSS message
+1000 TOUCH:310,10   # PSS -> Pokemon-Amie
+1300 TOUCH:160,150   # the menu
+1450 TOUCH:160,165   # PLAY
+1800 TOUCH:140,95 3
+1803 TOUCH:145,95 3
+1806 TOUCH:150,95 3
+1809 TOUCH:155,95 3
+1812 TOUCH:160,95 3
+1815 TOUCH:165,95 3
+1818 TOUCH:170,95 3
+1821 TOUCH:175,95 3
+1824 TOUCH:180,95 3
+1827 TOUCH:175,95 3
+1830 TOUCH:170,95 3
+1833 TOUCH:165,95 3
+1836 TOUCH:160,95 3
+1839 TOUCH:155,95 3
+1842 TOUCH:150,95 3
+1845 TOUCH:145,95 3
+1848 TOUCH:140,95 3
+1851 TOUCH:145,95 3
+1854 TOUCH:150,95 3
+1857 TOUCH:155,95 3
+1860 TOUCH:160,95 3
+1863 TOUCH:165,95 3
+1866 TOUCH:170,95 3
+1869 TOUCH:175,95 3
+1872 TOUCH:180,95 3
+1875 TOUCH:175,95 3
+1878 TOUCH:170,95 3
+1881 TOUCH:165,95 3
+1884 TOUCH:160,95 3
+1887 TOUCH:155,95 3
+1890 TOUCH:150,95 3
+1893 TOUCH:145,95 3
+1896 TOUCH:140,95 3
+1899 TOUCH:145,95 3
+1902 TOUCH:150,95 3
+1905 TOUCH:155,95 3
+1908 TOUCH:160,95 3
+1911 TOUCH:165,95 3
+1914 TOUCH:170,95 3
+1917 TOUCH:175,95 3
+1920 TOUCH:180,95 3
+1923 TOUCH:175,95 3
+1926 TOUCH:170,95 3
+1929 TOUCH:165,95 3
+1932 TOUCH:160,95 3
+1935 TOUCH:155,95 3
+1938 TOUCH:150,95 3
+1941 TOUCH:145,95 3
+1250 checkpoint amie-room
+expect amie-room 4ae118bddd42ae7e
+1400 checkpoint amie-menu
+expect amie-menu f5e7617bdd4e3db0
+1750 checkpoint play
+expect play bfc0f40b78e536e0
+1860 checkpoint stroke
+expect stroke c91c4664376f7aac
+2300 checkpoint after
+expect after 24aaeffa9ba1dff1

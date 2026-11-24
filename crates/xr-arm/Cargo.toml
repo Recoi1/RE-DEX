@@ -1,0 +1,8 @@
+[package]
+name = "xr-arm"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dev-dependencies]
+xr-formats = { path = "../xr-formats" }

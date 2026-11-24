@@ -1,0 +1,311 @@
+# expects recorded with: build y-usa-v0.2.0, renderer vulkan at 1x
+# new game, after new-game-starter.txt (run in the same data dir: it saves at the cafe). Continue at the cafe, walk out of
+# Aquacorde on the south street (x 8307): Shauna runs after the player and battles (Chespin). FIGHT, Ember every turn:
+# Chespin faints, Fennekin grows to Lv. 6. Shauna heals the party; south down Route 1 to Vaniville, into the house: Mom
+# reads the Prof's Letter and gives the Town Map. Then SAVE (the next segment continues from here)
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+720 A
+1010 RIGHT 60   # off the table
+1080 DOWN 30
+1120 RIGHT 95   # to the street that leads south
+1240 DOWN 120   # Shauna: 'Li'l R, wait!'
+1400 A
+1440 A
+1480 A
+1520 A
+1560 A
+1600 A
+1640 A
+1680 A
+1720 A
+1760 A
+1800 A
+1840 A
+1880 A
+1920 A
+1960 A
+2000 A
+2040 A
+2080 A
+2120 A
+2160 A
+2200 A
+2240 A
+2280 A
+2320 A
+2360 A
+2400 A
+2440 A
+2480 A
+2520 A
+2560 A
+2600 A
+2640 A
+2680 A
+2720 A
+2760 A
+2800 A
+2840 A
+2880 A
+# each turn: A (FIGHT, or the next text), then a touch at 80,125 (FIGHT on the command screen, Ember on the move screen)
+2940 A
+2960 TOUCH:80,125
+2980 A
+3000 TOUCH:80,125
+3020 A
+3040 TOUCH:80,125
+3060 A
+3080 TOUCH:80,125
+3100 A
+3120 TOUCH:80,125
+3140 A
+3160 TOUCH:80,125
+3180 A
+3200 TOUCH:80,125
+3220 A
+3240 TOUCH:80,125
+3260 A
+3280 TOUCH:80,125
+3300 A
+3320 TOUCH:80,125
+3340 A
+3360 TOUCH:80,125
+3380 A
+3400 TOUCH:80,125
+3420 A
+3440 TOUCH:80,125
+3460 A
+3480 TOUCH:80,125
+3500 A
+3520 TOUCH:80,125
+3540 A
+3560 TOUCH:80,125
+3580 A
+3600 TOUCH:80,125
+3620 A
+3640 TOUCH:80,125
+3660 A
+3680 TOUCH:80,125
+3700 A
+3720 TOUCH:80,125
+3740 A
+3760 TOUCH:80,125
+3780 A
+3800 TOUCH:80,125
+3820 A
+3840 TOUCH:80,125
+3860 A
+3880 TOUCH:80,125
+3900 A
+3920 TOUCH:80,125
+3940 A
+3960 TOUCH:80,125
+3980 A
+4000 TOUCH:80,125
+4020 A
+4040 TOUCH:80,125
+4060 A
+4080 TOUCH:80,125
+4100 A
+4120 TOUCH:80,125
+4140 A
+4160 TOUCH:80,125
+4180 A
+4200 TOUCH:80,125
+4220 A
+4240 TOUCH:80,125
+4260 A
+4280 TOUCH:80,125
+4300 A
+4320 TOUCH:80,125
+4340 A
+4360 TOUCH:80,125
+4380 A
+4400 TOUCH:80,125
+4420 A
+4440 TOUCH:80,125
+4460 A
+4480 TOUCH:80,125
+4500 A
+4520 TOUCH:80,125
+4540 A
+4560 TOUCH:80,125
+4580 A
+4600 TOUCH:80,125
+4620 A
+4640 TOUCH:80,125
+4660 A
+4680 TOUCH:80,125
+4700 A
+4720 TOUCH:80,125
+4740 A
+4760 TOUCH:80,125
+4780 A
+4800 TOUCH:80,125
+4820 A
+4840 TOUCH:80,125
+4860 A
+4880 TOUCH:80,125
+4900 A
+4920 TOUCH:80,125
+4940 A
+4960 TOUCH:80,125
+4980 A
+5000 TOUCH:80,125
+5020 A
+5040 TOUCH:80,125
+5060 A
+5080 TOUCH:80,125
+5100 A
+5120 TOUCH:80,125
+5140 A
+5160 TOUCH:80,125
+5180 A
+5200 TOUCH:80,125
+5220 A
+5240 TOUCH:80,125
+5260 A
+5280 TOUCH:80,125
+5300 A
+5320 TOUCH:80,125
+5340 A
+5360 TOUCH:80,125
+5380 A
+5400 TOUCH:80,125
+5420 A
+5440 TOUCH:80,125
+5460 A
+5480 TOUCH:80,125
+5500 A
+5520 TOUCH:80,125
+5540 A
+5560 TOUCH:80,125
+5580 A
+5600 TOUCH:80,125
+5620 A
+5640 TOUCH:80,125
+5660 A
+5680 TOUCH:80,125
+5700 A
+5720 TOUCH:80,125
+5740 A
+5760 TOUCH:80,125
+5780 A
+5800 TOUCH:80,125
+5820 A
+5840 TOUCH:80,125
+5860 A
+5880 TOUCH:80,125
+5900 A
+5920 TOUCH:80,125
+6200 RIGHT 16    # back onto the street
+6260 DOWN 742    # south through Route 1
+7100 RIGHT 90    # Vaniville: to the house
+7220 UP 200      # in at the door
+7450 A
+7490 A
+7530 A
+7570 A
+7610 A
+7650 A
+7690 A
+7730 A
+7770 A
+7810 A
+7850 A
+7890 A
+7930 A
+7970 A
+8010 A
+8050 A
+8090 A
+8130 A
+8170 A
+8210 A
+8250 A
+8290 A
+8330 A
+8370 A
+8410 A
+8450 A
+8490 A
+8530 A
+8570 A
+8610 A
+8650 A
+8690 A
+8730 A
+8770 A
+8810 A
+8850 A
+8890 A
+8930 A
+8970 A
+9010 A
+9040 A
+9080 A
+9120 A
+9160 A
+9200 A
+9240 A
+9280 A
+9320 A
+9360 A
+9400 A
+9440 A
+9480 A
+9520 A
+9560 A
+9600 A
+9640 A
+9680 A
+9720 A
+9760 A
+9800 A
+9840 A
+9880 A
+9920 A
+9960 A
+10000 A
+10040 A
+10080 A
+10120 A
+10160 A
+10400 X              # the menu
+10550 TOUCH:80,180   # SAVE
+10700 A              # YES
+11000 B
+1300 checkpoint leave-cafe
+expect leave-cafe 450e9c2499178a37
+1560 checkpoint shauna-wait
+expect shauna-wait eaa3f296711a0b1a
+2200 checkpoint challenged
+expect challenged e0caf382dbba26c9
+3050 checkpoint fight
+expect fight 05d9c06817c20792
+4100 checkpoint ember
+expect ember 2258ad8e483be63a
+5110 checkpoint level-6
+expect level-6 a87744814df57a55
+5280 checkpoint shauna-lost
+expect shauna-lost b337c53e62ea2a68
+5800 checkpoint shauna-heals
+expect shauna-heals abd72a97e371c393
+7250 checkpoint vaniville
+expect vaniville b064d774d7cd4328
+7800 checkpoint mom
+expect mom d8951f17fb647903
+9500 checkpoint town-map
+expect town-map 106e611b8d33d397
+10300 checkpoint free
+expect free 63010bd314184f3a
+10650 checkpoint save-ask
+expect save-ask b7743775d4db7916
+10950 checkpoint saved
+expect saved 9b8eda191b225635
+11100 checkpoint field
+expect field c9fd57009ac13dd3

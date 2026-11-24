@@ -1,0 +1,15 @@
+# 100% save (plan 5 Task 3), run with XR_FAKE_PEERS=1 XR_FAKE_FROM=900 XR_FAKE_EVERY=200 XR_FAKE_TO=11090 and two
+# outfits in XR_FAKE_LOOK: the made-up player changes outfit 50 times in the Laverre Pokemon Center (phase 50 wears
+# the first one again), then leaves. The pool, the dress-up slots and the model heaps are logged before any puppet
+# (none), with the first outfit (base), after the 50 changes in the same outfit (after) and once it left (gone).
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+880 checkpoint none
+1040 checkpoint base
+11080 checkpoint after
+11400 checkpoint gone

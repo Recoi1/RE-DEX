@@ -1,0 +1,202 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# Credits run, segment 2 (after credits-1-league.txt, in the same data dir): Continue in the Elite Four hall, the right
+# wall's upper door (Blazing Chamber): Elite Four Malva. Talonflame leads (as in league.txt): Brave Bird, then Fly after
+# 15 picks (Brave Bird's PP), a Full Restore from the Bag below 50% HP. Milotic (Hydro Pump) lost to Chandelure's
+# Confuse Ray and grass move. Back on the hall's centre: Electivire (slot 5) to the front; SAVE.
+autobattle 80,60 heal 40,215;80,45;40,210;40,210;40,210;80,150;160,200;80,40 50 then 240,125 15 faint 240,110;80,160;80,95;240,45 3
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+1000 DOWN 13   # the door to the Blazing Chamber: down to z 297, then right
+1020 RIGHT 13
+1045 DOWN 13
+1065 RIGHT 13
+1300 UP 300
+1715 UP 200
+2915 UP 400   # onto the platform
+3415 A
+3455 A
+3495 A
+3535 A
+3575 A
+3615 A
+3655 A
+3695 A
+3735 A
+3775 A
+3815 A
+3855 A
+3895 A
+3935 A
+3975 A
+4015 A
+4055 A
+4095 A
+4135 A
+4175 A
+4215 A
+4255 A
+4295 A
+4335 A
+4375 A
+4415 A
+4455 A
+4495 A
+4535 A
+4575 A
+4615 A
+4655 A
+4695 A
+4735 A
+4775 A
+4815 A
+4855 A
+4895 A
+4935 A
+4975 A
+5015 A
+5055 A
+5095 A
+5135 A
+5175 A
+5215 A
+5255 A
+5295 A
+5335 A
+5375 A
+5415 A
+5455 A
+5495 A
+5535 A
+5575 A
+5615 A
+5655 A
+5695 A
+5735 A
+5775 A
+5815 A
+5855 A
+5895 A
+5935 A
+5975 A
+6015 A
+6055 A
+6095 A
+6135 A
+6175 A
+6215 A
+6255 A
+6295 A
+6335 A
+6375 A
+6415 A
+6455 A
+6495 A
+6535 A
+6575 A
+6615 A
+6655 A
+6695 A
+6735 A
+6775 A
+6815 A
+6855 A
+6895 A
+6935 A
+6975 A
+7015 A
+7055 A
+7095 A
+7135 A
+7175 A
+7215 A
+7255 A
+7295 A
+7335 A
+7375 A
+7415 A
+7455 A
+7495 A
+7535 A
+7575 A
+7615 A
+7655 A
+7695 A
+7735 A
+7775 A
+7815 A
+7855 A
+7895 A
+7935 A
+7975 A
+8015 A
+8055 A
+8095 A
+8135 A
+8175 A
+8215 A
+8255 A
+8295 A
+8335 A
+8375 A
+8415 A
+8455 A
+8495 A
+8535 A
+8575 A
+8615 A
+8655 A
+8695 A
+8735 A
+8775 A
+8815 A
+8855 A
+8895 A
+8935 A
+8975 A
+9015 A
+9055 A
+9095 A
+9135 A
+9175 A
+9215 A
+9255 A
+9295 A
+9335 A
+9375 A
+9415 A
+9455 A
+9495 A
+9535 A
+9575 A
+9615 A
+9655 A
+9695 A
+9915 DOWN 500   # off the platform: the hall's centre
+10500 X
+10650 TOUCH:80,60   # POKEMON
+10800 TOUCH:80,160   # Electivire (slot 5)
+10950 TOUCH:270,193   # SWITCH
+11100 TOUCH:80,30   # to slot 1
+11250 B
+11400 B
+11550 B
+11750 X
+11900 TOUCH:80,180   # SAVE
+12050 A   # YES
+990 checkpoint continued
+expect continued 839aec32ded381dc
+1250 checkpoint passage
+expect passage d6a3c03eafaec301
+2715 checkpoint blazing-chamber
+expect blazing-chamber a37cd339b0d8c63d
+3500 checkpoint malva
+expect malva f381cc071fb62368
+10365 checkpoint after-malva
+expect after-malva d783ba886b54a280
+11200 checkpoint lead-electivire
+expect lead-electivire 52835c363fdc6d7e
+12350 checkpoint saved
+expect saved 427971b65bf46817

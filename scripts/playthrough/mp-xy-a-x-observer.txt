@@ -1,0 +1,52 @@
+# Driven by crates/xr-runtime/tests/two_instances.rs (xy_a_x_b_y), which sets the env and makes the asserts: the checkpoints here have no expects.
+# plan 5 Task 5, observer of the X+Y pair when A is Pokemon X (the 100% save): fly to Vaniville, wait for the other
+# player (a Y trainer or an X biker), watch their puppet (dress, motion, screens) then end (the other player's script ends when it sees them gone).
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40   # out of the Laverre Pokemon Center
+1450 X
+1600 TOUCH:80,60
+1750 TOUCH:80,40
+1900 TOUCH:262,104
+2000 TOUCH:170,104
+2200 TOUCH:213,180   # Vaniville Town
+2300 A
+3200 checkpoint landed
+3201 wait_until puppets>=1 7200
+3202 checkpoint met
+3232 checkpoint watch01
+3262 checkpoint watch02
+3292 checkpoint watch03
+3322 checkpoint watch04
+3352 checkpoint watch05
+3382 checkpoint watch06
+3412 checkpoint watch07
+3442 checkpoint watch08
+3472 checkpoint watch09
+3502 checkpoint watch10
+3532 checkpoint watch11
+3562 checkpoint watch12
+3592 checkpoint watch13
+3622 checkpoint watch14
+3652 checkpoint watch15
+3682 checkpoint watch16
+3712 checkpoint watch17
+3742 checkpoint watch18
+3772 checkpoint watch19
+3802 checkpoint watch20
+3832 checkpoint watch21
+3862 checkpoint watch22
+3892 checkpoint watch23
+3922 checkpoint watch24
+3952 checkpoint watch25
+3982 checkpoint watch26
+4012 checkpoint watch27
+4042 checkpoint watch28
+4072 checkpoint watch29
+4102 checkpoint watch30
+4200 checkpoint seen

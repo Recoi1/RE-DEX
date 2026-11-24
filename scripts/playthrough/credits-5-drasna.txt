@@ -1,0 +1,253 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# Credits run, segment 5 (after credits-4-wikstrom.txt, same data dir): Continue in the hall; down to the south wall,
+# left to the left wall, up along it to the lower door (z 549), the corridor, the steps: Elite Four Drasna. Aegislash
+# leads: Iron Head (its first move), a Full Restore below 50% HP. Back in the hall: Talonflame (slot 5) to the front for Diantha; SAVE.
+autobattle 80,60 heal 40,215;80,45;40,210;40,210;40,210;80,150;160,200;80,40 50 faint 240,45;80,160;240,110;80,95 3
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+1000 DOWN 500   # to the south wall
+1600 UP 70
+1700 LEFT 400   # to the left wall
+2150 UP 13
+2170 LEFT 13
+2195 UP 13
+2215 LEFT 13
+2240 UP 13
+2260 LEFT 13
+2285 UP 13
+2305 LEFT 13
+2330 UP 13
+2350 LEFT 13
+2375 UP 13
+2395 LEFT 13
+2420 UP 13
+2440 LEFT 13
+2465 UP 13
+2485 LEFT 13
+2510 UP 13
+2530 LEFT 13
+2555 UP 13
+2575 LEFT 13
+2650 UP 300   # the corridor
+3065 UP 200
+4265 UP 400   # into the chamber
+5000 UP 300   # up the steps to Drasna
+5400 A
+5440 A
+5480 A
+5520 A
+5560 A
+5600 A
+5640 A
+5680 A
+5720 A
+5760 A
+5800 A
+5840 A
+5880 A
+5920 A
+5960 A
+6000 A
+6040 A
+6080 A
+6120 A
+6160 A
+6200 A
+6240 A
+6280 A
+6320 A
+6360 A
+6400 A
+6440 A
+6480 A
+6520 A
+6560 A
+6600 A
+6640 A
+6680 A
+6720 A
+6760 A
+6800 A
+6840 A
+6880 A
+6920 A
+6960 A
+7000 A
+7040 A
+7080 A
+7120 A
+7160 A
+7200 A
+7240 A
+7280 A
+7320 A
+7360 A
+7400 A
+7440 A
+7480 A
+7520 A
+7560 A
+7600 A
+7640 A
+7680 A
+7720 A
+7760 A
+7800 A
+7840 A
+7880 A
+7920 A
+7960 A
+8000 A
+8040 A
+8080 A
+8120 A
+8160 A
+8200 A
+8240 A
+8280 A
+8320 A
+8360 A
+8400 A
+8440 A
+8480 A
+8520 A
+8560 A
+8600 A
+8640 A
+8680 A
+8720 A
+8760 A
+8800 A
+8840 A
+8880 A
+8920 A
+8960 A
+9000 A
+9040 A
+9080 A
+9120 A
+9160 A
+9200 A
+9240 A
+9280 A
+9320 A
+9360 A
+9400 A
+9440 A
+9480 A
+9520 A
+9560 A
+9600 A
+9640 A
+9680 A
+9720 A
+9760 A
+9800 A
+9840 A
+9880 A
+9920 A
+9960 A
+10000 A
+10040 A
+10080 A
+10120 A
+10160 A
+10200 A
+10240 A
+10280 A
+10320 A
+10360 A
+10400 A
+10440 A
+10480 A
+10520 A
+10560 A
+10600 A
+10640 A
+10680 A
+10720 A
+10760 A
+10800 A
+10840 A
+10880 A
+10920 A
+10960 A
+11000 A
+11040 A
+11080 A
+11120 A
+11160 A
+11200 A
+11240 A
+11280 A
+11320 A
+11360 A
+11400 A
+11440 A
+11480 A
+11520 A
+11560 A
+11600 A
+11640 A
+11680 A
+990 checkpoint continued
+expect continued 2a6238c9346d52dc
+2600 checkpoint passage
+expect passage 66a6d56395f51b17
+4100 checkpoint corridor
+expect corridor 064c07935070f2c0
+5350 checkpoint drasna
+expect drasna 6da59221cb18ea1c
+11740 A   # Drasna's farewell
+11780 A
+11820 A
+11860 A
+11900 A
+11940 A
+11980 A
+12020 A
+12060 A
+12100 A
+12140 A
+12180 A
+12220 A
+12260 A
+12300 A
+12340 A
+12380 A
+12420 A
+12460 A
+12500 A
+12540 A
+12580 A
+12620 A
+12660 A
+12700 A
+13400 A   # "you're going already? Farewell"
+13440 A
+13480 A
+13600 DOWN 500   # back to the hall
+14900 X
+15050 TOUCH:80,60   # POKEMON
+15200 TOUCH:80,160   # Talonflame (slot 5)
+15350 TOUCH:270,193   # SWITCH
+15500 TOUCH:80,30   # to slot 1
+15650 B
+15800 B
+15950 B
+16150 X
+16300 TOUCH:80,180   # SAVE
+16450 A   # YES
+15600 checkpoint lead-talonflame
+expect lead-talonflame 359b8960c6207d18
+16750 checkpoint saved
+expect saved 1682cecd86ea0fd7
+13950 A   # the farewell again, if the first step down started it
+13990 A
+14030 A
+14200 DOWN 500   # back to the hall
+14800 checkpoint after-drasna
+expect after-drasna 2d6ce21ce9896301

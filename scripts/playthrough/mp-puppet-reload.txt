@@ -1,0 +1,8 @@
+# run after mp-puppet-save.txt in the same data dir, with no fake peers: Continue, and the pool holds the zone's NPCs
+# and the player only (the "field" line's slot count, no "puppets" line)
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+1050 checkpoint continued

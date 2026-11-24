@@ -1,0 +1,25 @@
+# 100% save (plan 5 Task 1): out of the Pokemon Center door, turn on the spot (the two screens differ only in the
+# player's sprite: the projection test finds the sprite there), walk, run, then Y (the registered-item wheel) and RIGHT
+# (the bike) and ride. The runner logs "field/appearance/camera NAME: ..." at each checkpoint; tests/exec.rs checks them.
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40   # out of the door
+1200 DOWN 10
+1300 checkpoint face_d
+1310 LEFT 3    # a tap turns without a step
+1330 checkpoint face_l
+1340 RIGHT 30
+1360 checkpoint walk
+1400 B 40      # B held: running
+1400 LEFT 40
+1430 checkpoint run
+1500 Y 4       # the wheel of registered items
+1600 checkpoint wheel
+1620 RIGHT 40  # the bike, and ride right
+1650 checkpoint bike
+1700 checkpoint bike_still

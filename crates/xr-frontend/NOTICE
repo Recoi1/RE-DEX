@@ -1,0 +1,60 @@
+Ported from Zakuro's frontend crate `zakuro`: https://github.com/fearkov/zakuro (crates/zakuro)
+Commit: fdf67b2
+License: MIT (see LICENSE in this directory)
+Copyright (c) 2026 fearkov
+
+Files taken from zakuro/src, and what we changed in them:
+- audio.rs, gamepad.rs, input.rs, microphone.rs, present.rs, pro_controller.rs: as-is (present.rs plus `set_vsync`; input.rs's
+  tests use the new default keys), except `zakuro_core::` became
+  `xr_hle::` (our port of zakuro-core).
+- settings.rs: the same, plus: the `recompiled` setting (3dsrecomp's code vs the interpreter) is removed from Settings and
+  GameSettings; the file lives in <config dir>/redex/settings.toml instead of .../zakuro/; the GPU resolution defaults
+  to 2x instead of 3x.
+- lib.rs: rewritten from Zakuro's lib.rs, keeping its window/backend setup (`resumed`), event handling, key handling
+  (F1, F9, F10, F11, Tab fast forward, M to blow into the mic), touch and tilt, frame pacing (`step`, FRAME_TIME,
+  CATCH_UP_LIMIT, MAX_SKIPPED, `skips_showing` and its test), `emulate`, `present`, `shown` and `shown_right`, and (since
+  plan 4) its interface wiring: egui fed the window's events (`window_event`, `pointer_taken`), the key rebinding in
+  `key`, `poll_gamepads` (Home), `apply_settings`, `apply_microphone`, `interface` and the game's keyboard.
+  Changes:
+  - one game, booted through a closure the runtime passes (`run(options, config, boot)`), driven through the `Game`
+    trait (run_frame + system) instead of owning a zakuro_core::System; the window's thread holds the executor's
+    baton between frames;
+  - Escape pauses (as Azahar's does) instead of opening Zakuro's menu over the game; Home on a controller opens and
+    closes Configure;
+  - a native menu bar like Azahar's (menubar.rs, our own, on the `muda` crate): File, Emulation (pause, restart, speed
+    limit, Configure), View (fullscreen, layouts, swap screens, rotate, FPS), Tools (screenshot, texture packs),
+    Multiplayer (disabled, coming soon), Help (about, GitHub page); F12 saves a screenshot; on Windows only for now
+    (muda is a Windows-only dependency, other systems get a stub and use the keys and Configure);
+  - a speed limit (Azahar's limit speed, 60-500% or unlocked) and VSync on/off; swap screens in every layout
+    (the presenter's StackedSwapped, SideBySideSwapped and LargeBottom arrangements in our zakuro-gpu copy);
+  - Restart starts the game again in a new process with the same command line;
+  - the window is titled "RE:DEX — Pokémon X" and has the RE:DEX gear (assets/icon.png) as its window and taskbar icon;
+  - audio.rs: the sound ramps back in over about 5 ms after a gap (a pause, Configure, a menu), so it doesn't click;
+  - the window can stop after N frames (`Options::frames`); the window title shows RE:DEX and the frame count.
+- gui.rs: as-is, without the system fonts for Japanese, Korean and Chinese game names (the menus show none).
+- menus.rs: Zakuro's settings window rebuilt as Azahar's Configure dialog with General / Graphics / Audio / Controls
+  tabs, from Zakuro's helper rows (resolution, texture packs, interpolation, window scale, screens, rotation, filter,
+  integer scale, top shape, 3D, depth, language), its controls and controller grids, `keyboard` (the game's text
+  entry), `message`, the frame rate and fast forward badges, and its tests ("the settings fit a short screen", "a long
+  message can still be closed", "keys have short names"). Our own on top: the RE:DEX theme (the icon's red, dark and
+  light following Windows or chosen), switches, group boxes, the toasts, the FPS pill, the paused look, and animations
+  (Configure fading and scaling in and out, the tab underline gliding, hover easing, toasts sliding, the screenshot
+  flash), which stay still when Windows' "Show animations" is off.
+- settings.rs: also vsync, limit_speed, speed_limit and swap_screens; a PC keyboard layout for new installs (WASD
+  circle pad, arrows D-pad, Space A, Q B, F X, R Y, 1 L, 3 R, Z ZL, C ZR, IJKL C-stick; saved files keep their keys);
+  REDEX_SETTINGS points the settings at another file (tests).
+- Left out (not ported): the library, recompile.rs and zig.rs (3dsrecomp builds; to be replaced by our xr-recomp) and
+  the compiler offer, cheats, multiplayer and rooms, Download Play, per-game settings (game_settings), the library
+  background, report.rs, camera.rs (nokhwa), cli.rs, save states (F5/F8), replays (ZAKURO_RECORD/REPLAY), the test
+  pattern, the GameOverlay hook.
+Nothing from fearkov/3dsrecomp (recomp3ds, recomp-abi) is used.
+
+Fonts built into the program: egui draws the menus with the fonts its `epaint_default_fonts` crate (0.36) embeds,
+each under its own licence (the licence texts ship in that crate's fonts/ folder):
+- Ubuntu Light: Ubuntu Font Licence 1.0, Copyright 2010-2011 Canonical Ltd.
+- Noto Emoji: SIL Open Font License 1.1, Copyright Google Inc.
+- Hack Regular: MIT License, Copyright 2018 Source Foundry Authors; based on Bitstream Vera Sans Mono (Bitstream
+  Vera License, Copyright 2003 Bitstream, Inc.) and DejaVu (public domain).
+- emoji-icon-font: MIT License, Copyright 2014 John Slegers.
+The crate's own code is MIT OR Apache-2.0.
+The crate keeps edition 2021, as upstream, so upstream diffs apply cleanly.

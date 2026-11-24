@@ -1,0 +1,40 @@
+[package]
+name = "xr-runtime"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "redex"
+path = "src/main.rs"
+
+[features]
+# the MP test harness: --dev-id and the local wireless room flags, and dev inputs (headless, scripts, save states,
+# fake peers) allowed in a world. Never in a release: make-release builds without it
+mp-tests = []
+
+[[test]]
+name = "two_instances"
+required-features = ["mp-tests"]
+
+[dependencies]
+libloading = "0.8"
+png = "0.18.1"
+serde_json = "1"
+sha2 = "0.10"
+windows-sys = { version = "0.59", features = ["Win32_System_Memory", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+xr-arm = { path = "../xr-arm" }
+xr-hle = { path = "../xr-hle" }
+xr-net = { path = "../xr-net" }
+redex-proto = { path = "../redex-proto" }
+xr-frontend = { path = "../xr-frontend" }
+xr-intake = { path = "../xr-intake" }
+redex-builder = { path = "../redex-builder" }
+log.workspace = true
+zakuro-common.workspace = true
+zakuro-cpu.workspace = true
+zakuro-gpu.workspace = true
+xr-mem = { path = "../xr-mem" }
+
+[dev-dependencies]
+redex-world = { path = "../redex-world" }

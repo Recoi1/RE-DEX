@@ -1,0 +1,39 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# 100% save, no network: the PSS menu (top of the bottom screen), page 2, the O-Power list, back, page 1, Wonder Trade.
+# 'Is it OK to begin connecting to the Internet?' Yes: the game saves first, then its connection fails (the error
+# applet 0x406 is closed at once by xr-hle, so no error text) and the PSS menu comes back
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1000 TOUCH:160,10   # the PSS menu
+1250 TOUCH:305,118   # page 2
+1450 TOUCH:90,118   # O-Power
+1800 B
+2000 TOUCH:15,118   # page 1
+2200 TOUCH:230,118   # Wonder Trade
+2600 TOUCH:160,130   # Yes
+3200 A
+3300 A
+3400 A
+3500 A
+3600 A
+3700 A
+3800 A
+3900 A
+4000 A
+1200 checkpoint pss-menu
+expect pss-menu 5598129da1afa260
+1700 checkpoint o-power
+expect o-power 8638d6b10b4e75e7
+2500 checkpoint connect-ask
+expect connect-ask 9a1505fb0a63773f
+3000 checkpoint save-ask
+expect save-ask f1d8f6a5769ebdd4
+3350 checkpoint saved
+expect saved 24d11e52286c3962
+4300 checkpoint back
+expect back c8e7e36701025c84

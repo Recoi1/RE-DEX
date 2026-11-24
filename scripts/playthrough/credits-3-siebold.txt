@@ -1,0 +1,211 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# Credits run, segment 3 (after credits-2-malva.txt, same data dir): Continue on the hall's centre; down, right to the
+# right wall, then up along it to the lower door (z 549), the corridor, the steps: Elite Four Siebold. Electivire leads:
+# Thunderbolt (the first move), a Full Restore below 50% HP. Back on the centre (Electivire stays in front); SAVE.
+autobattle 80,60 heal 40,215;80,45;40,210;40,210;40,210;80,150;160,200;80,40 50 faint 80,95;240,45;80,160;240,110 3
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+1000 DOWN 500   # to the south wall
+1600 UP 70
+1700 RIGHT 400   # to the right wall
+2150 UP 13
+2170 RIGHT 13
+2195 UP 13
+2215 RIGHT 13
+2240 UP 13
+2260 RIGHT 13
+2285 UP 13
+2305 RIGHT 13
+2330 UP 13
+2350 RIGHT 13
+2375 UP 13
+2395 RIGHT 13
+2420 UP 13
+2440 RIGHT 13
+2465 UP 13
+2485 RIGHT 13
+2510 UP 13
+2530 RIGHT 13
+2555 UP 13
+2575 RIGHT 13
+2650 UP 300   # the corridor
+3065 UP 200
+4265 UP 400   # into the chamber
+11965 DOWN 500   # off the platform: the hall's centre
+13800 X
+13950 TOUCH:80,180   # SAVE
+14100 A   # YES
+990 checkpoint continued
+expect continued 53581f9305a38a0b
+2600 checkpoint passage
+expect passage d08d27f3811e89b6
+4100 checkpoint chamber
+expect chamber fe51aeec0e18931a
+5350 checkpoint siebold
+expect siebold aa3ca728c0364e47
+12415 checkpoint after-siebold
+expect after-siebold ac8db3a0d9d89a85
+14400 checkpoint saved
+expect saved b63de6eb38085e7c
+5000 UP 300   # up the steps to Siebold
+5400 A
+5440 A
+5480 A
+5520 A
+5560 A
+5600 A
+5640 A
+5680 A
+5720 A
+5760 A
+5800 A
+5840 A
+5880 A
+5920 A
+5960 A
+6000 A
+6040 A
+6080 A
+6120 A
+6160 A
+6200 A
+6240 A
+6280 A
+6320 A
+6360 A
+6400 A
+6440 A
+6480 A
+6520 A
+6560 A
+6600 A
+6640 A
+6680 A
+6720 A
+6760 A
+6800 A
+6840 A
+6880 A
+6920 A
+6960 A
+7000 A
+7040 A
+7080 A
+7120 A
+7160 A
+7200 A
+7240 A
+7280 A
+7320 A
+7360 A
+7400 A
+7440 A
+7480 A
+7520 A
+7560 A
+7600 A
+7640 A
+7680 A
+7720 A
+7760 A
+7800 A
+7840 A
+7880 A
+7920 A
+7960 A
+8000 A
+8040 A
+8080 A
+8120 A
+8160 A
+8200 A
+8240 A
+8280 A
+8320 A
+8360 A
+8400 A
+8440 A
+8480 A
+8520 A
+8560 A
+8600 A
+8640 A
+8680 A
+8720 A
+8760 A
+8800 A
+8840 A
+8880 A
+8920 A
+8960 A
+9000 A
+9040 A
+9080 A
+9120 A
+9160 A
+9200 A
+9240 A
+9280 A
+9320 A
+9360 A
+9400 A
+9440 A
+9480 A
+9520 A
+9560 A
+9600 A
+9640 A
+9680 A
+9720 A
+9760 A
+9800 A
+9840 A
+9880 A
+9920 A
+9960 A
+10000 A
+10040 A
+10080 A
+10120 A
+10160 A
+10200 A
+10240 A
+10280 A
+10320 A
+10360 A
+10400 A
+10440 A
+10480 A
+10520 A
+10560 A
+10600 A
+10640 A
+10680 A
+10720 A
+10760 A
+10800 A
+10840 A
+10880 A
+10920 A
+10960 A
+11000 A
+11040 A
+11080 A
+11120 A
+11160 A
+11200 A
+11240 A
+11280 A
+11320 A
+11360 A
+11400 A
+11440 A
+11480 A
+11520 A
+11560 A
+11600 A
+11640 A
+11680 A

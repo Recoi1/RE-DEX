@@ -1,0 +1,15 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# run after menus.txt in the same data dir: boot again, Continue, and the game is where menus.txt saved it
+# (outside the Laverre City Pokemon Center; the 100% save itself starts inside at the counter)
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+1300 CIRCLE_LEFT 20   # walk
+580 checkpoint start-menu
+expect start-menu a2a3efaffb91d43b
+1050 checkpoint continued
+expect continued a2e2205c39bd96fc
+1400 checkpoint walked
+expect walked 3b144ad61af1e1c6

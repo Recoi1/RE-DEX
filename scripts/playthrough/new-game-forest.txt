@@ -1,0 +1,143 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# new game, after new-game-route2.txt (same data dir; it saves at the Santalune Forest entrance). `autobattle`: each wild
+# battle on the way is fought with Ember (FIGHT, the bottom-left move) while the script's clock waits. Through the forest
+# grass to the north-east, where Shauna finds a Paralyze Heal and gives it to the player, then on to the loop in the
+# north. Then SAVE. The forest's exit to Route 3 was not found
+autobattle
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+720 A
+1010 UP 12
+1032 UP 12
+1054 UP 12
+1076 RIGHT 12
+1098 UP 12
+1120 UP 12
+1142 UP 12
+1164 UP 12
+1186 UP 12
+1208 RIGHT 12
+1230 RIGHT 12
+1252 RIGHT 12
+1274 UP 12
+1296 UP 12
+1318 RIGHT 12
+1340 RIGHT 12
+1362 RIGHT 12
+1384 RIGHT 12
+1406 DOWN 12
+1428 RIGHT 12
+1450 UP 12
+1472 UP 12
+1494 UP 12
+1516 UP 12
+1538 UP 12
+1560 UP 12
+1582 UP 12
+1604 UP 12
+1626 UP 12
+1648 UP 12
+1670 UP 12
+1692 UP 12
+1714 UP 12
+1736 UP 12
+1758 UP 12
+1780 UP 12
+1802 UP 12
+1824 UP 12
+1846 UP 12
+1868 UP 12
+1890 UP 12
+1912 RIGHT 12
+1934 UP 12
+1956 UP 12
+1978 UP 12
+2000 LEFT 12
+2022 UP 12
+2044 UP 12
+2066 RIGHT 12
+2088 UP 12
+2110 RIGHT 12
+2132 UP 12
+2154 UP 12
+2176 UP 12
+2198 UP 12
+2220 UP 12
+2242 UP 12
+2450 UP 12
+2472 UP 12
+2494 UP 12
+2516 UP 12
+2538 UP 12
+2560 RIGHT 12
+2582 RIGHT 12
+2604 UP 12
+2626 UP 12
+2648 UP 12
+2670 RIGHT 12
+2692 RIGHT 12
+2800 A
+2840 A
+2880 A
+2920 A
+2960 A
+3000 A
+3040 A
+3080 A
+3120 A
+3160 A
+3200 A
+3240 A
+3280 A
+3320 A
+3360 A
+3400 A
+3440 A
+3480 A
+3520 A
+3560 A
+3600 A
+3640 A
+3680 A
+3720 A
+3760 A
+3800 A
+3900 UP 12
+3922 UP 12
+3944 UP 12
+3966 UP 12
+3988 UP 12
+4010 UP 12
+4032 UP 12
+4054 UP 12
+4076 UP 12
+4098 UP 12
+4120 UP 12
+4142 RIGHT 12
+4164 UP 12
+4186 UP 12
+4208 UP 12
+4230 UP 12
+4252 UP 12
+4274 UP 12
+4400 X              # the menu
+4550 TOUCH:80,180   # SAVE
+4700 A              # YES
+5000 B
+1800 checkpoint grass
+expect grass 1482c78277e9985d
+2780 checkpoint shauna-wait
+expect shauna-wait d0f220cd99196ece
+3300 checkpoint paralyze-heal
+expect paralyze-heal 66cd9faae3720b34
+4300 checkpoint north
+expect north 1e2d5be9daf68acc
+4650 checkpoint save-ask
+expect save-ask 6891a5552b3ecf38
+4950 checkpoint saved
+expect saved 036948e55dc7c045
+5100 checkpoint field
+expect field 841593944ed780de

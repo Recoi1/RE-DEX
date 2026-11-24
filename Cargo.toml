@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "third_party/zakuro/*"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+zakuro-common = { path = "third_party/zakuro/zakuro-common" }
+zakuro-fs     = { path = "third_party/zakuro/zakuro-fs" }
+zakuro-cpu    = { path = "third_party/zakuro/zakuro-cpu" }
+# no `jit` (Cranelift): shaders are interpreted; Vulkan + OpenGL + software renderer kept
+zakuro-gpu    = { path = "third_party/zakuro/zakuro-gpu", default-features = false, features = ["vulkan", "opengl"] }
+
+log = "0.4"
+thiserror = "2"
+bitflags = { version = "2", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+rayon = "1"
+memmap2 = "0.9"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+# muda with its dark menu bar's title buffer fixed (it cut titles to 10 characters), see third_party/muda/NOTICE
+[patch.crates-io]
+muda = { path = "third_party/muda" }

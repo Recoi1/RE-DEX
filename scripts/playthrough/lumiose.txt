@@ -1,0 +1,34 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# 100% save: Fly from Laverre to Lumiose City (the v1.0 save-bug area), walk into the boulevard, SAVE there.
+# Then run lumiose-reload.txt in the same data dir: Continue shows Lumiose City and the game resumes there
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40
+1450 X
+1600 TOUCH:80,60
+1750 TOUCH:80,40
+1900 TOUCH:262,104
+2000 TOUCH:170,104
+2200 TOUCH:165,75
+2300 A
+3300 DOWN 30
+3350 RIGHT 120
+3500 LEFT 60
+3600 X
+3750 TOUCH:80,180
+3900 A
+3250 checkpoint lumiose
+expect lumiose fd76a0255e07f9db
+3450 checkpoint boulevard
+expect boulevard b631ddd9c23babd4
+3880 checkpoint save-ask
+expect save-ask be912d68991fc15d
+4050 checkpoint saved
+expect saved 4242ef9cbbd01d19
+4300 checkpoint field
+expect field b3f86205333ff6a0

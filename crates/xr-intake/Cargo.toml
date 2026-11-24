@@ -1,0 +1,9 @@
+﻿[package]
+name = "xr-intake"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+sha2 = "0.10"
+xr-formats = { path = "../xr-formats" }

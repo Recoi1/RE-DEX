@@ -1,0 +1,26 @@
+# 100% save (plan 4 Task 1): out of the Pokemon Center door, turn on the spot four ways, walk, run. The runner logs
+# "field NAME: map .. facing .. mode .." at each checkpoint (xr-net's read accessors); tests/exec.rs checks them.
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1050 checkpoint pokecenter
+1100 DOWN 40   # out of the door
+1200 LEFT 30
+1250 checkpoint outside
+1300 RIGHT 3   # a tap turns without a step
+1330 checkpoint face_r
+1350 UP 3
+1380 checkpoint face_u
+1400 DOWN 3
+1430 checkpoint face_d
+1450 LEFT 3
+1480 checkpoint face_l
+1500 RIGHT 40
+1520 checkpoint walk
+1600 B 50   # B held: running
+1600 RIGHT 50
+1620 checkpoint run

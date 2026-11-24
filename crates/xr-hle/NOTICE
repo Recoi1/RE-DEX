@@ -1,0 +1,55 @@
+xr-hle is ported from Zakuro's zakuro-core crate: https://github.com/fearkov/zakuro
+Commit: fdf67b2 (v0.2.32), path crates/zakuro-core
+License: MIT (see LICENSE in this directory)
+Copyright (c) 2026 fearkov
+
+Nothing from fearkov/3dsrecomp or recomp-abi is in this crate; every reference to them was removed.
+The internal module layout of zakuro-core is kept so upstream diffs apply easily.
+
+Changes from zakuro-core (all of them):
+1. Cargo.toml: package renamed to xr-hle; recomp-abi dependency removed; zakuro-gpu taken from the
+   workspace (default-features = false, features = vulkan + opengl, no jit); xr-mem added; edition 2021 kept.
+   build.rs and examples/ not taken (examples only; boot.rs used the AOT path).
+2. AOT path deleted: src/recompiled.rs, src/spin.rs, src/hints.rs; lib.rs's recompiled run loop
+   (run_recompiled, svc_in_place, tick/wait/release_in_place, plain_in_place and helpers, the TRAIL assert,
+   Config.recompiled/linked/find_recompiled, System.recompiled/hints/spin/recompiled_instructions, the status-line
+   share, the Drop that saved hints, the recompiled-code tests); loader.rs's library loading, swap_recompiled and
+   installed(); kernel/svc.rs in_place(); kernel/mod.rs lendable/held_as and the quiet_*/satisfied_now/timer_due
+   helpers only the in-place path used; ldr_ro.rs and cheats.rs Library::place/check calls (now a log line);
+   state/mod.rs recompiled fields.
+3. memory/: Memory keeps its API but lives in a flat guest region (memory/region.rs GuestRegion; guest addr a is
+   host base + a). Page tables, GPU read/write interception (GpuSync), physical-page watches and the
+   all-writes log (spin only) are gone. Physical ops go through the mapping table; PhysicalMemory is the allocator
+   and holds bytes of unmapped pages; aliases are copies synced at map/unmap (the source stays mapped RW; map
+   logs a warning per new alias; an unmap covering several copies merges their changes). Memory::new reserves its own region;
+   Memory::with_region takes the caller's. New: base, slice_mut, host_slice_mut, translate, config_mem_mut,
+   shared_page_mut, flush_to_physical, take_guards. Callers of phys.host_slice_mut / config_mem_mut /
+   shared_page_mut moved to the Memory versions.
+4. GPU coherency phase 1: guarded ranges are written back right after every command list and display transfer
+   (System::flush_gpu_guards in submit_command_list and display_transfer, and in end_frame as a backstop);
+   the GuestMemory adapter takes slices straight from the flat region and no longer watches pages.
+5. loader::load takes the guest region as a third argument.
+6. System::end_frame, audio_frame, reschedule, apply_wait_result, preempt, idle_interrupted and the
+   next_frame_boundary/next_audio_frame fields made public for the runtime's executor.
+7. Line endings normalised to LF.
+8. kernel/thread.rs: a new thread's FPSCR starts at 0x03000000 (FZ+DN, round to nearest), the mode native code
+   assumes, instead of 0.
+9. lib.rs: System::step_instruction(deadline) -> Stepped { Ran, Idled, Svc(n), ThreadEnded } runs one interpreted
+   instruction and hands an SVC back to the caller (the runtime's interpreter fallback); step() is built on it.
+10. kernel/svc.rs: svcBreak also logs what each register points at (4 words) and one hop further.
+11. System.command_lists counts GX ProcessCommandList commands (gsp.rs logs the first one);
+    System.service_calls (services/mod.rs record_call) counts each service's commands in first-call order.
+12. services/ldr_ro.rs: LoadCRO/UnloadCRO log where a module landed and append a row to <data>/logs/loadcro.csv
+    (log_load); upstream's Library::place of recompiled module code is gone, the runtime places module code through
+    the hook in 15 instead.
+13. cheats.rs: a cheat that writes the game's .text is turned off (logged as an error), recompiled code would not
+    see it; upstream rechecked its recompiled functions instead.
+14. loader.rs: map_code says whether a mod (code.bin/code.ips/code.bps) changed the code, kept in System.code_modded
+    (the runtime refuses to run such a game).
+15. Native CRO modules: cro/mod.rs adds `ModuleHook` (fn(name, Some((code address, code size, code hash))) on a
+    load, None on an unload) and `code_hash` (FNV-1a 64 of a code segment); lib.rs adds System.module_hook (None by
+    default); services/ldr_ro.rs LoadCRO hashes the code segment (segment 0) as copied in, before relocation, and
+    calls the hook once the module is placed, and UnloadCRO calls it with None before unloading.
+16. services/cam.rs: a debug log line when a camera picture lands (port, bytes, address).
+17. System.renderer_name: "software", or "vulkan <device> at <scale>x..." once loader.rs enabled the hardware
+    renderer (the runtime logs it with checkpoint hashes and writes it in script headers).

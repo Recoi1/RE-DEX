@@ -1,0 +1,210 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# new game: language (English), Begin game, title, Sycamore's intro, boy, name
+400 A
+425 A
+450 A
+475 A
+500 A
+525 A
+550 A
+575 A
+600 A
+625 A
+650 A
+675 A
+700 A
+725 A
+750 A
+775 A
+800 A
+825 A
+850 A
+875 A
+900 A
+925 A
+950 A
+975 A
+1000 A
+1025 A
+1050 A
+1075 A
+1100 A
+1125 A
+1150 A
+1175 A
+1200 A
+1225 A
+1250 A
+1275 A
+1300 A
+1325 A
+1350 A
+1375 A
+1400 A
+1425 A
+1450 A
+1475 A
+1500 A
+1525 A
+1550 A
+1575 A
+1600 A
+1625 A
+1650 A
+1675 A
+1700 A
+1725 A
+1750 A
+1775 A
+1800 A
+1825 A
+1850 A
+1875 A
+1900 A
+1925 A
+1950 A
+1975 A
+2000 A
+2025 A
+2050 A
+2075 A
+2100 A
+2125 A
+2150 A
+2175 A
+2200 A
+2225 A
+2250 A
+2275 A
+2300 A
+2325 A
+2350 A
+2375 A
+2400 A
+2425 A
+2450 A
+2475 A
+2500 A
+2525 A
+2550 A
+2575 A
+2600 A
+2625 A
+2650 A
+2675 A
+2700 A
+2725 A
+2750 A
+2775 A
+2800 A
+2825 A
+2850 A
+2875 A
+2900 A
+2925 A
+2950 A
+2975 A
+3000 A
+3025 A
+3050 A
+3075 A
+# the name screen is up by 3150: touch R, e, d on the bottom-screen keyboard, then its enter key
+3300 TOUCH:106,110 6
+3330 TOUCH:84,110 6
+3360 TOUCH:92,145 6
+3400 TOUCH:260,110 6
+3460 A
+3490 A
+3520 A
+3550 A
+3580 A
+3610 A
+3640 A
+3670 A
+3700 A
+3730 A
+3760 A
+3790 A
+3820 A
+3850 A
+3880 A
+3910 A
+3940 A
+3970 A
+4000 A
+4030 A
+4060 A
+4090 A
+4120 A
+4150 A
+4180 A
+4210 A
+4240 A
+4270 A
+4300 A
+4330 A
+4360 A
+4390 A
+4420 A
+4450 A
+4480 A
+4510 A
+4540 A
+4570 A
+4600 A
+4630 A
+4660 A
+4690 A
+4720 A
+4750 A
+4780 A
+4810 A
+4840 A
+4870 A
+4900 A
+4930 A
+4960 A
+4990 A
+5020 A
+5050 A
+5080 A
+5110 A
+5140 A
+5170 A
+5200 A
+5230 A
+5260 A
+5290 A
+5320 A
+5350 A
+5380 A
+5410 A
+5440 A
+5470 A
+5500 A
+5530 A
+5560 A
+5590 A
+5620 A
+5650 A
+5680 A
+5710 A
+5740 A
+5770 A
+# Fletchling wakes the player (5000-5800), they get out of bed (6200-6450); control from about 6520
+6520 RIGHT 12   # first press that moves the player
+6600 DOWN 30
+6700 LEFT 30
+6800 X          # the menu
+3160 checkpoint name-entry
+expect name-entry 3be3f3173f582e89
+3400 checkpoint name-typed
+expect name-typed 7a9f4f969532d0e9
+5200 checkpoint fletchling
+expect fletchling dc9c14a02fd3f7b6
+6280 checkpoint out-of-bed
+expect out-of-bed 25de729997bfbd54
+6500 checkpoint control
+expect control 15abc1f5469df534
+6900 checkpoint menu
+expect menu 75e9dc9949a47c72

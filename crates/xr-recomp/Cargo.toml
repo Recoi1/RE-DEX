@@ -1,0 +1,15 @@
+[package]
+name = "xr-recomp"
+default-run = "xr-recomp"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+serde_json = "1"
+sha2 = "0.10"
+xr-arm = { path = "../xr-arm" }
+xr-codegen = { path = "../xr-codegen" }
+xr-formats = { path = "../xr-formats" }
+# CRO layout (cro::format) for xr-crotab
+xr-hle = { path = "../xr-hle" }

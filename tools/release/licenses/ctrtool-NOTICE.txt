@@ -1,0 +1,4 @@
+ctrtool.exe (toolchain/bin) is CTRTool v1.3.0, (C) jakcron and contributors, from Project_CTR:
+https://github.com/3DSGuy/Project_CTR (folder ctrtool). RE:DEX runs it unchanged to unpack the player's own game dump.
+
+Project_CTR publishes no license file. Its source is at the address above.

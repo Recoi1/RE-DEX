@@ -1,0 +1,661 @@
+{
+  "build": "x-usa-v0.2.0",
+  "exit_code": 0,
+  "functions_generated": 21444,
+  "milestone_reached": "command_list",
+  "misses": null,
+  "recomp_percent": 99.97,
+  "services": [
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x0001"
+        },
+        {
+          "count": 1,
+          "id": "0x0002"
+        },
+        {
+          "count": 43,
+          "id": "0x0005"
+        },
+        {
+          "count": 1,
+          "id": "0x0009"
+        }
+      ],
+      "name": "srv:"
+    },
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x0001"
+        },
+        {
+          "count": 1,
+          "id": "0x0002"
+        },
+        {
+          "count": 3,
+          "id": "0x000E"
+        },
+        {
+          "count": 1,
+          "id": "0x0003"
+        },
+        {
+          "count": 2,
+          "id": "0x0043"
+        },
+        {
+          "count": 3,
+          "id": "0x000D"
+        },
+        {
+          "count": 11,
+          "id": "0x004B"
+        },
+        {
+          "count": 1,
+          "id": "0x0044"
+        },
+        {
+          "count": 2,
+          "id": "0x003E"
+        },
+        {
+          "count": 1,
+          "id": "0x0018"
+        },
+        {
+          "count": 1,
+          "id": "0x0009"
+        },
+        {
+          "count": 1,
+          "id": "0x000C"
+        },
+        {
+          "count": 1,
+          "id": "0x0040"
+        },
+        {
+          "count": 1,
+          "id": "0x001E"
+        }
+      ],
+      "name": "APT:U"
+    },
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x0014"
+        },
+        {
+          "count": 1,
+          "id": "0x0006"
+        },
+        {
+          "count": 2,
+          "id": "0x0007"
+        },
+        {
+          "count": 1,
+          "id": "0x0001"
+        },
+        {
+          "count": 1,
+          "id": "0x0002"
+        }
+      ],
+      "name": "ndm:u"
+    },
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x0861"
+        },
+        {
+          "count": 2,
+          "id": "0x0862"
+        },
+        {
+          "count": 8,
+          "id": "0x0803"
+        },
+        {
+          "count": 7,
+          "id": "0x0863"
+        },
+        {
+          "count": 2,
+          "id": "0x0845"
+        },
+        {
+          "count": 7,
+          "id": "0x080C"
+        },
+        {
+          "count": 1,
+          "id": "0x084C"
+        },
+        {
+          "count": 1,
+          "id": "0x0804"
+        },
+        {
+          "count": 4,
+          "id": "0x080E"
+        },
+        {
+          "count": 1,
+          "id": "0x0808"
+        },
+        {
+          "count": 2,
+          "id": "0x080D"
+        },
+        {
+          "count": 2,
+          "id": "0x0802"
+        },
+        {
+          "count": 1,
+          "id": "0x0851"
+        },
+        {
+          "count": 1,
+          "id": "0x080B"
+        },
+        {
+          "count": 5,
+          "id": "0x0809"
+        }
+      ],
+      "name": "fs:USER"
+    },
+    {
+      "commands": [
+        {
+          "count": 2734,
+          "id": "0x0802"
+        },
+        {
+          "count": 8,
+          "id": "0x0808"
+        },
+        {
+          "count": 2,
+          "id": "0x0804"
+        },
+        {
+          "count": 56,
+          "id": "0x0803"
+        },
+        {
+          "count": 1,
+          "id": "0x080C"
+        },
+        {
+          "count": 1,
+          "id": "0x080A"
+        }
+      ],
+      "name": "FSFile"
+    },
+    {
+      "commands": [
+        {
+          "count": 97,
+          "id": "0x0001"
+        },
+        {
+          "count": 13,
+          "id": "0x0002"
+        },
+        {
+          "count": 8,
+          "id": "0x0003"
+        },
+        {
+          "count": 5,
+          "id": "0x0004"
+        }
+      ],
+      "name": "cfg:u"
+    },
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x000A"
+        }
+      ],
+      "name": "hid:USER"
+    },
+    {
+      "commands": [
+        {
+          "count": 3,
+          "id": "0x0016"
+        },
+        {
+          "count": 1,
+          "id": "0x0013"
+        },
+        {
+          "count": 64,
+          "id": "0x0001"
+        },
+        {
+          "count": 4,
+          "id": "0x0002"
+        },
+        {
+          "count": 86201,
+          "id": "0x000C"
+        },
+        {
+          "count": 1,
+          "id": "0x000B"
+        },
+        {
+          "count": 4624,
+          "id": "0x0008"
+        },
+        {
+          "count": 1,
+          "id": "0x0019"
+        },
+        {
+          "count": 1,
+          "id": "0x0018"
+        },
+        {
+          "count": 1,
+          "id": "0x0017"
+        },
+        {
+          "count": 1,
+          "id": "0x001A"
+        },
+        {
+          "count": 1230,
+          "id": "0x0010"
+        }
+      ],
+      "name": "gsp::Gpu"
+    },
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x0011"
+        },
+        {
+          "count": 8,
+          "id": "0x0015"
+        },
+        {
+          "count": 1,
+          "id": "0x0016"
+        },
+        {
+          "count": 1,
+          "id": "0x0017"
+        },
+        {
+          "count": 5028,
+          "id": "0x000D"
+        },
+        {
+          "count": 2,
+          "id": "0x0007"
+        },
+        {
+          "count": 5029,
+          "id": "0x0010"
+        },
+        {
+          "count": 30,
+          "id": "0x000C"
+        },
+        {
+          "count": 5189,
+          "id": "0x0013"
+        },
+        {
+          "count": 10046,
+          "id": "0x0014"
+        }
+      ],
+      "name": "dsp::DSP"
+    },
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x0032"
+        },
+        {
+          "count": 1,
+          "id": "0x0008"
+        },
+        {
+          "count": 1,
+          "id": "0x0011"
+        },
+        {
+          "count": 6,
+          "id": "0x0005"
+        }
+      ],
+      "name": "frd:u"
+    },
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x0001"
+        },
+        {
+          "count": 1,
+          "id": "0x0030"
+        },
+        {
+          "count": 1,
+          "id": "0x0003"
+        },
+        {
+          "count": 1,
+          "id": "0x002F"
+        }
+      ],
+      "name": "boss:U"
+    },
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x0001"
+        },
+        {
+          "count": 1,
+          "id": "0x0002"
+        },
+        {
+          "count": 11,
+          "id": "0x0004"
+        },
+        {
+          "count": 9,
+          "id": "0x0005"
+        }
+      ],
+      "name": "ldr:ro"
+    },
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x000B"
+        }
+      ],
+      "name": "ptm:u"
+    },
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x0801"
+        },
+        {
+          "count": 1,
+          "id": "0x0802"
+        }
+      ],
+      "name": "FSDirectory"
+    },
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x002B"
+        },
+        {
+          "count": 47,
+          "id": "0x000D"
+        },
+        {
+          "count": 1,
+          "id": "0x000F"
+        },
+        {
+          "count": 46,
+          "id": "0x0027"
+        },
+        {
+          "count": 92,
+          "id": "0x0028"
+        },
+        {
+          "count": 46,
+          "id": "0x0001"
+        },
+        {
+          "count": 46,
+          "id": "0x0003"
+        },
+        {
+          "count": 46,
+          "id": "0x0005"
+        },
+        {
+          "count": 46,
+          "id": "0x0007"
+        },
+        {
+          "count": 46,
+          "id": "0x001A"
+        },
+        {
+          "count": 46,
+          "id": "0x001C"
+        },
+        {
+          "count": 46,
+          "id": "0x0020"
+        },
+        {
+          "count": 46,
+          "id": "0x0022"
+        },
+        {
+          "count": 46,
+          "id": "0x0010"
+        },
+        {
+          "count": 46,
+          "id": "0x0011"
+        },
+        {
+          "count": 46,
+          "id": "0x0012"
+        },
+        {
+          "count": 46,
+          "id": "0x0018"
+        },
+        {
+          "count": 46,
+          "id": "0x0026"
+        },
+        {
+          "count": 1,
+          "id": "0x002C"
+        }
+      ],
+      "name": "y2r:u"
+    },
+    {
+      "commands": [
+        {
+          "count": 1,
+          "id": "0x001B"
+        }
+      ],
+      "name": "nwm::UDS"
+    }
+  ],
+  "svcs": [
+    {
+      "count": 18,
+      "implemented": true,
+      "name": "ControlMemory",
+      "num": "0x01"
+    },
+    {
+      "count": 287,
+      "implemented": true,
+      "name": "CreateThread",
+      "num": "0x08"
+    },
+    {
+      "count": 282,
+      "implemented": true,
+      "name": "ExitThread",
+      "num": "0x09"
+    },
+    {
+      "count": 177,
+      "implemented": true,
+      "name": "SleepThread",
+      "num": "0x0A"
+    },
+    {
+      "count": 2,
+      "implemented": true,
+      "name": "CreateMutex",
+      "num": "0x13"
+    },
+    {
+      "count": 29,
+      "implemented": true,
+      "name": "ReleaseMutex",
+      "num": "0x14"
+    },
+    {
+      "count": 12,
+      "implemented": true,
+      "name": "CreateEvent",
+      "num": "0x17"
+    },
+    {
+      "count": 34132,
+      "implemented": true,
+      "name": "SignalEvent",
+      "num": "0x18"
+    },
+    {
+      "count": 48580,
+      "implemented": true,
+      "name": "ClearEvent",
+      "num": "0x19"
+    },
+    {
+      "count": 1,
+      "implemented": true,
+      "name": "CreateMemoryBlock",
+      "num": "0x1E"
+    },
+    {
+      "count": 4,
+      "implemented": true,
+      "name": "MapMemoryBlock",
+      "num": "0x1F"
+    },
+    {
+      "count": 1,
+      "implemented": true,
+      "name": "UnmapMemoryBlock",
+      "num": "0x20"
+    },
+    {
+      "count": 1,
+      "implemented": true,
+      "name": "CreateAddressArbiter",
+      "num": "0x21"
+    },
+    {
+      "count": 150734,
+      "implemented": true,
+      "name": "ArbitrateAddress",
+      "num": "0x22"
+    },
+    {
+      "count": 336,
+      "implemented": true,
+      "name": "CloseHandle",
+      "num": "0x23"
+    },
+    {
+      "count": 49775,
+      "implemented": true,
+      "name": "WaitSynchronization1",
+      "num": "0x24"
+    },
+    {
+      "count": 10,
+      "implemented": true,
+      "name": "WaitSynchronizationN",
+      "num": "0x25"
+    },
+    {
+      "count": 1,
+      "implemented": true,
+      "name": "DuplicateHandle",
+      "num": "0x27"
+    },
+    {
+      "count": 33066,
+      "implemented": true,
+      "name": "GetSystemTick",
+      "num": "0x28"
+    },
+    {
+      "count": 1,
+      "implemented": true,
+      "name": "ConnectToPort",
+      "num": "0x2D"
+    },
+    {
+      "count": 121345,
+      "implemented": true,
+      "name": "SendSyncRequest",
+      "num": "0x32"
+    },
+    {
+      "count": 328,
+      "implemented": true,
+      "name": "GetThreadId",
+      "num": "0x37"
+    },
+    {
+      "count": 1,
+      "implemented": true,
+      "name": "GetResourceLimit",
+      "num": "0x38"
+    },
+    {
+      "count": 1,
+      "implemented": true,
+      "name": "GetResourceLimitCurrentValues",
+      "num": "0x3A"
+    }
+  ],
+  "undecodable": 7
+}

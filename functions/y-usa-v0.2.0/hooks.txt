@@ -1,0 +1,5 @@
+# guest function start addresses that native code may replace; one per line
+0x0015F860  # 0: the main loop's per-frame call (code.bin 0x1066D8 calls it each pass, between procs): xr-net's puppet tick
+0x00433B20  # 1: the field save (writes FieldMoveModelSave): xr-net sweeps the puppets around it
+0x003D41D8  # 2: move-model Create: with the pool full xr-net deletes a puppet first (a full pool hangs the game)
+0x003D6DF0  # 3: the zone NPC loader (from code.bin 0x3B8B88): puppets wait for it, so they allocate after the zone's NPCs

@@ -1,0 +1,18 @@
+[package]
+name = "xr-net"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+# puts steam_api64.dll next to redex.exe
+build = "../redex-world/build.rs"
+
+[dependencies]
+getrandom = "0.3"
+log.workspace = true
+redex-proto = { path = "../redex-proto" }
+sha2 = "0.10"
+steamworks = "=0.13.1"
+windows-sys = { version = "0.59", features = ["Win32_System_LibraryLoader", "Win32_System_Console"] }
+
+[dev-dependencies]
+redex-world = { path = "../redex-world" }

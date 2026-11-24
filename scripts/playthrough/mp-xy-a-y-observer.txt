@@ -1,0 +1,69 @@
+# Driven by crates/xr-runtime/tests/two_instances.rs (xy_a_y_b_x), which sets the env and makes the asserts: the checkpoints here have no expects.
+# plan 5 Task 5, observer of the X+Y pair when A is Pokemon Y (the xy-cross new-game trainer saved in the Vaniville house;
+# the Y chain is scripts/playthrough/y/new-game*.txt): continue, out of the door, Mom's send-off, then watch the other
+# player's puppet (an X biker flown to Vaniville) then end (the other player's script ends when it sees them gone).
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+720 A
+1010 DOWN 40   # out of the door
+1400 DOWN 30   # Mom's Rhyhorn send-off
+1500 A
+1540 A
+1580 A
+1620 A
+1660 A
+1700 A
+1740 A
+1780 A
+1820 A
+1860 A
+1900 A
+1940 A
+1980 A
+2020 A
+2060 A
+2100 A
+2140 A
+2180 A
+2220 A
+2260 A
+2300 A
+2340 A
+2380 A
+2480 checkpoint free
+2481 wait_until puppets>=1 14400
+2482 checkpoint met
+2512 checkpoint watch01
+2542 checkpoint watch02
+2572 checkpoint watch03
+2602 checkpoint watch04
+2632 checkpoint watch05
+2662 checkpoint watch06
+2692 checkpoint watch07
+2722 checkpoint watch08
+2752 checkpoint watch09
+2782 checkpoint watch10
+2812 checkpoint watch11
+2842 checkpoint watch12
+2872 checkpoint watch13
+2902 checkpoint watch14
+2932 checkpoint watch15
+2962 checkpoint watch16
+2992 checkpoint watch17
+3022 checkpoint watch18
+3052 checkpoint watch19
+3082 checkpoint watch20
+3112 checkpoint watch21
+3142 checkpoint watch22
+3172 checkpoint watch23
+3202 checkpoint watch24
+3232 checkpoint watch25
+3262 checkpoint watch26
+3292 checkpoint watch27
+3322 checkpoint watch28
+3352 checkpoint watch29
+3382 checkpoint watch30
+3500 checkpoint seen

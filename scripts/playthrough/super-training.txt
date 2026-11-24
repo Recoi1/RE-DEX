@@ -1,0 +1,25 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# 100% save: the PSS bottom screen's right arrow goes to Pokemon-Amie, then to Super Training (DllSuperTraining is not a CRO:
+# the bottom-screen apps run from DllField). The training button gives 'Talonflame doesn't seem to want to do any Super
+# Training' (its stats are fully trained), A closes it; the bottom-right button opens the training-bag list
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A   # Continue; the PSS message
+1000 TOUCH:310,10   # PSS -> Pokemon-Amie
+1400 TOUCH:310,10   # -> Super Training
+1700 TOUCH:30,185   # train
+2000 A
+2100 A
+2400 TOUCH:290,190   # training bags
+1650 checkpoint super-training
+expect super-training 7dda67793c5e64a2
+1900 checkpoint no-training
+expect no-training efb505e58cdd610a
+2300 checkpoint closed
+expect closed 3037635f0091146d
+2600 checkpoint bags
+expect bags 073c2e365e72c5ff

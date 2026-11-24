@@ -1,0 +1,8 @@
+[package]
+name = "xr-mem"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Memory"] }

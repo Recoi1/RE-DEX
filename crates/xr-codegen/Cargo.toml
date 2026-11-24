@@ -1,0 +1,9 @@
+[package]
+name = "xr-codegen"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+xr-arm = { path = "../xr-arm" }
+xr-formats = { path = "../xr-formats" }

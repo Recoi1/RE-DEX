@@ -1,0 +1,19 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# 100% save: title, Continue (A at the start menu), the PSS 'system changed' message, then walk and open the menu
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40   # walk down
+1200 LEFT 30   # walk left
+1300 CIRCLE_RIGHT 30   # circle pad right
+1450 X   # open the menu
+1050 checkpoint pokecenter
+expect pokecenter 1a3e3d3ebd9a3a10
+1250 checkpoint outside
+expect outside fc5c82e9bdc15675
+1600 checkpoint menu
+expect menu e90668f904de15f2

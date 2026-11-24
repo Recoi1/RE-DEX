@@ -1,0 +1,550 @@
+# y-usa-v0.2.0 code.bin entry points the game entered in the interpreter (redex misses-proposal.txt from the title
+# and 100%-save runs, plan 3 Task 3), for xr-crotab --update-code-txt --also: address, mode, and the run's note.
+0x00100934 thumb  # 972 hits, lr 0x002FEA0F
+0x00100B20 thumb  # 14 hits, lr 0x002FEA0F
+0x00100C3E thumb  # 3906 hits, lr 0x002FEA0F
+0x00100C76 thumb  # 36 hits, lr 0x002FEA0F
+0x00104408 thumb  # 9 hits, lr 0x006C048C
+0x001048C8 thumb  # 8 hits, lr 0x00102F13
+0x00104950 thumb  # 7 hits, lr 0x00303651
+0x00104998 thumb  # 7 hits, lr 0x00303651
+0x0010EC5C arm  # 2 hits, lr 0x00132AC4
+0x0010F5F8 arm  # 1 hits, lr 0x00132AC4
+0x00111FF4 arm  # 1379 hits, lr 0x001001EF
+0x00113110 arm  # 462 hits, lr 0x001001EF
+0x001132C0 arm  # 84 hits, lr 0x001001EF
+0x001147C8 arm  # 70 hits, lr 0x001001EF
+0x00114E0C arm  # 448 hits, lr 0x001001EF
+0x001174CC arm  # 7 hits, lr 0x0017D6DC
+0x001174DC arm  # 7 hits, lr 0x00132AC4
+0x001174EC arm  # 1792 hits, lr 0x001001EF
+0x00117504 arm  # 21 hits, lr 0x001001EF
+0x00117B8C arm  # 7 hits, lr 0x0010A3F4
+0x0011D3CC arm  # 42 hits, lr 0x001001EF
+0x0011EED8 arm  # 224 hits, lr 0x001001EF
+0x0011EFE0 arm  # 35 hits, lr 0x001001EF
+0x0011EFF0 arm  # 35 hits, lr 0x001001EF
+0x0011F1BC arm  # 35 hits, lr 0x001001EF
+0x0011FE30 arm  # 2100 hits, lr 0x001001EF
+0x0011FE90 arm  # 70 hits, lr 0x001001EF
+0x00120370 arm  # 224 hits, lr 0x001001EF
+0x00120398 arm  # 210 hits, lr 0x001001EF
+0x00121030 arm  # 15 hits, lr 0x00000002
+0x001223B8 arm  # 140 hits, lr 0x001001EF
+0x00122A24 arm  # 7 hits, lr 0x0017D6DC
+0x00122A34 arm  # 7 hits, lr 0x00132AC4
+0x00122A44 arm  # 812 hits, lr 0x001001EF
+0x00123238 arm  # 2165 hits, lr 0x006B6B24
+0x0012415C arm  # 1 hits, lr 0x0010EB64
+0x00124190 arm  # 1 hits, lr 0x004331F8
+0x00124260 arm  # 1 hits, lr 0x004331F8
+0x00125074 arm  # 21 hits, lr 0x00119B60
+0x00125498 arm  # 5061 hits, lr 0x001001EF
+0x00126664 arm  # 623 hits, lr 0x001001EF
+0x00127AFC arm  # 4070 hits, lr 0x001001EF
+0x00127B10 arm  # 770 hits, lr 0x001001EF
+0x001295A0 arm  # 763 hits, lr 0x0013019C
+0x001295C8 arm  # 28 hits, lr 0x0016C20C
+0x0012A66C arm  # 49 hits, lr 0x001001EF
+0x0012BA64 arm  # 980 hits, lr 0x001001EF
+0x0012BDA8 arm  # 896 hits, lr 0x001001EF
+0x0012C3C0 arm  # 928 hits, lr 0x00114660
+0x0012FF70 arm  # 34108 hits, lr 0x0011CB70
+0x0012FF8C arm  # 34108 hits, lr 0x0011CB7C
+0x0012FFA4 arm  # 70 hits, lr 0x00138C20
+0x0012FFB8 arm  # 18956 hits, lr 0x005106B4
+0x0013003C arm  # 9758 hits, lr 0x00138C20
+0x00131E54 arm  # 155 hits, lr 0x0017D6DC
+0x00131E64 arm  # 155 hits, lr 0x00132AC4
+0x00131E70 arm  # 155 hits, lr 0x00132AD0
+0x00132AE4 arm  # 1 hits, lr 0x001E6F5C
+0x001351C8 arm  # 39112 hits, lr 0x001001EF
+0x00138314 arm  # 126 hits, lr 0x001001EF
+0x001385E0 arm  # 42 hits, lr 0x001001EF
+0x0013954C arm  # 2730 hits, lr 0x001001EF
+0x0013D80C arm  # 28 hits, lr 0x001001EF
+0x00140524 arm  # 7 hits, lr 0x1F1F1F1F
+0x00140C68 arm  # 7 hits, lr 0x00140C54
+0x00141030 arm  # 7 hits, lr 0x0014102C
+0x00143510 arm  # 12576 hits, lr 0x001730F8
+0x001435DC arm  # 3894 hits, lr 0x001730F8
+0x001435E0 arm  # 3894 hits, lr 0x001730F8
+0x001435E4 arm  # 3894 hits, lr 0x001730F8
+0x00149214 arm  # 2 hits, lr 0x001001EF
+0x0014B768 arm  # 1736 hits, lr 0x001001EF
+0x0014B918 arm  # 5740 hits, lr 0x0017F0D8
+0x0014C5F0 arm  # 20 hits, lr 0x0012A480
+0x0014D8E8 arm  # 154 hits, lr 0x0010021D
+0x0015D528 arm  # 47 hits, lr 0x001730F8
+0x0015E1F4 arm  # 21 hits, lr 0x001001EF
+0x0015E918 arm  # 665 hits, lr 0x0011CE64
+0x0016744C arm  # 294 hits, lr 0x001001EF
+0x0016EA94 arm  # 14 hits, lr 0x0017D6DC
+0x00173CD0 arm  # 392 hits, lr 0x001001EF
+0x00176B88 arm  # 21 hits, lr 0x00132AC4
+0x00176C40 arm  # 56 hits, lr 0x001001EF
+0x00177134 arm  # 1246 hits, lr 0x003200C0
+0x0017A9EC arm  # 280 hits, lr 0x001001EF
+0x0017AA10 arm  # 280 hits, lr 0x001001EF
+0x0017AF14 arm  # 56 hits, lr 0x001001EF
+0x0017B530 arm  # 13860 hits, lr 0x001001EF
+0x0017CB3C arm  # 7 hits, lr 0x0017D6DC
+0x0017EED4 arm  # 1960 hits, lr 0x001001EF
+0x0017EFD8 arm  # 2 hits, lr 0x00132AC4
+0x0017F3F0 arm  # 2700 hits, lr 0x00179DF8
+0x0017F5F8 arm  # 42 hits, lr 0x0017B218
+0x0017F638 arm  # 256 hits, lr 0x0017B218
+0x0017F650 arm  # 42 hits, lr 0x0017B218
+0x001814E0 arm  # 13860 hits, lr 0x001001EF
+0x00199AA0 arm  # 12 hits, lr 0x006C0AB0
+0x0019A574 arm  # 1236 hits, lr 0x006B6E78
+0x0019A608 arm  # 65898 hits, lr 0x006BAFC4
+0x0019A6DC arm  # 1233 hits, lr 0x006B8248
+0x001A1EA8 arm  # 12054 hits, lr 0x006B3BD8
+0x001B9600 arm  # 836 hits, lr 0x001CC88C
+0x001B9700 arm  # 4525 hits, lr 0x59595959
+0x001B97F8 arm  # 107181 hits, lr 0x001BADE4
+0x001B9820 arm  # 5488 hits, lr 0x001BADE4
+0x001B9838 arm  # 1244 hits, lr 0x001BADE4
+0x001B9850 arm  # 420 hits, lr 0x001BADE4
+0x001B9868 arm  # 183 hits, lr 0x001BADE4
+0x001B9880 arm  # 124 hits, lr 0x001BADE4
+0x001B9898 arm  # 3039 hits, lr 0x001BADE4
+0x001B98B4 arm  # 3067 hits, lr 0x001BADE4
+0x001B98D0 arm  # 249000 hits, lr 0x001BADE4
+0x001B99B4 arm  # 7374 hits, lr 0x001B99B4
+0x001B9A8C arm  # 1246 hits, lr 0x001B98C4
+0x001B9AA4 arm  # 3370 hits, lr 0x001B98BC
+0x001B9AB8 arm  # 237 hits, lr 0x001B98BC
+0x001B9ACC arm  # 54 hits, lr 0x001B98BC
+0x001B9AE0 arm  # 25 hits, lr 0x001B98BC
+0x001B9AF4 arm  # 21 hits, lr 0x001B98BC
+0x001B9B08 arm  # 588 hits, lr 0x001B98BC
+0x001B9B20 arm  # 593 hits, lr 0x001B98BC
+0x001B9CC4 arm  # 339 hits, lr 0x001B9B28
+0x001B9CDC arm  # 652 hits, lr 0x001B9B30
+0x001B9CF0 arm  # 46 hits, lr 0x001B9B28
+0x001B9D04 arm  # 4 hits, lr 0x001B9B28
+0x001B9D18 arm  # 2 hits, lr 0x001B9B28
+0x001B9D2C arm  # 2 hits, lr 0x001B9B28
+0x001B9D40 arm  # 67 hits, lr 0x001B9B30
+0x001B9D58 arm  # 74 hits, lr 0x001B9B28
+0x001B9EEC arm  # 27 hits, lr 0x001B9D68
+0x001B9F04 arm  # 111 hits, lr 0x001B9D60
+0x001B9F18 arm  # 8 hits, lr 0x001B9D60
+0x001B9F68 arm  # 2 hits, lr 0x001B9D60
+0x001BA008 arm  # 1129 hits, lr 0x001B98A0
+0x001BA020 arm  # 3456 hits, lr 0x001B98A8
+0x001BA034 arm  # 271 hits, lr 0x001B98A8
+0x001BA048 arm  # 59 hits, lr 0x001B98A0
+0x001BA05C arm  # 16 hits, lr 0x001B98A0
+0x001BA070 arm  # 12 hits, lr 0x001B98A8
+0x001BA084 arm  # 554 hits, lr 0x001B98A8
+0x001BA09C arm  # 581 hits, lr 0x001B98A8
+0x001BA12C arm  # 262 hits, lr 0x001BA094
+0x001BA144 arm  # 683 hits, lr 0x001BA08C
+0x001BA158 arm  # 25 hits, lr 0x001BA08C
+0x001BA16C arm  # 5 hits, lr 0x001BA08C
+0x001BA180 arm  # 6 hits, lr 0x001BA094
+0x001BA194 arm  # 1 hits, lr 0x001BA094
+0x001BA1A8 arm  # 38 hits, lr 0x001BA08C
+0x001BA1C0 arm  # 88 hits, lr 0x001BA08C
+0x001BA250 arm  # 17 hits, lr 0x001BA1B0
+0x001BA268 arm  # 57 hits, lr 0x001BA1B0
+0x001BA2CC arm  # 2 hits, lr 0x001BA1B8
+0x001BA35C arm  # 441 hits, lr 0x001B9B18
+0x001BA374 arm  # 1432 hits, lr 0x001B9B10
+0x001BA388 arm  # 71 hits, lr 0x001B9B18
+0x001BA39C arm  # 8 hits, lr 0x001BA0AC
+0x001BA3B0 arm  # 3 hits, lr 0x001BA0A4
+0x001BA3C4 arm  # 2 hits, lr 0x001B9B10
+0x001BA3D8 arm  # 212 hits, lr 0x001B9B18
+0x001BA3F0 arm  # 169 hits, lr 0x001B9B10
+0x001BA490 arm  # 119 hits, lr 0x001BA3E0
+0x001BA4A8 arm  # 434 hits, lr 0x001BA3E0
+0x001BA4BC arm  # 13 hits, lr 0x001BA3E0
+0x001BA4E4 arm  # 1 hits, lr 0x001BA1D0
+0x001BA50C arm  # 8 hits, lr 0x001BA3E8
+0x001BA524 arm  # 25 hits, lr 0x001BA3E8
+0x001BA6D0 arm  # 103 hits, lr 0x001BA3F8
+0x001BA6E8 arm  # 325 hits, lr 0x001BA3F8
+0x001BA6FC arm  # 14 hits, lr 0x001BA3F8
+0x001BA74C arm  # 22 hits, lr 0x001BA400
+0x001BA764 arm  # 8 hits, lr 0x001BA400
+0x001BAF04 arm  # 4 hits, lr 0x001BAE8C
+0x001BAF54 arm  # 1189 hits, lr 0x001BAF54
+0x001BAFC8 arm  # 2 hits, lr 0x001BAE8C
+0x001BAFF8 arm  # 328 hits, lr 0x00000000
+0x001BB0A0 arm  # 13565 hits, lr 0x001B98B0
+0x001BB120 arm  # 1787 hits, lr 0x001BAFF8
+0x001BB268 arm  # 1117 hits, lr 0x001BAFF8
+0x001BB2DC arm  # 386 hits, lr 0x001BB354
+0x001BB36C arm  # 28 hits, lr 0x00000000
+0x001BB408 arm  # 497 hits, lr 0x001BAF54
+0x001BB418 arm  # 2798 hits, lr 0x001BAFF8
+0x001BB440 arm  # 105 hits, lr 0x00000000
+0x001BB578 arm  # 30 hits, lr 0x000000BC
+0x001BB5EC arm  # 13 hits, lr 0x00000000
+0x001BB6B8 arm  # 438 hits, lr 0x001BAF54
+0x001BBAB8 arm  # 268 hits, lr 0x001BAF54
+0x001BBB04 arm  # 247 hits, lr 0x001BAF54
+0x001BBDC0 arm  # 798 hits, lr 0x001BAFB8
+0x001BBEA4 arm  # 58 hits, lr 0x001BAF74
+0x001BBF48 arm  # 94 hits, lr 0x001BAF98
+0x001BBFE4 arm  # 5 hits, lr 0x001BB440
+0x001BC048 arm  # 1174 hits, lr 0x001BAFF8
+0x001BC06C arm  # 105 hits, lr 0x001BB440
+0x001BC210 arm  # 493 hits, lr 0x001BAFF8
+0x001BC468 arm  # 231 hits, lr 0x001BAF54
+0x001BC7BC arm  # 272 hits, lr 0x001BAF54
+0x001BC9F4 arm  # 110 hits, lr 0x001BAFF8
+0x001BCD34 arm  # 39 hits, lr 0x001BB36C
+0x001BCD50 arm  # 36 hits, lr 0x001BB5EC
+0x001BCEC4 arm  # 729 hits, lr 0x001BB5DC
+0x001BCF30 arm  # 80 hits, lr 0x001BB598
+0x001BCF7C arm  # 53 hits, lr 0x001BB5BC
+0x001BCFC8 arm  # 1 hits, lr 0x001BB5EC
+0x001BCFFC arm  # 113 hits, lr 0x001BB36C
+0x001BD020 arm  # 21 hits, lr 0x001BB5EC
+0x001BD0C0 arm  # 40 hits, lr 0x001BB36C
+0x001BD1C4 arm  # 31 hits, lr 0x001BB36C
+0x001BD2CC arm  # 39 hits, lr 0x001BB36C
+0x001BD3B4 arm  # 26 hits, lr 0x001BB36C
+0x001BD80C arm  # 10458 hits, lr 0x001BB48C
+0x001BD9BC arm  # 7377 hits, lr 0x001BD5E0
+0x001BDAE0 arm  # 15559 hits, lr 0x001BD5E0
+0x001BDC68 arm  # 6129 hits, lr 0x001BD5E0
+0x001BE020 arm  # 105357 hits, lr 0x001B9700
+0x001BE03C arm  # 1728 hits, lr 0x001B9700
+0x001BE0CC arm  # 814 hits, lr 0x001B9700
+0x001BE258 arm  # 673 hits, lr 0x001B9700
+0x001BE398 arm  # 426 hits, lr 0x001B9700
+0x001BE5AC arm  # 994 hits, lr 0x001B9700
+0x001BE6EC arm  # 951 hits, lr 0x001B9700
+0x001BE8F0 arm  # 2022 hits, lr 0x001B9700
+0x001BEA20 arm  # 1741 hits, lr 0x001B9700
+0x001BEBB8 arm  # 1138 hits, lr 0x001B99B4
+0x001BEBD4 arm  # 779 hits, lr 0x001B99B4
+0x001BEC3C arm  # 381 hits, lr 0x001B99B4
+0x001BEC7C arm  # 342 hits, lr 0x001B99B4
+0x001BED44 arm  # 319 hits, lr 0x001B99B4
+0x001BED78 arm  # 263 hits, lr 0x001B99B4
+0x001BEE20 arm  # 213 hits, lr 0x001B99B4
+0x001BEE74 arm  # 157 hits, lr 0x001B99B4
+0x001BEF70 arm  # 317 hits, lr 0x001B99B4
+0x001BEFA0 arm  # 249 hits, lr 0x001B99B4
+0x001BF044 arm  # 334 hits, lr 0x001B99B4
+0x001BF094 arm  # 251 hits, lr 0x001B99B4
+0x001BF184 arm  # 669 hits, lr 0x001B99B4
+0x001BF1B4 arm  # 444 hits, lr 0x001B99B4
+0x001BF250 arm  # 645 hits, lr 0x001B99B4
+0x001BF294 arm  # 432 hits, lr 0x001B99B4
+0x001BF360 arm  # 287 hits, lr 0x001B9BFC
+0x001BF374 arm  # 183 hits, lr 0x001B9BFC
+0x001BF3B4 arm  # 72 hits, lr 0x001B9BFC
+0x001BF3E4 arm  # 54 hits, lr 0x001B9BFC
+0x001BF46C arm  # 50 hits, lr 0x001B9BFC
+0x001BF494 arm  # 30 hits, lr 0x001B9BFC
+0x001BF508 arm  # 50 hits, lr 0x001B9BFC
+0x001BF544 arm  # 39 hits, lr 0x001B9BFC
+0x001BF5E8 arm  # 70 hits, lr 0x001B9BFC
+0x001BF608 arm  # 51 hits, lr 0x001B9BFC
+0x001BF66C arm  # 72 hits, lr 0x001B9BFC
+0x001BF6A0 arm  # 39 hits, lr 0x001B9BFC
+0x001BF72C arm  # 160 hits, lr 0x001B9BFC
+0x001BF74C arm  # 73 hits, lr 0x001B9BFC
+0x001BF7A8 arm  # 139 hits, lr 0x001B9BFC
+0x001BF7D8 arm  # 76 hits, lr 0x001B9BFC
+0x001BFC18 arm  # 168 hits, lr 0x001001EF
+0x001BFCC8 arm  # 63 hits, lr 0x001001EF
+0x001BFCD8 arm  # 140 hits, lr 0x001001EF
+0x001BFD04 arm  # 11394 hits, lr 0x001001EF
+0x001D651C arm  # 3 hits, lr 0x006A61E4
+0x001DB0A0 arm  # 105 hits, lr 0x001001EF
+0x001E1704 arm  # 224 hits, lr 0x001001EF
+0x001E32B0 arm  # 56 hits, lr 0x001001EF
+0x001E4638 arm  # 7168 hits, lr 0x001001EF
+0x001E47A0 arm  # 42 hits, lr 0x001001EF
+0x001E6B1C arm  # 3 hits, lr 0x006BAF54
+0x001E715C arm  # 14 hits, lr 0x001001EF
+0x001E7190 arm  # 21 hits, lr 0x001001EF
+0x002B174C arm  # 112 hits, lr 0x001001EF
+0x002B17C4 arm  # 1233 hits, lr 0x006B7FE0
+0x002B1800 arm  # 1233 hits, lr 0x006B7FF4
+0x002B183C arm  # 1233 hits, lr 0x006B7FB8
+0x002B1948 arm  # 3 hits, lr 0x006B6E54
+0x002B19F0 arm  # 1233 hits, lr 0x006B7F40
+0x002C8F84 arm  # 14 hits, lr 0x001001EF
+0x002CC664 arm  # 56 hits, lr 0x001001EF
+0x002FE800 thumb  # 228 hits, lr 0x002FE8D5
+0x002FFAD8 thumb  # 34866 hits, lr 0x002FE8D5
+0x0030072C arm  # 18539 hits, lr 0x00146A34
+0x00300754 arm  # 119 hits, lr 0x0014B968
+0x00300784 arm  # 54786 hits, lr 0x00357BD8
+0x003007B8 arm  # 56651 hits, lr 0x00146A4C
+0x003007DC arm  # 14093 hits, lr 0x00146A1C
+0x00300800 arm  # 59454 hits, lr 0x00146A1C
+0x0030463C thumb  # 8 hits, lr 0x00104437
+0x003046B8 thumb  # 2 hits, lr 0x00104457
+0x003046C8 thumb  # 2 hits, lr 0x00104479
+0x00304728 thumb  # 6 hits, lr 0x001044AD
+0x0030475C thumb  # 8 hits, lr 0x00104599
+0x003047D8 thumb  # 2 hits, lr 0x001045BB
+0x003047E8 thumb  # 2 hits, lr 0x001045DD
+0x00304848 thumb  # 6 hits, lr 0x00104613
+0x00309618 arm  # 252 hits, lr 0x001001EF
+0x0030AE08 arm  # 7168 hits, lr 0x001001EF
+0x0030B1C4 arm  # 7168 hits, lr 0x001001EF
+0x0031ADDC arm  # 4 hits, lr 0x0031A9C4
+0x0031B7D0 arm  # 4 hits, lr 0x0031B124
+0x0031EA04 arm  # 28 hits, lr 0x001001EF
+0x00321B3C arm  # 820 hits, lr 0x00388374
+0x00324374 arm  # 8019 hits, lr 0x0050EF24
+0x00324928 arm  # 28 hits, lr 0x001001EF
+0x00324B38 arm  # 3 hits, lr 0x006A66B0
+0x00330BF8 arm  # 3 hits, lr 0x006A6870
+0x00330E60 arm  # 1626 hits, lr 0x006A698C
+0x00330E74 arm  # 3 hits, lr 0x006A6744
+0x00332420 arm  # 6 hits, lr 0x006ECCA0
+0x00346AB4 arm  # 405 hits, lr 0x0034CC68
+0x00346E50 arm  # 402 hits, lr 0x006B55E0
+0x00347B48 arm  # 3 hits, lr 0x006BC558
+0x00348B3C arm  # 3 hits, lr 0x006A65D0
+0x00348F88 arm  # 3 hits, lr 0x006A6764
+0x00349214 arm  # 3 hits, lr 0x006D7690
+0x0034930C arm  # 3 hits, lr 0x006A68B4
+0x0034B464 arm  # 3 hits, lr 0x006BBF9C
+0x0034B7B0 arm  # 1236 hits, lr 0x006B627C
+0x0034BB18 arm  # 1236 hits, lr 0x006B6294
+0x0034BB30 arm  # 3 hits, lr 0x006BC570
+0x003537A0 arm  # 1 hits, lr 0x00353888
+0x003537A8 arm  # 1 hits, lr 0x0035390C
+0x00356634 arm  # 13 hits, lr 0x001D6A7C
+0x00358D50 arm  # 3 hits, lr 0x006BC53C
+0x00358F04 arm  # 3 hits, lr 0x006BC530
+0x0035931C arm  # 1236 hits, lr 0x006B62FC
+0x00359F58 arm  # 9 hits, lr 0x001001EF
+0x0035A05C arm  # 9 hits, lr 0x001001EF
+0x00360EA8 arm  # 2884 hits, lr 0x00365934
+0x00360F38 arm  # 7 hits, lr 0x001001EF
+0x00361684 arm  # 1 hits, lr 0x00375CA4
+0x00361A80 arm  # 422 hits, lr 0x001001EF
+0x00362544 arm  # 7 hits, lr 0x001001EF
+0x00363804 arm  # 896 hits, lr 0x001001EF
+0x003652A8 arm  # 16 hits, lr 0x001001EF
+0x003686D0 arm  # 21 hits, lr 0x001001EF
+0x00369664 arm  # 84 hits, lr 0x001001EF
+0x0036A28C arm  # 77 hits, lr 0x001001EF
+0x0036ECFC arm  # 10 hits, lr 0x0074B3C0
+0x0036F108 arm  # 133644 hits, lr 0x0035D5A4
+0x00370428 arm  # 3 hits, lr 0x00723E34
+0x00374724 arm  # 91 hits, lr 0x001001EF
+0x00376D5C arm  # 77 hits, lr 0x001001EF
+0x00378008 arm  # 12 hits, lr 0x0037A20C
+0x00378140 arm  # 7 hits, lr 0x0037A20C
+0x00378278 arm  # 1 hits, lr 0x0037A20C
+0x003783B0 arm  # 14 hits, lr 0x0037A20C
+0x003796B4 arm  # 175 hits, lr 0x00373D74
+0x00379720 arm  # 3003 hits, lr 0x005111B8
+0x00379A80 arm  # 2236 hits, lr 0x003732B0
+0x00379A98 arm  # 28 hits, lr 0x00373080
+0x00379ADC arm  # 429 hits, lr 0x00511380
+0x0037A274 arm  # 273 hits, lr 0x005111C8
+0x0037B6AC arm  # 3 hits, lr 0x006DD19C
+0x0037B7B8 arm  # 2050 hits, lr 0x006DCEB8
+0x0037BE3C arm  # 3 hits, lr 0x006DD1C4
+0x0037E440 arm  # 6 hits, lr 0x0010021D
+0x0037EA24 arm  # 84 hits, lr 0x001001EF
+0x0037EE24 arm  # 220 hits, lr 0x001001EF
+0x003847D0 arm  # 1980 hits, lr 0x006DA668
+0x00388254 arm  # 2 hits, lr 0x006DD19C
+0x0038B78C arm  # 262 hits, lr 0x001001EF
+0x0038CC20 arm  # 1239 hits, lr 0x0010E5A8
+0x0038CC24 arm  # 56 hits, lr 0x0010021D
+0x00390508 arm  # 2464 hits, lr 0x001001EF
+0x00390524 arm  # 34496 hits, lr 0x001001EF
+0x00390540 arm  # 2772 hits, lr 0x001001EF
+0x00393030 arm  # 12 hits, lr 0x001001EF
+0x003A73DC arm  # 60 hits, lr 0x001001EF
+0x003ACEC8 arm  # 18 hits, lr 0x006E1890
+0x003B1B40 arm  # 98 hits, lr 0x001001EF
+0x003CD7B8 arm  # 3 hits, lr 0x003B7268
+0x003CD82C arm  # 1 hits, lr 0x003B7228
+0x003D1A90 arm  # 162 hits, lr 0x00723C24
+0x003D1AAC arm  # 162 hits, lr 0x00723C30
+0x003D65F4 arm  # 1 hits, lr 0x00748748
+0x003E099C arm  # 307 hits, lr 0x006C4F74
+0x003E09D4 arm  # 13 hits, lr 0x0072FCC4
+0x003E1520 arm  # 1 hits, lr 0x00726688
+0x003F78B4 arm  # 1 hits, lr 0x0011F2F4
+0x003F925C arm  # 1 hits, lr 0x001001EF
+0x00404700 arm  # 28 hits, lr 0x001001EF
+0x0041B444 arm  # 1 hits, lr 0x00771AF8
+0x0041CDB4 arm  # 100 hits, lr 0x006B4BC0
+0x00421EE4 arm  # 3 hits, lr 0x00114EB4
+0x00422174 arm  # 7 hits, lr 0x00114EB4
+0x00422310 arm  # 7 hits, lr 0x00114EB4
+0x00423638 arm  # 1236 hits, lr 0x006BC6A4
+0x00424544 arm  # 3 hits, lr 0x006E1B20
+0x004246C8 arm  # 1 hits, lr 0x003B8218
+0x00424C78 arm  # 1233 hits, lr 0x006E1D10
+0x004491A8 arm  # 6 hits, lr 0x006D6888
+0x0044DFA4 arm  # 3 hits, lr 0x006E21BC
+0x0044E21C arm  # 3 hits, lr 0x006D6250
+0x00451A68 arm  # 3 hits, lr 0x0010021D
+0x004533D8 arm  # 2 hits, lr 0x006DB024
+0x00453D80 arm  # 12 hits, lr 0x001001EF
+0x00457D74 arm  # 18 hits, lr 0x001001EF
+0x0045A978 arm  # 3 hits, lr 0x006BC5F0
+0x0045AC0C arm  # 208 hits, lr 0x0045B0A0
+0x0045B38C arm  # 8 hits, lr 0x001001EF
+0x0045C82C arm  # 207 hits, lr 0x0045DD14
+0x0045E35C arm  # 6 hits, lr 0x001001EF
+0x004608E4 arm  # 453 hits, lr 0x00460DCC
+0x00461C70 arm  # 26 hits, lr 0x001001EF
+0x00475194 arm  # 1272 hits, lr 0x006E1EE0
+0x00476BA8 arm  # 3 hits, lr 0x006A6204
+0x00490EFC arm  # 2884 hits, lr 0x002D1CF8
+0x00497F4C arm  # 30 hits, lr 0x006D8840
+0x0049A414 arm  # 1233 hits, lr 0x006DCEDC
+0x0049CC90 arm  # 8 hits, lr 0x0074B608
+0x0049CCA4 arm  # 5 hits, lr 0x006D6834
+0x0049CE84 arm  # 6 hits, lr 0x006DD0EC
+0x004A71D4 arm  # 4414 hits, lr 0x0070830C
+0x004AFE70 arm  # 3 hits, lr 0x006D6430
+0x004B0048 arm  # 12 hits, lr 0x0071B5E8
+0x004B0088 arm  # 3 hits, lr 0x0071B5E8
+0x004CD3DC arm  # 7 hits, lr 0x08328994
+0x004D4790 arm  # 1233 hits, lr 0x006B7E84
+0x004D4870 arm  # 113971086 hits, lr 0x006B98DC
+0x004D48A8 arm  # 113964918 hits, lr 0x006B98F4
+0x004D48EC arm  # 1233 hits, lr 0x006B8054
+0x004D49B4 arm  # 1251 hits, lr 0x006B9A68
+0x004F8B20 arm  # 112 hits, lr 0x001001EF
+0x00507C50 arm  # 14 hits, lr 0x001001EF
+0x0053B9F8 arm  # 12597 hits, lr 0x006BB01C
+# plan 3 Task 6: entry points the core-systems playthrough scripts (menus, PC, Fly, battles, Amie, PSS, new game to the
+# starter) entered in the interpreter, not listed above
+0x00100184 arm  # 6 hits, lr 0x006D0D08 (task 6, a-fly)
+0x00124334 arm  # 1 hits, lr 0x004331F8 (task 6, a-menus)
+0x00126130 arm  # 117504 hits, lr 0x0010021D (task 6, a-wild)
+0x0012C528 arm  # 1 hits, lr 0x001204D8 (task 6, a-menus)
+0x00131E8C arm  # 117504 hits, lr 0x001001EF (task 6, a-wild)
+0x0015E1DC arm  # 128 hits, lr 0x001001EF (task 6, a-menus)
+0x0017F5E0 arm  # 2 hits, lr 0x0017B218 (task 6, a-ng)
+0x0017F60C arm  # 1458 hits, lr 0x0017B218 (task 6, a-wild)
+0x0017F674 arm  # 628 hits, lr 0x0017B218 (task 6, a-ng)
+0x0017F6C0 arm  # 13879 hits, lr 0x0017B218 (task 6, ngs)
+0x001BFC60 arm  # 1 hits, lr 0x001001EF (task 6, a-fly)
+0x001BFD60 arm  # 5 hits, lr 0x001001EF (task 6, a-menus)
+0x001CF5FC arm  # 4114 hits, lr 0x004CBB9C (task 6, ngs)
+0x001EE32C arm  # 20224 hits, lr 0x001001EF (task 6, a-menus)
+0x0029F228 arm  # 48 hits, lr 0x0029F518 (task 6, a-ng)
+0x0029F2B8 arm  # 240 hits, lr 0x0029F518 (task 6, a-ng)
+0x0029FCBC arm  # 112 hits, lr 0x0029F518 (task 6, a-ng)
+0x002A016C arm  # 80 hits, lr 0x0029F518 (task 6, a-ng)
+0x002A01D4 arm  # 80 hits, lr 0x0029F518 (task 6, a-ng)
+0x002A14B4 arm  # 288 hits, lr 0x002A079C (task 6, a-ng)
+0x002A191C arm  # 32 hits, lr 0x002A0740 (task 6, a-ng)
+0x002C72E8 arm  # 4 hits, lr 0x00745E14 (task 6, a-wild)
+0x00332A14 arm  # 1 hits, lr 0x006C0234 (task 6, a-menus)
+0x00339118 arm  # 4 hits, lr 0x001001EF (task 6, a-menus)
+0x00339DEC arm  # 12 hits, lr 0x0030D378 (task 6, a-fly)
+0x00339DFC arm  # 12 hits, lr 0x00313AD8 (task 6, a-fly)
+0x00339E98 arm  # 12 hits, lr 0x00313AD8 (task 6, a-fly)
+0x00339EB0 arm  # 2 hits, lr 0x0030D378 (task 6, a-menus)
+0x00339ED8 arm  # 1326 hits, lr 0x0033946C (task 6, a-fly)
+0x0033E100 arm  # 2 hits, lr 0x006B7D70 (task 6, a-menus)
+0x003580A8 arm  # 184 hits, lr 0x004CBB9C (task 6, ngs)
+0x00358C9C arm  # 15 hits, lr 0x004587F8 (task 6, a-wild)
+0x0036F688 arm  # 2 hits, lr 0x006AE9E8 (task 6, a-ng)
+0x0036F6C8 arm  # 1184 hits, lr 0x006B5D70 (task 6, a-ng)
+0x0036F748 arm  # 2 hits, lr 0x006AEA10 (task 6, a-ng)
+0x00370110 arm  # 33 hits, lr 0x0036CFB0 (task 6, a-ng)
+0x0037021C arm  # 30 hits, lr 0x0036BADC (task 6, a-ng)
+0x0037060C arm  # 26 hits, lr 0x006ABB50 (task 6, a-ng)
+0x00377ED0 arm  # 228 hits, lr 0x0037A20C (task 6, a-fly)
+0x0037FD7C arm  # 72 hits, lr 0x004463A8 (task 6, a-wild)
+0x0038E71C arm  # 4256 hits, lr 0x0038F060 (task 6, ngs)
+0x00391BAC arm  # 4 hits, lr 0x006C1AA4 (task 6, a-lum)
+0x0039A9D8 arm  # 1 hits, lr 0x006D6204 (task 6, a-wild)
+0x0039AADC arm  # 1 hits, lr 0x0043FEE0 (task 6, a-wild)
+0x0039AB34 arm  # 1 hits, lr 0x0043FF78 (task 6, a-wild)
+0x0039ABF0 arm  # 1 hits, lr 0x0043FF48 (task 6, a-wild)
+0x0039ACA0 arm  # 1 hits, lr 0x0043FF58 (task 6, a-wild)
+0x0039ACCC arm  # 1 hits, lr 0x0043FF38 (task 6, a-wild)
+0x0039AEB8 arm  # 1 hits, lr 0x0043AB20 (task 6, a-wild)
+0x0039AEE4 arm  # 1 hits, lr 0x0043AB30 (task 6, a-wild)
+0x0039AF10 arm  # 1 hits, lr 0x0043AB40 (task 6, a-wild)
+0x0039AF3C arm  # 1 hits, lr 0x00440014 (task 6, a-wild)
+0x0039B034 arm  # 1 hits, lr 0x0043A594 (task 6, a-wild)
+0x0039B060 arm  # 1 hits, lr 0x0043FF88 (task 6, a-wild)
+0x0039B268 arm  # 1 hits, lr 0x0043FF98 (task 6, a-wild)
+0x0039BA54 arm  # 3 hits, lr 0x003C7554 (task 6, a-wild)
+0x0039BB98 arm  # 11 hits, lr 0x00789C18 (task 6, a-wild)
+0x0039C0CC arm  # 5 hits, lr 0x006C3118 (task 6, a-menus)
+0x0039FB44 arm  # 744 hits, lr 0x001001EF (task 6, a-menus)
+0x003A55E8 arm  # 5 hits, lr 0x004CBB9C (task 6, ngs)
+0x003A5FD4 arm  # 3396 hits, lr 0x003A94B4 (task 6, a-wild)
+0x003A62FC arm  # 6 hits, lr 0x001001EF (task 6, a-wild)
+0x003B19A4 arm  # 10 hits, lr 0x0073B558 (task 6, ngs)
+0x003B2718 arm  # 6 hits, lr 0x003B30F0 (task 6, a-fly)
+0x003B273C arm  # 1 hits, lr 0x003B30F0 (task 6, a-menus)
+0x003B274C arm  # 1 hits, lr 0x003B30F0 (task 6, a-pc)
+0x003B27E8 arm  # 1 hits, lr 0x003B30F0 (task 6, a-wild)
+0x003B2968 arm  # 1 hits, lr 0x003B30F0 (task 6, ngs)
+0x003C85B0 arm  # 3 hits, lr 0x007359B0 (task 6, ngs)
+0x003CD24C arm  # 1 hits, lr 0x003B3168 (task 6, a-menus)
+0x003CD778 arm  # 18 hits, lr 0x003B7268 (task 6, a-fly)
+0x003CD8C4 arm  # 6 hits, lr 0x003BD5AC (task 6, a-fly)
+0x003D1AC8 arm  # 2 hits, lr 0x004CBB9C (task 6, a-heal)
+0x003D2FFC arm  # 138 hits, lr 0x00723214 (task 6, a-lum)
+0x003D7334 arm  # 22 hits, lr 0x003D973C (task 6, ngs)
+0x003E0920 arm  # 813 hits, lr 0x00705D0C (task 6, ngs)
+0x003E0988 arm  # 17 hits, lr 0x006D3874 (task 6, ngs)
+0x003F5424 arm  # 104 hits, lr 0x006B73B4 (task 6, ngs)
+0x00418B14 arm  # 1 hits, lr 0x007E590C (task 6, a-menus)
+0x0041B104 arm  # 1 hits, lr 0x004309F0 (task 6, a-menus)
+0x004226F4 arm  # 3 hits, lr 0x0073D78C (task 6, ngs)
+0x00424AC8 arm  # 6 hits, lr 0x003BE130 (task 6, a-fly)
+0x0044142C arm  # 56 hits, lr 0x007037A0 (task 6, a-wild)
+0x0044294C arm  # 9054 hits, lr 0x006B89B8 (task 6, a-wild)
+0x00443018 arm  # 6 hits, lr 0x007034FC (task 6, a-wild)
+0x0045A900 arm  # 2 hits, lr 0x004CBB9C (task 6, a-heal)
+0x0045AC34 arm  # 4740 hits, lr 0x0045B0A0 (task 6, ngs)
+0x0046089C arm  # 7421 hits, lr 0x00460DCC (task 6, ngs)
+0x004924A8 arm  # 1204 hits, lr 0x00492304 (task 6, a-ng)
+0x00492528 arm  # 602 hits, lr 0x00492304 (task 6, a-ng)
+0x0049CF88 arm  # 4 hits, lr 0x006D786C (task 6, a-wild)
+0x0049F9C4 arm  # 6 hits, lr 0x003CD9E4 (task 6, a-fly)
+0x0049FC94 arm  # 1 hits, lr 0x006C2ED4 (task 6, a-menus)
+0x0049FCEC arm  # 1 hits, lr 0x006C2F14 (task 6, a-menus)
+0x0049FD1C arm  # 2 hits, lr 0x006C2DAC (task 6, a-menus)
+0x0049FEC0 arm  # 1 hits, lr 0x006C2EB4 (task 6, a-menus)
+0x0049FF58 arm  # 1 hits, lr 0x006C2EC4 (task 6, a-menus)
+0x0049FF84 arm  # 2 hits, lr 0x006C2D14 (task 6, a-menus)
+0x004A0144 arm  # 7 hits, lr 0x0043A7BC (task 6, a-wild)
+0x004A01C8 arm  # 1 hits, lr 0x006C2F04 (task 6, a-menus)
+0x004A03BC arm  # 7 hits, lr 0x0043A7CC (task 6, a-wild)
+0x004A03E8 arm  # 1 hits, lr 0x006C2EE4 (task 6, a-menus)
+0x004A050C arm  # 1 hits, lr 0x006C2EF4 (task 6, a-menus)
+0x004A0914 arm  # 28 hits, lr 0x00718D88 (task 6, a-wild)
+0x004A0960 arm  # 28 hits, lr 0x00718D48 (task 6, a-wild)
+0x004A09AC arm  # 28 hits, lr 0x00718D58 (task 6, a-wild)
+0x004A0B60 arm  # 28 hits, lr 0x00718D68 (task 6, a-wild)
+0x004A0BAC arm  # 28 hits, lr 0x00718D78 (task 6, a-wild)
+0x004CE164 arm  # 3 hits, lr 0x082AA0DC (task 6, a-amie)
+0x004D4A6C arm  # 12 hits, lr 0x004CBB9C (task 6, a-amie)
+0x004D4A9C arm  # 2178 hits, lr 0x004CBB9C (task 6, a-amie)
+0x004D4BFC arm  # 2541 hits, lr 0x004CBB9C (task 6, a-amie)
+0x004D4D44 arm  # 2178 hits, lr 0x004CBB9C (task 6, a-amie)
+0x0051150C arm  # 1672 hits, lr 0x001001EF (task 6, ngs)
+0x0029F888 arm  # 32 hits, lr 0x0029F518 (task 7, seg)
+0x004CD86C arm  # 2 hits, lr 0x0038DAD8 (task 7, seg)
+0x00453570 arm  # 2 hits, lr 0x00745AD0 (task 7, seg)
+0x0043CBCC arm  # 2 hits, lr 0x006D4660 (task 7, seg)
+0x0043721C arm  # 1 hits, lr 0x006CCBB4 (task 7, le4)
+0x0049D340 arm  # 22200 hits, lr 0x00499810 (task 7, le4)
+0x004924C8 arm  # 408 hits, lr 0x00492304 (task 7, le4)
+0x004924E8 arm  # 408 hits, lr 0x00492304 (task 7, le4)
+0x00492508 arm  # 408 hits, lr 0x00492304 (task 7, le4)

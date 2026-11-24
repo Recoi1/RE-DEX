@@ -1,0 +1,42 @@
+Vendored from Zakuro: https://github.com/fearkov/zakuro
+Commit: fdf67b2
+License: MIT (see LICENSE in this directory)
+Copyright (c) 2026 fearkov
+
+Crates: zakuro-common, zakuro-fs, zakuro-cpu, zakuro-gpu (zakuro-core and the zakuro binary are NOT vendored;
+nothing from fearkov/3dsrecomp / recomp-abi is used - these four crates do not reference it).
+
+Changes to the vendored code (all of them):
+1. Each crate's Cargo.toml: `edition.workspace = true` replaced by `edition = "2021"`
+   (our workspace uses edition 2024; these crates keep their own edition).
+
+2. Git line-ending normalisation (CRLF -> LF) on commit, by this repo's autocrlf settings; no content change.
+
+3. zakuro-cpu/src/vfp.rs, FP results honour FPSCR.DN (commit 6b9b0a5): `flush`/`flush_f64` turn a NaN result into
+   ARM's default NaN (0x7FC00000 / 0x7FF8000000000000) when DN is set, instead of keeping the host's (x86 gives
+   0xFFC00000 for 0/0); the unused `_FPSCR_DN` constant is removed. Test added in zakuro-cpu/tests/vfp.rs:
+   `default_nan_mode_gives_arms_default_nan`.
+
+4. zakuro-cpu/src/vfp.rs, FZ flushes operands: new `Vfp::operand_f32`/`operand_f64` read a denormal as a zero of the
+   same sign when FPSCR.FZ is set; the arithmetic ops (VADD..VDIV, the multiply-accumulates, VSQRT), VCMP/VCMPE and
+   the float conversions read their operands through them (get_f32/get_f64 and the raw moves still flush nothing).
+   VMLA/VMLS/VNMLA/VNMLS round and flush their product before adding it (`Arithmetic::apply` takes the product
+   rounding). Test added in zakuro-cpu/tests/vfp.rs: `flush_to_zero_flushes_operands_and_the_mac_product`.
+
+5. zakuro-gpu, for RE:DEX's settings menu (plan 4): backend/mod.rs adds the StackedSwapped, SideBySideSwapped and
+   LargeBottom arrangements (swap screens) to ScreenLayout and `layout`, with their cases in its layout test;
+   backend/vulkan.rs adds `VulkanPresenter::set_vsync` (off prefers the immediate present mode) and logs the present
+   mode whenever it changes; raster/hardware.rs lets `set_scale` go up to 10x instead of 8x (still capped by the
+   GPU's largest image).
+
+6. zakuro-gpu/src/raster/hardware.rs, `Hardware::holds_unchanged` also takes depth surfaces (it took only color ones):
+   a depth buffer written back to guest memory (Pokémon X has it written back for the CPU every frame) and read as a
+   texture while memory still holds what was written is copied on the GPU at the drawn scale, instead of being read
+   from memory at the console's res (which drew Pokémon X's outlines in blocks of console pixels at any internal
+   resolution). Test added in zakuro-gpu/src/raster.rs: `a_depth_buffer_written_back_unchanged_is_still_copied_on_the_gpu`.
+
+No other file under third_party/zakuro differs from upstream fdf67b2.
+
+Build configuration (outside the vendored files, in the root Cargo.toml):
+- zakuro-gpu is used with `default-features = false, features = ["vulkan", "opengl"]` (no `jit`/Cranelift).
+- Workspace dependency versions copied from Zakuro's root Cargo.toml, minus recomp-abi.

@@ -1,0 +1,14 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# run after lumiose.txt in the same data dir: boot again and Continue in Lumiose City
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+1300 CIRCLE_LEFT 20   # walk
+580 checkpoint start-menu
+expect start-menu 7e97d5892709a176
+1050 checkpoint continued
+expect continued 52d36894593d1819
+1400 checkpoint walked
+expect walked 376d5148110a2637

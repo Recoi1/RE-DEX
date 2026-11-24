@@ -1,0 +1,12 @@
+[package]
+name = "xr-zk-smoke"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dev-dependencies]
+zakuro-cpu.workspace = true
+zakuro-fs.workspace = true
+zakuro-gpu.workspace = true
+memmap2.workspace = true

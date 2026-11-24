@@ -1,0 +1,69 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# 100% save: Fly from Laverre to Aquacorde Town, walk north over the bridge into the Route 2 grass. Wild battle 1 (Zigzagoon):
+# FIGHT Roost (Talonflame 307 -> 360 HP), then BAG, Poke Balls, Poke Ball, USE: caught, no nickname. Wild battle 2
+# (Fletchling): FIGHT Brave Bird, it faints (recoil, Shell Bell, Exp. Share). Wild battle 3 (Zigzagoon): RUN
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40
+1450 X
+1600 TOUCH:80,60
+1750 TOUCH:80,40
+1900 TOUCH:262,104
+2000 TOUCH:170,104
+2200 TOUCH:213,155
+2300 A
+3250 LEFT 40
+3300 UP 300
+3610 RIGHT 40
+3660 UP 840
+5250 TOUCH:160,90
+5320 TOUCH:80,125
+5850 TOUCH:40,215
+5950 TOUCH:240,50
+6050 TOUCH:80,25
+6150 TOUCH:130,215
+7360 TOUCH:160,178
+7700 DOWN 60
+7770 UP 60
+7840 DOWN 60
+7910 UP 60
+8550 TOUCH:160,90
+8620 TOUCH:80,60
+9400 DOWN 60
+9470 UP 60
+9540 DOWN 60
+9610 UP 60
+9680 DOWN 60
+9750 UP 60
+9820 DOWN 60
+9890 UP 60
+10450 TOUCH:160,225
+3250 checkpoint aquacorde
+expect aquacorde d881b1ef3796b072
+4300 checkpoint route2-grass
+expect route2-grass abe3b6a8af189a60
+4800 checkpoint wild1
+expect wild1 c1994883fb7afe7f
+5550 checkpoint roost
+expect roost fced8da1bf96ea38
+6100 checkpoint poke-balls
+expect poke-balls 9014cf476abb92ff
+6950 checkpoint caught
+expect caught c2619822229dbc76
+7340 checkpoint nickname
+expect nickname 90bcf4754eca2fe4
+8150 checkpoint wild2
+expect wild2 3a7087000670a7f9
+8950 checkpoint fainted
+expect fainted b4a33b805751016e
+10050 checkpoint wild3
+expect wild3 cefa2b0b45116f69
+10600 checkpoint got-away
+expect got-away 56fc513a736973f2
+10900 checkpoint field
+expect field aea1d4bf4e207ae5

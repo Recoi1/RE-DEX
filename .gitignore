@@ -1,0 +1,22 @@
+# Rust / build output
+/target/
+/build/
+/generated/
+# Game data must never be committed: dumps, extracted files, recompiled output
+*.3ds
+*.cci
+*.cxi
+*.cia
+*.app
+code.bin
+exheader.bin
+*.cro
+*.crs
+*.crr
+romfs/
+exefs/
+/dump/
+
+# release toolchain staging (tools/release/make-toolchain.ps1)
+/release/
+

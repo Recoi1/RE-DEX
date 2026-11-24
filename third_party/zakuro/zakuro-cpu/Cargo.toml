@@ -1,0 +1,10 @@
+[package]
+name = "zakuro-cpu"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+zakuro-common.workspace = true
+log.workspace = true
+serde.workspace = true

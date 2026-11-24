@@ -1,0 +1,10 @@
+[package]
+name = "zakuro-common"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+log.workspace = true
+thiserror.workspace = true
+bitflags.workspace = true

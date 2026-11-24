@@ -1,0 +1,17 @@
+# 100% save (plan 5 Task 3 fix round 1), run with XR_FAKE_PEERS=1 XR_FAKE_FROM=700 XR_FAKE_TO=1700 XR_FAKE_STILL=1,
+# XR_FAKE_LOOK set to the save's own outfit (the save trainer's: the twin) and XR_SET_FASHION=<Red's outfit>@1060: the local
+# player's outfit changes in memory, and the game builds the player in it at the door. The runner logs
+# "appearance/puppets/dress/heap NAME: ..." at each checkpoint.
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40   # out of the door
+1040 checkpoint twin
+1080 checkpoint changed
+1400 checkpoint outside
+1660 checkpoint outside_later
+1950 checkpoint gone

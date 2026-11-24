@@ -1,0 +1,5 @@
+# short determinism script: language screen, A to Begin game, title
+400 A
+600 A
+900 checkpoint mid
+1300 checkpoint late

@@ -1,0 +1,120 @@
+# 100% save (plan 4 Task 4 fix round 1), run with XR_FAKE_PEERS: wild-battle.txt's way to the Route 2 grass (Fly to
+# Aquacorde, up into the grass) with puppets on screen, then back and forth in the grass with `autobattle` (each wild
+# battle is fought with the bottom-left move while the script's clock waits). DllField goes and comes back with each
+# battle: the puppets stay at most 8 and every one in the pool is known (no orphans). The grass walk does not depend on
+# where the encounters fall (puppet spawns use the game's RNG too, so their timing moves the encounters).
+autobattle
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40
+1450 X
+1600 TOUCH:80,60
+1750 TOUCH:80,40
+1900 TOUCH:262,104
+2000 TOUCH:170,104
+2200 TOUCH:213,155
+2300 A
+3250 LEFT 40
+3300 UP 300
+3610 RIGHT 40
+3660 UP 840
+4600 DOWN 60
+4670 UP 60
+4740 DOWN 60
+4810 UP 60
+4880 DOWN 60
+4950 UP 60
+5020 DOWN 60
+5090 UP 60
+5160 DOWN 60
+5230 UP 60
+5300 DOWN 60
+5370 UP 60
+5440 DOWN 60
+5510 UP 60
+5580 DOWN 60
+5650 UP 60
+5720 DOWN 60
+5790 UP 60
+5860 DOWN 60
+5930 UP 60
+6000 DOWN 60
+6070 UP 60
+6140 DOWN 60
+6210 UP 60
+6280 DOWN 60
+6350 UP 60
+6420 DOWN 60
+6490 UP 60
+6560 DOWN 60
+6630 UP 60
+6700 DOWN 60
+6770 UP 60
+6840 DOWN 60
+6910 UP 60
+6980 DOWN 60
+7050 UP 60
+7120 DOWN 60
+7190 UP 60
+7260 DOWN 60
+7330 UP 60
+7400 DOWN 60
+7470 UP 60
+7540 DOWN 60
+7610 UP 60
+7680 DOWN 60
+7750 UP 60
+7820 DOWN 60
+7890 UP 60
+7960 DOWN 60
+8030 UP 60
+8100 DOWN 60
+8170 UP 60
+8240 DOWN 60
+8310 UP 60
+8380 DOWN 60
+8450 UP 60
+8520 DOWN 60
+8590 UP 60
+8660 DOWN 60
+8730 UP 60
+8800 DOWN 60
+8870 UP 60
+8940 DOWN 60
+9010 UP 60
+9080 DOWN 60
+9150 UP 60
+9220 DOWN 60
+9290 UP 60
+9360 DOWN 60
+9430 UP 60
+9500 DOWN 60
+9570 UP 60
+9640 DOWN 60
+9710 UP 60
+9780 DOWN 60
+9850 UP 60
+9920 DOWN 60
+9990 UP 60
+10060 DOWN 60
+10130 UP 60
+10200 DOWN 60
+10270 UP 60
+10340 DOWN 60
+10410 UP 60
+10480 DOWN 60
+10550 UP 60
+10620 DOWN 60
+10690 UP 60
+10760 DOWN 60
+10830 UP 60
+3250 checkpoint aquacorde
+4300 checkpoint route2-grass
+7000 checkpoint wild3
+9000 checkpoint got-away
+10900 checkpoint field

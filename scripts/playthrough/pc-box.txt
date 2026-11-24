@@ -1,0 +1,41 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# 100% save: the PC in the Laverre City Pokemon Center: Cassius's PC, Withdraw, take Scatterbug from the first box into
+# the party, R to the Battle Box, log out; the party then shows Talonflame and Scatterbug
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A   # Continue; the PSS message
+1000 UP 40   # to the counter
+1100 RIGHT 24   # to the PC, right of the nurse
+1150 UP 6
+1200 A   # boot the PC
+1340 A
+1400 A   # Cassius's PC
+1480 DOWN   # Withdraw Pokemon
+1520 A
+1660 A   # the first Pokemon in the box
+1720 A   # WITHDRAW
+1850 R   # next box
+1950 B
+2010 B
+2070 B
+2130 B
+2190 B
+2250 B
+2450 X   # the menu
+2600 TOUCH:80,60   # POKEMON
+1425 checkpoint pc-menu
+expect pc-menu bec813593db9b3a5
+1650 checkpoint box
+expect box 5f217bf28cea01f4
+1700 checkpoint withdraw-menu
+expect withdraw-menu 42214a998bfc0324
+1900 checkpoint battle-box
+expect battle-box 0acda0230f74f1a9
+2300 checkpoint field
+expect field 26a4d46e55622ec8
+2750 checkpoint party
+expect party 9203265ad2de5b35

@@ -1,0 +1,59 @@
+# 100% save (plan 4 Task 4 fix round 1), run with XR_FAKE_PEERS=30: fly.txt's inputs (Fly to Lumiose, Coumarine,
+# Anistar, Shalour, Snowbelle and Vaniville) with 8 puppets in each city. The runner logs each checkpoint's puppets and
+# the free space of the field's model heaps ("heap NAME: ..."); the game must not hang.
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40
+1450 X
+1600 TOUCH:80,60
+1750 TOUCH:80,40
+1900 TOUCH:262,104
+2000 TOUCH:170,104
+2200 TOUCH:165,75
+2300 A
+3200 checkpoint lumiose
+3350 X
+3500 TOUCH:80,60
+3650 TOUCH:80,40
+3800 TOUCH:262,104
+3900 TOUCH:170,104
+4100 TOUCH:110,62
+4200 A
+5100 checkpoint coumarine
+5250 X
+5400 TOUCH:80,60
+5550 TOUCH:80,40
+5700 TOUCH:262,104
+5800 TOUCH:170,104
+6000 TOUCH:280,78
+6100 A
+7000 checkpoint anistar
+7150 X
+7300 TOUCH:80,60
+7450 TOUCH:80,40
+7600 TOUCH:262,104
+7700 TOUCH:170,104
+7900 TOUCH:47,75
+8000 A
+8900 checkpoint shalour
+9050 X
+9200 TOUCH:80,60
+9350 TOUCH:80,40
+9500 TOUCH:262,104
+9600 TOUCH:170,104
+9800 TOUCH:265,120
+9900 A
+10800 checkpoint snowbelle
+10950 X
+11100 TOUCH:80,60
+11250 TOUCH:80,40
+11400 TOUCH:262,104
+11500 TOUCH:170,104
+11700 TOUCH:213,180
+11800 A
+12700 checkpoint vaniville

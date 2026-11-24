@@ -1,0 +1,19 @@
+# 100% save (plan 4 Task 4, Review Focus 2), run with XR_FAKE_PEERS=1 XR_FAKE_STILL=1 XR_FAKE_AT=480,507: a puppet stands
+# on the tile left of the player outside the Pokemon Center. The player faces it, presses A (talk) and walks left
+# through it: a puppet that blocked or ran a script would stop the walk.
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40   # out of the door
+1200 LEFT 30
+1300 LEFT 3    # face the puppet
+1340 A         # talk to it
+1420 LEFT 60   # walk through it
+1250 checkpoint outside
+1320 checkpoint facing
+1400 checkpoint talked
+1520 checkpoint walked

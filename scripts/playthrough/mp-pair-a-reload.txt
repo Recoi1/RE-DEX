@@ -1,0 +1,10 @@
+# plan 4 Task 5: after mp-pair-a-*.txt in the same data dir, offline: Continue loads the save A made with a puppet in
+# the room. The field line's slot count must be the zone's NPCs and the player only, and no slot holds a puppet id
+# (XR_FIELD_SLOTS=1 lists them)
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+1050 checkpoint continued
+1200 checkpoint settled

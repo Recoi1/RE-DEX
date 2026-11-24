@@ -1,0 +1,41 @@
+# Driven by crates/xr-runtime/tests/two_instances.rs (xy_a_x_b_y and xy_a_y_b_x), which sets the env and makes the asserts: the checkpoints here have no expects.
+# plan 5 Task 5, the biker of the X+Y pair: a 100% save (X, or the same save in Pokemon Y's folder) flies to Vaniville,
+# waits for the other player, opens the registered-items wheel (Y), takes the bike (RIGHT) and rides about. Run with
+# XR_SET_FASHION=<outfit>@1300 (a non-default outfit, set before the Fly builds the player; the field must be up) and XR_MP_WHISPER.
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40   # out of the Laverre Pokemon Center
+1450 X
+1600 TOUCH:80,60
+1750 TOUCH:80,40
+1900 TOUCH:262,104
+2000 TOUCH:170,104
+2200 TOUCH:213,180   # Vaniville Town
+2300 A
+3200 checkpoint landed
+3201 wait_until puppets>=1 7200
+3202 checkpoint met
+3250 Y 4
+3350 checkpoint wheel
+3370 RIGHT 40
+3430 checkpoint bike1
+3460 LEFT 80
+3560 checkpoint bike2
+3580 RIGHT 80
+3680 checkpoint bike3
+3700 LEFT 80
+3800 checkpoint bike4
+3820 RIGHT 80
+3920 checkpoint bike5
+3940 LEFT 80
+4040 checkpoint bike6
+4060 RIGHT 80
+4160 checkpoint bike7
+4260 checkpoint bike8
+4261 wait_until puppets=0 36000
+4262 checkpoint end

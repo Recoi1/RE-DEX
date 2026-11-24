@@ -1,0 +1,18 @@
+[package]
+name = "redex-world"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[features]
+# the MP test harness: `--dev` (unverified dev ids on a localhost TCP server); never in a release
+mp-tests = []
+# jitter/loss simulation in the TCP transport, for tests (Review Focus 5); a dev server's
+sim = ["mp-tests"]
+
+[dependencies]
+redex-proto = { path = "../redex-proto" }
+steamworks = "=0.13.1"
+
+[dev-dependencies]
+redex-world = { path = ".", features = ["sim"] }

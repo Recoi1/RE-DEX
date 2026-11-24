@@ -1,0 +1,15 @@
+# 100% save (plan 5 Task 3), run with XR_FAKE_PEERS=1 XR_FAKE_FROM=700 XR_FAKE_EVERY=400 and XR_FAKE_LOOK/XR_FAKE_MODE
+# lists: the made-up player changes outfit and mode every 400 frames while the local player stands in the Laverre
+# Pokemon Center. The runner logs "puppets/dress/heap NAME: ..." at each checkpoint (one per phase, near its end).
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1050 checkpoint phase0
+1450 checkpoint phase1
+1850 checkpoint phase2
+2250 checkpoint phase3
+2650 checkpoint phase4

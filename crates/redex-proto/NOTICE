@@ -1,0 +1,4 @@
+The framing design (length checked before the payload is buffered, "need more bytes" for partial frames)
+follows metaxy, the Rust relay from Project Holon (src/codec.rs). metaxy is MIT licensed,
+Copyright (c) 2026 Project Holon contributors. No metaxy code or structure is carried over; the wire
+format is binary rather than text, so this is a credit only and no licence text is required.

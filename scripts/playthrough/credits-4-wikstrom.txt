@@ -1,0 +1,215 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# Credits run, segment 4 (after credits-3-siebold.txt, same data dir): Continue on the hall's centre; left to the left
+# wall, up along it to the upper door (z 297-333), the corridor: Elite Four Wikstrom. Electivire leads: Thunderbolt (no
+# contact, so King's Shield cannot lower its Attack as it did Arcanine's Flare Blitz: 143 picks) and Thunder Punch in turn (Klefki's Torment forbids a move twice in a row; the runner otherwise loops on the refused move), a Full Restore below 50%, a Max Elixir every 8 picks. Back on the centre: Aegislash (slot 2) to the front; SAVE.
+autobattle 80,60 heal 40,215;80,45;40,210;40,210;40,210;80,150;160,200;80,40 50 pp 40,215;80,45;40,210;40,210;40,210;95,210;95,210;240,150;160,200;80,40 8 alt 240,60 2 faint 240,110;80,95;240,45;80,160 3
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+1000 LEFT 300   # to the left wall
+1350 UP 13
+1370 LEFT 13
+1395 UP 13
+1415 LEFT 13
+1440 UP 13
+1460 LEFT 13
+1485 UP 13
+1505 LEFT 13
+1530 UP 13
+1550 LEFT 13
+1575 UP 13
+1595 LEFT 13
+1620 UP 13
+1640 LEFT 13
+1665 UP 13
+1685 LEFT 13
+1800 UP 300   # the corridor
+2215 UP 200
+3415 UP 400   # into the chamber
+4100 UP 300   # to Wikstrom
+4500 A
+4540 A
+4580 A
+4620 A
+4660 A
+4700 A
+4740 A
+4780 A
+4820 A
+4860 A
+4900 A
+4940 A
+4980 A
+5020 A
+5060 A
+5100 A
+5140 A
+5180 A
+5220 A
+5260 A
+5300 A
+5340 A
+5380 A
+5420 A
+5460 A
+5500 A
+5540 A
+5580 A
+5620 A
+5660 A
+5700 A
+5740 A
+5780 A
+5820 A
+5860 A
+5900 A
+5940 A
+5980 A
+6020 A
+6060 A
+6100 A
+6140 A
+6180 A
+6220 A
+6260 A
+6300 A
+6340 A
+6380 A
+6420 A
+6460 A
+6500 A
+6540 A
+6580 A
+6620 A
+6660 A
+6700 A
+6740 A
+6780 A
+6820 A
+6860 A
+6900 A
+6940 A
+6980 A
+7020 A
+7060 A
+7100 A
+7140 A
+7180 A
+7220 A
+7260 A
+7300 A
+7340 A
+7380 A
+7420 A
+7460 A
+7500 A
+7540 A
+7580 A
+7620 A
+7660 A
+7700 A
+7740 A
+7780 A
+7820 A
+7860 A
+7900 A
+7940 A
+7980 A
+8020 A
+8060 A
+8100 A
+8140 A
+8180 A
+8220 A
+8260 A
+8300 A
+8340 A
+8380 A
+8420 A
+8460 A
+8500 A
+8540 A
+8580 A
+8620 A
+8660 A
+8700 A
+8740 A
+8780 A
+8820 A
+8860 A
+8900 A
+8940 A
+8980 A
+9020 A
+9060 A
+9100 A
+9140 A
+9180 A
+9220 A
+9260 A
+9300 A
+9340 A
+9380 A
+9420 A
+9460 A
+9500 A
+9540 A
+9580 A
+9620 A
+9660 A
+9700 A
+9740 A
+9780 A
+9820 A
+9860 A
+9900 A
+9940 A
+9980 A
+10020 A
+10060 A
+10100 A
+10140 A
+10180 A
+10220 A
+10260 A
+10300 A
+10340 A
+10380 A
+10420 A
+10460 A
+10500 A
+10540 A
+10580 A
+10620 A
+10660 A
+10700 A
+10740 A
+10780 A
+11020 DOWN 500   # back to the hall's centre
+11600 X
+11750 TOUCH:80,60   # POKEMON
+11900 TOUCH:240,45   # Aegislash (slot 2)
+12050 TOUCH:270,193   # SWITCH
+12200 TOUCH:80,30   # to slot 1
+12350 B
+12500 B
+12650 B
+12850 X
+13000 TOUCH:80,180   # SAVE
+13150 A   # YES
+990 checkpoint continued
+expect continued 53581f9305a38a0b
+1700 checkpoint passage
+expect passage e753d6560074f70b
+3300 checkpoint corridor
+expect corridor 57425dadce04c989
+4450 checkpoint wikstrom
+expect wikstrom 2d243683a3efd705
+11550 checkpoint after-wikstrom
+expect after-wikstrom c8fd293abcfd3a62
+12300 checkpoint lead-aegislash
+expect lead-aegislash 141da3ed5c9d4c68
+13450 checkpoint saved
+expect saved 49de331a09b525b6

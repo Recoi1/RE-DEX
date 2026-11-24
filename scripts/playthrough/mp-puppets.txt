@@ -1,0 +1,16 @@
+# 100% save (plan 4 Task 4), run with XR_FAKE_PEERS (made-up remote players, no server): they appear as puppets in the
+# Laverre Pokemon Center, walk, go when the player walks out of the door (the game empties the pool), appear again
+# outside, and go for good at XR_FAKE_TO. The runner logs "puppets NAME: N shown: ..." at each checkpoint.
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40   # out of the door
+1000 checkpoint inside
+1040 checkpoint inside_later
+1320 checkpoint outside
+1340 checkpoint outside_later
+1450 checkpoint gone

@@ -1,0 +1,11 @@
+Vendored from muda 0.17.2 (crates.io): https://github.com/tauri-apps/muda
+License: Apache-2.0 OR MIT (see LICENSE-APACHE and LICENSE-MIT in this directory)
+Copyright 2022-2022 Tauri Programme within The Commons Conservancy
+
+Used by crates/xr-frontend's menu bar through [patch.crates-io] in the workspace Cargo.toml.
+
+Changes (all of them):
+1. src/platform_impl/windows/dark_menu_bar.rs, WM_UAHDRAWMENUITEM: the title buffer is a zeroed Vec of 256 and its
+   length is what GetMenuItemInfoW is told, instead of size_of_val of the Vec (24 bytes), which cut every menu bar
+   title in dark mode to 10 characters ("Multiplayer" showed as "Multiplaye").
+2. Cargo.lock, Cargo.toml.orig and .cargo_vcs_info.json from the crate package are left out.

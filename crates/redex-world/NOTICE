@@ -1,0 +1,32 @@
+The connection-limit design (global and per-address caps, handshake and idle time-outs, per-connection
+rate cap) follows metaxy, the Rust relay from Project Holon (src/server.rs, src/registry.rs). metaxy is MIT
+licensed, Copyright (c) 2026 Project Holon contributors. No metaxy code or structure is carried over; this
+is a credit only.
+
+Steam (login and the Steam relay transport; this crate and xr-net)
+------------------------------------------------------------------
+- steamworks 0.13.1 and steamworks-sys 0.13.0 (crates.io, https://github.com/Noxime/steamworks-rs): MIT or
+  Apache-2.0, Copyright (c) the steamworks-rs contributors. Linked as Rust dependencies.
+
+- steam_api64.dll: a redistributable of Valve's Steamworks SDK, Copyright (c) 1996-2026 Valve Corporation, all
+  rights reserved. It is NOT in this repository and must never be committed. The build (crates/redex-world/
+  build.rs) copies the copy that the steamworks-sys version in Cargo.lock (0.13.0) ships (it matches that crate's
+  bindings; the SDK 1.65 DLL in D:\LM\steamworks_sdk_165 lacks the SteamNetworkingSockets012 interface they
+  import) next to redex.exe and redex-world.exe in target/<profile>/. redex.exe delay-loads it, so offline play
+  runs without it; redex-world.exe needs it to start.
+  Terms: the Steamworks SDK is used under the Steamworks SDK Access Agreement
+  (https://partner.steamgames.com/documentation/sdk_access_agreement). It lets a developer ship the SDK's
+  redistributable files (the contents of sdk/redistributable_bin, such as steam_api64.dll), unmodified and in
+  object-code form, only as part of an application that uses the Steamworks API. The rest of the SDK (headers,
+  tools, samples) is not to be redistributed by us. So a RE:DEX release may include steam_api64.dll next to
+  redex.exe and redex-world.exe, and nothing else from the SDK.
+
+- Not shipped, not redistributable by us: steamclient64.dll, tier0_s64.dll and vstdlib_s64.dll, which the game
+  server (SteamGameServer) loads. On a PC with the Steam client installed they come from it; a dedicated server
+  without Steam gets them by installing Valve's SteamCMD and copying them from its folder beside redex-world.exe
+  (Valve's documented setup). They are part of the Steam client / SteamCMD and fall under the Steam Subscriber
+  Agreement, so the server operator installs them; we do not bundle them.
+
+- App id 480 ("Spacewar") is Valve's public Steamworks test app. Using it is fine for development and testing;
+  a public release should move to an app id of its own (Steam Direct). Nothing in our code depends on 480 beyond
+  the APP_ID constants in redex-world/src/steam.rs and xr-net/src/steam.rs.

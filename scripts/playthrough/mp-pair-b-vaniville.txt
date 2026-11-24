@@ -1,0 +1,56 @@
+# plan 4 Task 5, player B of the two-instance harness: a second trainer (the new game's chain, saved in the house in
+# Vaniville by new-game-shauna.txt; Task 7's data-p3t7\save-shauna). Continue, out of the door, Mom's send-off, then wait
+# for A to land. Walk a loop (3 tiles down, 1 left, 3 up, 1 right: the door path), leave north up Route 1 (UP held until
+# the map changes), come back down, and stay until A has gone (A's process ended).
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+720 A
+1010 DOWN 40   # out of the door
+1400 DOWN 30   # Mom's Rhyhorn send-off
+1500 A
+1540 A
+1580 A
+1620 A
+1660 A
+1700 A
+1740 A
+1780 A
+1820 A
+1860 A
+1900 A
+1940 A
+1980 A
+2020 A
+2060 A
+2100 A
+2140 A
+2180 A
+2220 A
+2260 A
+2300 A
+2340 A
+2380 A
+2480 checkpoint free
+2481 wait_until puppets>=1 7200   # A has landed
+2482 checkpoint met
+3080 DOWN 42   # the loop, 10 s after meeting (A's puppet of B appears up to 5 s after A lands)
+3140 LEFT 14
+3170 UP 42
+3230 RIGHT 14
+3260 checkpoint loop
+3270 DOWN 150
+3430 LEFT 100
+3540 UP 2
+3541 wait_until map!=0 3600   # UP stays held until Route 1
+3542 checkpoint left
+3600 DOWN 2
+3601 wait_until map=0 3600    # DOWN stays held until Vaniville
+3602 DOWN 30
+3650 checkpoint back
+3651 wait_until puppets>=1 7200
+3652 checkpoint met-again
+3653 wait_until puppets=0 36000   # A has gone
+3654 checkpoint end

@@ -1,0 +1,45 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# 100% save: walk out of the Laverre Pokemon Center, then the menu: Pokemon summary, Bag (two pockets), Save
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40   # walk out of the door
+1200 LEFT 30
+1300 CIRCLE_RIGHT 30
+1450 X   # the menu
+1600 TOUCH:80,60   # POKEMON
+1750 TOUCH:80,40   # the first Pokemon (Talonflame)
+1850 A   # SUMMARY
+2050 B
+2150 B   # back to the menu
+2300 TOUCH:80,120   # BAG
+2420 DOWN
+2440 DOWN
+2460 DOWN
+2480 DOWN   # the fifth item, Amulet Coin
+2540 TOUCH:50,18   # the Medicine pocket
+2650 B   # back to the menu
+2800 TOUCH:80,180   # SAVE
+2950 A   # YES
+1250 checkpoint outside
+expect outside fc5c82e9bdc15675
+1580 checkpoint menu
+expect menu 0eb1b9b9885070c5
+1700 checkpoint party
+expect party 15e980941462318a
+1950 checkpoint summary
+expect summary 5550e407746f9ad7
+2520 checkpoint bag-items
+expect bag-items aeddd1173ebe211f
+2620 checkpoint bag-medicine
+expect bag-medicine 4c5fbc170a9f0b19
+2900 checkpoint save-ask
+expect save-ask c611d7da3e5bc38e
+3050 checkpoint saved
+expect saved 86b8812c84dc0fbb
+3300 checkpoint field
+expect field 8b9878e26ce53b6b

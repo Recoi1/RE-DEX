@@ -1,0 +1,45 @@
+# expects recorded with: build x-usa-v0.2.0, renderer vulkan at 1x
+# 100% save: Pokemon Center heal in Laverre City. Talonflame starts at 307/360 HP and ends at 360/360
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A   # Continue; the PSS message
+1000 UP 40   # walk up two tiles to the counter (the nurse talks across it)
+1100 A
+1140 A
+1180 A
+1220 A
+1260 A
+1300 A
+1340 A
+1380 A
+1420 A
+1460 A
+1500 A
+1540 A
+1580 A
+1620 A
+1660 A
+1700 A
+1740 A
+1780 A
+1820 A
+1860 A
+1900 A
+1940 A
+1980 A
+2100 X   # the menu
+2250 TOUCH:80,60   # POKEMON: 360/360
+1050 checkpoint at-counter
+expect at-counter f4e8af698529f814
+1240 checkpoint nurse
+expect nurse a7f41e01500fc015
+1700 checkpoint healing
+expect healing 30a21ae61ef2ae52
+1900 checkpoint healed
+expect healed 0f612696915c1ddb
+2450 checkpoint party
+expect party 850feb1910c3bd66
