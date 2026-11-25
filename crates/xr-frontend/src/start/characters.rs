@@ -324,6 +324,13 @@ pub fn user_dir(data: &Path, id: u64) -> PathBuf {
     data.join("characters").join(format!("{id:016x}")).join("user")
 }
 
+/// `<data>/account/<public id:016x>/characters/<id:016x>/user`, an online character's saves folder on this PC: a root
+/// per account, apart from this PC's characters, so offline or P2P play (which goes by characters.json and `user_dir`)
+/// never opens it, and two accounts never share one
+pub fn online_user_dir(data: &Path, public_id: u64, id: u64) -> PathBuf {
+    data.join("account").join(format!("{public_id:016x}")).join("characters").join(format!("{id:016x}")).join("user")
+}
+
 /// the character has a `main` save for this title
 pub fn has_save(data: &Path, id: u64, title: u64) -> bool {
     user_dir(data, id).join("savedata").join(format!("{title:016X}")).join("main").is_file()
@@ -375,6 +382,18 @@ mod tests {
     use super::*;
     use redex_proto::{TITLE_OR, TITLE_X};
     use xr_net::x::look::Look;
+
+    /// an online character's saves are never a local character's (nor inside them), whatever the ids, and two
+    /// accounts never share a folder
+    #[test]
+    fn online_saves_have_a_root_of_their_own() {
+        let data = Path::new("d");
+        for (pid, id, other) in [(1, 1, 1), (0x4242, 0xaa, 0xaa), (u64::MAX, 7, 8)] {
+            let (online, local) = (online_user_dir(data, pid, id), user_dir(data, other));
+            assert!(!online.starts_with(local.parent().unwrap()) && !local.starts_with(online.parent().unwrap()), "{online:?} {local:?}");
+            assert_ne!(online_user_dir(data, pid, id), online_user_dir(data, pid ^ 1, id));
+        }
+    }
 
     fn temp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("redex-chars-{name}-{}", std::process::id()));

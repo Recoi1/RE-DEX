@@ -936,6 +936,12 @@ fn general(ui: &mut egui::Ui, settings: &mut Settings) {
             ui.label("Show player names");
             toggle(ui, &mut settings.show_names).on_hover_text("Names over the other players' heads, on the top screen.");
             ui.end_row();
+            ui.label("Discord status");
+            toggle(ui, &mut settings.discord_status).on_hover_text("Show the game, the mode and the play time on your Discord profile. Only the Discord app on this PC is told.");
+            ui.end_row();
+            ui.add_enabled_ui(settings.discord_status, |ui| ui.label("Show location"));
+            ui.add_enabled_ui(settings.discord_status, |ui| toggle(ui, &mut settings.discord_location)).inner.on_hover_text("The area you are in, in that status.");
+            ui.end_row();
         });
     });
     group(ui, "Hotkeys", |ui| {

@@ -690,6 +690,13 @@ pub struct Settings {
     pub world_name: String,
     /// names over the other players' heads
     pub show_names: bool,
+    /// the account service and its world (`tls:host:port`), the official ones when empty (tests name others)
+    pub account_server: String,
+    pub account_world: String,
+    /// show the game, the mode and the play time as the Discord status (the local Discord app only)
+    pub discord_status: bool,
+    /// the area (the region, later the place) in that status
+    pub discord_location: bool,
 }
 
 impl Default for Settings {
@@ -738,6 +745,10 @@ impl Default for Settings {
             world_address: String::new(),
             world_name: String::new(),
             show_names: true,
+            account_server: String::new(),
+            account_world: String::new(),
+            discord_status: true,
+            discord_location: true,
         }
     }
 }
@@ -955,6 +966,7 @@ mod tests {
         assert_eq!(settings.layout, Screens::Stacked);
         // a file from before the Players list: names shown, the list on Tab and the left stick's click
         assert!(settings.show_names);
+        assert!(settings.discord_status && settings.discord_location, "on for a file from before the Discord status");
         assert_eq!((settings.keys.players, settings.pad.players), (KeyCode::Tab, Button::LeftThumb));
         // only buttons the console layout does not use can open the list
         let pad = PadButtons::default();
@@ -1038,6 +1050,8 @@ mod tests {
             language: Language::French,
             microphone: MicrophoneSource::Computer,
             show_names: false,
+            discord_status: false,
+            discord_location: false,
             ..Settings::default()
         };
         settings.keys.players = KeyCode::KeyP;

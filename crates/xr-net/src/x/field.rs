@@ -75,7 +75,7 @@ pub const MS_FASHION: u32 = 0x30;
 /// MyStatus: the trainer name (save 0x14048), 13 UTF-16 units, zero-padded.
 pub const MS_NAME: u32 = 0x48;
 /// MyStatus: the nickname the player's friends use (save 0x14062, 13 UTF-16 units): the intro copies the typed name
-/// here, and the friends' nickname scene later replaces it (the 100% save's trainer name gets a nickname there).
+/// here, and the friends' nickname scene later replaces it (the 100% save's trainer gets a nickname there).
 pub const MS_NICKNAME: u32 = 0x62;
 
 /// Player field object + this: u32 pointer to the field camera block (the manager's +0x18 holds it too).

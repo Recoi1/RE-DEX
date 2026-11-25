@@ -28,6 +28,7 @@ mod abi;
 mod bridge;
 mod character;
 mod clock;
+mod discord;
 mod exec;
 mod explore;
 mod game;
@@ -167,6 +168,10 @@ fn start_screen() -> Result<(), String> {
     if let Some(id) = launch.character {
         cmd.arg("--character").arg(format!("{id:016x}"));
     }
+    // an online character: the game signs in with the session the start screen kept, never a password
+    if let Some(server) = &launch.account {
+        cmd.arg("--account-server").arg(server);
+    }
     // no console of ours and no handles to it: closing a terminal RE:DEX was started from leaves the game running
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0000_0008); // DETACHED_PROCESS
@@ -180,7 +185,7 @@ const USAGE: &str = "usage: redex                      the start screen
              [--renderer software|vulkan] [--resolution N] [--mute] [--frames N] [--press BUTTON@FRAME]...
              [--headless [--screens-every N] [--deterministic] [--realtime] [--script FILE [--record-expects]]]
              [--make-preview boy|girl --out PATH] [--preview STATE] [+connect steam:ID]
-             [--account-server URL --login EMAIL --world tls:HOST:PORT]   (the password in REDEX_PASSWORD)
+             [--account-server URL --world tls:HOST:PORT]   (signs in with the session the start screen kept)
   Dev and test options (--headless, --script, --press, --deterministic, --make-preview, XR_STATE_*, XR_EXPLORE*,
   XR_FAKE_*, XR_MP_*, XR_SET_FASHION, XR_RAILPOS) keep the game offline, and so do mods that change the game.";
 
@@ -203,8 +208,10 @@ fn run() -> Result<(), String> {
     #[cfg_attr(not(feature = "mp-tests"), allow(unused_mut))]
     let (mut world, mut name, mut dev_id, mut offline) = (None::<String>, None::<String>, false, false);
     let mut character = None::<u64>;
-    // an account of the account backend (central worlds): the dev path until the start screen has a login
-    let (mut account_server, mut login) = (None::<String>, None::<String>);
+    // an account of the account backend (central worlds): the session the start screen kept, or (mp-tests) --login
+    let mut account_server = None::<String>;
+    #[cfg_attr(not(feature = "mp-tests"), allow(unused_mut))]
+    let mut login = None::<String>;
     let mut args = std::env::args_os().skip(1);
     while let Some(a) = args.next() {
         let mut value = || args.next().ok_or(format!("{a:?} needs a value"));
@@ -260,6 +267,7 @@ fn run() -> Result<(), String> {
             }
             Some("--offline") => offline = true,
             Some("--account-server") => account_server = Some(value()?.to_string_lossy().into_owned()),
+            #[cfg(feature = "mp-tests")]
             Some("--login") => login = Some(value()?.to_string_lossy().into_owned()),
             Some("--name") => name = Some(value()?.to_string_lossy().into_owned()),
             // log in to a --dev world server with <data>/user/redex-id instead of Steam (a second instance on one PC)
@@ -274,6 +282,8 @@ fn run() -> Result<(), String> {
                 println!("{USAGE}");
                 #[cfg(feature = "mp-tests")]
                 println!("  MP-TESTS BUILD (the MP test harness; check-release refuses it): [--dev-id] [--room HOST:PORT] [--room-server PORT]");
+                #[cfg(feature = "mp-tests")]
+                println!("    [--login EMAIL] with --account-server: a password login, the password in REDEX_PASSWORD");
                 return Ok(());
             }
             _ => return Err(format!("unknown argument {a:?} (--help lists them)")),
@@ -331,19 +341,80 @@ fn run() -> Result<(), String> {
     if make_preview.is_none() {
         let _ = std::fs::remove_file(logs.join("loadcro.csv")); // xr-hle appends this run's LoadCRO rows
     }
-    // --character: the game runs on that character's own saves, backed up before it can write them
+    // a window joins the world server its settings name when --world does not say
+    let settings = (!headless).then(xr_frontend::Settings::load);
+    let world = world.or(settings.as_ref().filter(|_| !offline).map(|s| s.world_address.clone()).filter(|a| !a.is_empty()));
+    let mut notice = None;
+    // --account-server: the session the start screen kept on this PC (DPAPI), checked with the service; with --login
+    // (mp-tests builds only) a password login instead. No session, a dead one or no answer plays offline and says why
+    let account = match (&account_server, &login, &world) {
+        (None, None, _) => None,
+        (None, Some(_), _) => return Err("--login needs --account-server".into()),
+        (Some(_), _, None) => return Err("--account-server needs a world: --world tls:HOST:PORT".into()),
+        (Some(server), Some(email), Some(_)) => {
+            match password_login(server, email)? {
+                Ok(a) => {
+                    log::log(&format!("account: logged in to {server} as account {}", a.account_id));
+                    Some(a)
+                }
+                Err(e) => {
+                    log::log(&format!("account: login to {server} failed: {e}; playing offline"));
+                    notice = Some(format!("The account login failed: {e}.\n\nPlaying offline."));
+                    None
+                }
+            }
+        }
+        (Some(server), None, Some(_)) => {
+            use xr_net::account::{self, Account, Error};
+            let said = match account::saved_session(data, server).map(|token| Account::resume(server, &token)) {
+                Some(Ok((a, me))) => {
+                    log::log(&format!("account: signed in to {server} with the kept session as account {} ({})", a.account_id, me.username));
+                    Ok(a)
+                }
+                None => Err("You are not signed in on this PC. Sign in on the start screen to play online.".to_owned()),
+                Some(Err(Error::SignedOut(m))) => {
+                    account::forget_session(data);
+                    Err(format!("You were signed out of your account ({m}). Sign in again on the start screen."))
+                }
+                Some(Err(e @ Error::Unreachable(_))) => Err(format!("The account server can't be reached: {e}.")),
+                Some(Err(e)) => Err(format!("The account server did not take the session: {e}.")),
+            };
+            said.map_err(|why| {
+                log::log(&format!("account: {why} Playing offline"));
+                notice = Some(format!("{why}\n\nPlaying offline."));
+            })
+            .ok()
+        }
+    };
+    // --character: the game runs on that character's own saves, backed up before it can write them. Signed in, it is
+    // one of the account's (online) characters, read from the account; its saves live on this PC by its id
     let (user, played) = match character {
         Some(id) => {
             use xr_frontend::start::characters;
-            // held by another program for a moment: not "no character", but try again
-            let store = characters::Store::try_load(data).ok_or("characters.json is in use by another program just now; try again")?;
-            let Some(c) = store.get(id).cloned() else {
-                return Err(format!("no character {id:016x} in characters.json"));
+            let c = match &account {
+                Some(a) => {
+                    let list = a.characters().map_err(|e| format!("could not read the account's characters: {e}"))?;
+                    list.into_iter().find(|c| c.id == id).ok_or(format!("character {id:016x} is not on this account"))?
+                }
+                None => {
+                    // held by another program for a moment: not "no character", but try again
+                    let store = characters::Store::try_load(data).ok_or("characters.json is in use by another program just now; try again")?;
+                    let why = match &account_server {
+                        // an online character whose account did not sign in (said in `notice`)
+                        Some(_) => format!("character {id:016x} is an online character: sign in on the start screen to play it"),
+                        None => format!("no character {id:016x} in characters.json"),
+                    };
+                    store.get(id).cloned().ok_or(why)?
+                }
             };
-            let user = characters::user_dir(data, id);
+            // an online character's saves have a root of their own per account, which offline and P2P play never open
+            let user = match &account {
+                Some(a) => characters::online_user_dir(data, a.public_id, id),
+                None => characters::user_dir(data, id),
+            };
             let n = characters::backup_saves(&user, characters::now_ms() / 1000, 10).map_err(|e| format!("could not back up character {id:016x}'s saves: {e}"))?;
             log::log(&format!("character {id:016x}: {n} save(s) backed up"));
-            (user, Some(c))
+            (user, Some((c, account.is_some())))
         }
         // the preview's scripted new game never runs on a player's saves (an old <data>/user would boot into Continue):
         // a new folder of its own, so the state is the same on every PC
@@ -352,7 +423,7 @@ fn run() -> Result<(), String> {
     };
     // the character's look goes into the game (character.rs); built at boot, once the title is known
     let (data_dir, user_dir) = (data.to_path_buf(), user.clone());
-    let played = move |title: u64| played.as_ref().and_then(|c| character::Played::new(c, &data_dir, &user_dir, title));
+    let played = move |title: u64| played.as_ref().and_then(|(c, online)| character::Played::new(c, &data_dir, &user_dir, title, *online));
     std::panic::set_hook(Box::new(|p| {
         // the world client's thread is not the game: it ends (the game sees it offline and plays on)
         if std::thread::current().name() == Some("redex-net") {
@@ -381,38 +452,13 @@ fn run() -> Result<(), String> {
     let nickname = data.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "redex".into());
     let connection = room.map(|a| xr_hle::room::Connection::join(&a, &nickname, "")).transpose()?;
     let link = connection.as_ref().map(|c| c.link());
-    // a window joins the world server its settings name when --world does not say
-    let settings = (!headless).then(xr_frontend::Settings::load);
-    let world = world.or(settings.as_ref().filter(|_| !offline).map(|s| s.world_address.clone()).filter(|a| !a.is_empty()));
     // online, the player is their Steam account (SteamID64), which the world server checks; with --dev-id, and for the
     // local wireless room, the dev id made once in <data>/user/redex-id. The identity is also the console id: two
     // instances on one PC must be two consoles (X's PSS ignores a beacon carrying its own console hash, cfg
     // GenHashConsoleUnique mixed with console_id) and PSS records passersby by it, so it must not change between
     // sessions. Offline runs keep the default id (the playthrough hashes do not depend on a data dir)
-    let mut notice = None;
-    // --account-server and --login: the account's session (the password from REDEX_PASSWORD, used once, never logged);
-    // a failed login plays offline and says why
-    let account = match (&account_server, &login, &world) {
-        (None, None, _) => None,
-        (Some(_), None, _) | (None, Some(_), _) => return Err("--account-server and --login go together".into()),
-        (Some(_), Some(_), None) => return Err("--login needs a world: --world tls:HOST:PORT".into()),
-        (Some(server), Some(email), Some(_)) => {
-            let password = std::env::var("REDEX_PASSWORD").map_err(|_| "--login takes the password from REDEX_PASSWORD")?;
-            let device = format!("RE:DEX on {}", std::env::var("COMPUTERNAME").unwrap_or_else(|_| "a PC".into()));
-            match xr_net::account::Account::login(server, email, &password, &device) {
-                Ok(a) => {
-                    log::log(&format!("account: logged in to {server} as account {}", a.account_id));
-                    Some(a)
-                }
-                Err(e) => {
-                    log::log(&format!("account: login to {server} failed: {e}; playing offline"));
-                    notice = Some(format!("The account login failed: {e}.\n\nPlaying offline."));
-                    None
-                }
-            }
-        }
-    };
-    let world = world.filter(|_| account.is_some() || login.is_none());
+    // an account login that did not happen plays offline (said above)
+    let world = world.filter(|_| account.is_some() || account_server.is_none());
     let steam = (world.is_some() && !dev_id && account.is_none())
         .then(|| {
             xr_net::steam::Steam::init()
@@ -484,6 +530,7 @@ Playing offline."));
                 let (net, refused) = start_net(&mut joiner, &mut m)?;
                 let world = net.as_ref().and(world_shown);
                 let played = played(m.title_id);
+                let discord = discord::game_of(m.title_id).map(|g| discord::Handle::start(g, windowed_discord_settings, |t| log::log(t)));
                 // Steam from the start, online or not: friends see "in RE:DEX" and can write (never with --dev-id)
                 if !joiner.dev_id {
                     let _ = joiner.steam();
@@ -494,7 +541,7 @@ Playing offline."));
                 let friends = None;
                 let (friend_list, ignored, world_names) = (Vec::new(), None, Default::default());
                 let (listed, friend_failed) = (None, Vec::new());
-                Ok(Windowed { m, n: 0, presses, net, joiner, world, pending: None, query: None, presence: None, notes: refused.into_iter().collect(), played, friends, friend_list, ignored, world_names, listed, friend_failed })
+                Ok(Windowed { m, n: 0, presses, net, joiner, world, pending: None, query: None, presence: None, notes: refused.into_iter().collect(), discord, played, friends, friend_list, ignored, world_names, listed, friend_failed })
             })
         };
         if xr_frontend::run(window, config, boot)? {
@@ -520,6 +567,12 @@ Playing offline."));
     m.system().room = link;
     let mut net = start_net(&mut joiner, &mut m)?.0;
     let mut played = played(m.title_id);
+    // XR_DISCORD=1 (tests): a headless run shows its status too, with the default settings
+    let _discord = std::env::var_os("XR_DISCORD").filter(|v| v != "0").and_then(|_| discord::game_of(m.title_id)).map(|g| {
+        let d = discord::Handle::start(g, || discord::Config { status: true, location: true }, |t| log::log(t));
+        d.set_mode(if net.is_some() { discord::Mode::Official } else { discord::Mode::Offline });
+        d
+    });
     let mut fake = FakePeers::from_env();
     // XR_FAKE_FRIENDS (mp-tests): made-up Steam friends whose scripted chat and invites arrive here; a headless game has
     // no Friends tab, so a chat is answered with XR_MP_FRIEND_REPLY and an invite is joined (through Joiner::start)
@@ -807,7 +860,7 @@ Playing offline."));
             net_frame(&mut m, c);
         }
         if let Some(c) = &mut net {
-            keep_accounts(c, data);
+            keep_accounts(c, data, joiner.account.is_some());
             while let Some(w) = c.whispers.pop_front() {
                 log::log(&format!("whisper from session {} ({}): {}", w.from_session, w.name, w.text));
             }
@@ -1711,6 +1764,8 @@ struct Windowed {
     query: Option<(xr_net::steam::ServerQuery, bool)>,
     /// the rich presence last set: (status, connect)
     presence: Option<(Option<String>, Option<String>)>,
+    /// the Discord status (its own thread), none for a title it has no art for
+    discord: Option<discord::Handle>,
     /// what the player should hear (a toast each)
     notes: Vec<String>,
     /// --character's look in the game
@@ -1747,6 +1802,20 @@ fn short_name(name: &str) -> String {
     name.chars().take(24).collect()
 }
 
+/// `--login` (mp-tests builds only): a password login, the password from REDEX_PASSWORD (used once, never logged).
+#[cfg(feature = "mp-tests")]
+fn password_login(server: &str, email: &str) -> Result<Result<xr_net::account::Account, xr_net::account::Error>, String> {
+    let password = std::env::var("REDEX_PASSWORD").map_err(|_| "--login takes the password from REDEX_PASSWORD")?;
+    let device = format!("RE:DEX on {}", std::env::var("COMPUTERNAME").unwrap_or_else(|_| "a PC".into()));
+    Ok(xr_net::account::Account::login(server, email, &password, &device))
+}
+
+/// A normal build has no password path at all.
+#[cfg(not(feature = "mp-tests"))]
+fn password_login(_: &str, _: &str) -> Result<Result<xr_net::account::Account, xr_net::account::Error>, String> {
+    Err("--login exists only in an mp-tests build".into())
+}
+
 /// A TCP world on this PC: the only place a Steam login goes over TCP (a ticket there is not bound to the server).
 fn loopback(addr: &str) -> bool {
     let host = addr.rsplit_once(':').map_or(addr, |(h, _)| h).trim_matches(['[', ']']);
@@ -1764,8 +1833,12 @@ fn put_character(c: Option<redex_proto::Character>, net: Option<&xr_net::Client>
 
 /// The account's character lists the world sent, into characters.json: the newest `changed` wins (`merge_remote`, which
 /// drops bad looks), saved only when that changed something. While characters.json can't be read (nor kept aside) the
-/// lists wait, and the file is left alone.
-fn keep_accounts(net: &mut xr_net::Client, data: &std::path::Path) {
+/// lists wait, and the file is left alone. An official-account login (`account`) keeps nothing: its characters are the
+/// account's (the start screen shows them), never this PC's.
+fn keep_accounts(net: &mut xr_net::Client, data: &std::path::Path, account: bool) {
+    if account {
+        net.accounts.clear();
+    }
     if net.accounts.is_empty() {
         return;
     }
@@ -1882,8 +1955,13 @@ impl Joiner {
         }
         let kind = if self.account.is_some() { "account" } else if steam.is_some() { "Steam" } else { "dev id" };
         log::log(&format!("world: joining {addr} as {name:?} (title {title:016X}, {kind} login)"));
-        // the player's characters go to the account after every login (the server keeps the newest copy of each)
-        let characters = xr_frontend::start::characters::Store::load(&self.data).characters.into_iter().filter(|c| xr_net::x::field::Appearance::from_bytes(&c.look).is_some()).collect();
+        // the player's characters go to the account after every login (the server keeps the newest copy of each); an
+        // official-account login sends none of this PC's: online characters are the account's own, and nothing played
+        // offline or in P2P worlds flows into them
+        let characters = match self.account {
+            Some(_) => Vec::new(),
+            None => xr_frontend::start::characters::Store::load(&self.data).characters.into_iter().filter(|c| xr_net::x::field::Appearance::from_bytes(&c.look).is_some()).collect(),
+        };
         let account = self.account.clone();
         let net = xr_net::Client::start(xr_net::Options { steam, account, appearance, characters, ..xr_net::Options::new(addr, auth, title, name) }).map_err(|e| format!("world: {e}"))?;
         // online: other players on our map become puppets (hooks.rs)
@@ -1912,7 +1990,7 @@ impl xr_frontend::Game for Windowed {
         }
         if let Some(c) = &mut self.net {
             net_frame(&mut self.m, c);
-            keep_accounts(c, &self.joiner.data);
+            keep_accounts(c, &self.joiner.data, self.joiner.account.is_some());
         }
         self.settle_join();
         self.n += 1;
@@ -1936,6 +2014,9 @@ impl xr_frontend::Game for Windowed {
             }
         }
         self.presence();
+        if let Some(d) = &self.discord {
+            d.set_mode(if self.net.as_ref().is_some_and(|n| n.online) { discord::Mode::Official } else { discord::Mode::Offline });
+        }
         let typed = self.joiner.steam.as_ref().and_then(|s| s.take_typed()).flatten();
         let joining = self.pending.as_ref().map(|p| p.0.clone());
         let mut view = View { world: self.world.clone(), notes: std::mem::take(&mut self.notes), joining, typed, ..View::default() };
@@ -2208,6 +2289,12 @@ fn why_for(name: &str, why: &str) -> String {
 fn capitalized(s: &str) -> String {
     let mut c = s.chars();
     c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+}
+
+/// The Discord status's settings, read from the settings file again each time (a toggle in the menu shows within a minute).
+fn windowed_discord_settings() -> discord::Config {
+    let s = xr_frontend::Settings::load();
+    discord::Config { status: s.discord_status, location: s.discord_location }
 }
 
 /// The status line, every 60 frames and at the end.

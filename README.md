@@ -9,9 +9,10 @@
 **RE:DEX** turns Pokémon X and Y (Nintendo 3DS) into a native PC game with a shared online world: X and Y players walk Kalos together and see each other's trainers, in the outfits they made. Written in Rust.
 
 - **Native, not emulated.** The game's ARM11 code is translated ahead of time to C and built on your PC from **your own** decrypted dump on first launch. This repository contains no Nintendo code or assets.
-- **One world, both versions.** X and Y cross-play on community-hosted `redex-world` servers, signed in with Steam. Players nearby, whispers, reports and an Ignore list are in; trades, battles and a market come later, each behind server-side legality checks.
+- **One world, both versions.** X and Y cross-play on the official RE:DEX world (sign in from the start screen with a RE:DEX account) or on community-hosted `redex-world` servers over Steam. If the official service can't be reached, you can still play peer-to-peer with the characters on your PC. Players nearby, whispers, reports and an Ignore list are in; trades, battles and a market come later, each behind server-side legality checks.
 - **Your own front door.** A start screen with a game builder, cross-game characters and a 3D character creator, ahead of the 3DS title screen.
 - **PC features.** High frame rates with *Smooth motion* (up to your monitor's refresh rate), resolution scaling, controller support, texture packs.
+- **Discord status.** Your Discord profile shows the game, the mode and your play time, if Discord is running.
 - **Fair online.** Fast forward, dev tools, local-wireless rooms and game-changing mods are off while you're in a world.
 
 **How to play.** Download the release folder and run `redex.exe`. Press *Add your game*, pick your own decrypted Pokémon X or Y dump (`.cci` or `.3ds`), and wait while RE:DEX builds it on your PC (a few minutes, the first time only). Then make a character and press Play. Everything it needs is in the folder; nothing else has to be installed. Maintainers build the folder with `tools/release/make-release.ps1`.

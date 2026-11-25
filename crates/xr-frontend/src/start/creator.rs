@@ -106,11 +106,15 @@ pub struct Creator {
     /// the name field had the keyboard last frame
     typing: bool,
     error: Option<String>,
+    /// a NEW character for the account (the Online tab was up when the creator opened); an edit never is
+    pub online: bool,
 }
 
 pub enum CreatorAction {
     None,
     Saved(u64),
+    /// a new online character: made in memory only, for the account (characters.json never holds it)
+    SavedOnline(redex_proto::Character),
     Cancel,
 }
 
@@ -137,6 +141,7 @@ impl Creator {
             faced: None,
             view: Facings::default(),
             studio: Studio::default(),
+            online: false,
             v2: None,
             since_orbit: 0,
             exe: std::env::current_exe().unwrap_or_default(),
@@ -308,13 +313,38 @@ impl Creator {
         self.editing.is_some() || check_name(&self.name).is_ok()
     }
 
-    /// Saves (the list read again first: another RE:DEX may have changed it); Some(id) once saved, else the error is shown.
-    fn try_save(&mut self, data: &Path) -> Option<u64> {
+    /// Saves (the list read again first: another RE:DEX may have changed it); the action once saved, else the error is
+    /// shown. A new online character is made in memory, with an id no character on this PC has, and is not saved here.
+    fn try_save(&mut self, data: &Path) -> Option<CreatorAction> {
         let Some(mut store) = Store::try_load(data) else {
             self.error = Some("We couldn't open your characters just now. Close anything else using RE:DEX, then try again.".into());
             return None;
         };
-        self.save(&mut store, data, now_ms()).map_err(|e| self.error = Some(e)).ok()
+        if self.online && self.editing.is_none() {
+            return self.make_online(&mut store, data, now_ms()).map(CreatorAction::SavedOnline).map_err(|e| self.error = Some(e)).ok();
+        }
+        self.save(&mut store, data, now_ms()).map(CreatorAction::Saved).map_err(|e| self.error = Some(e)).ok()
+    }
+
+    /// A new character for the account: made in `store` (so its id is no local character's) and taken out again,
+    /// characters.json untouched; its card picture is kept as for any character.
+    fn make_online(&self, store: &mut Store, data: &Path, now: u64) -> Result<redex_proto::Character, String> {
+        let a = self.dress(self.look).ok_or("That look is out of the game's ranges.")?;
+        let id = store.create(&self.name, a, now)?;
+        let c = store.get(id).cloned().ok_or("the new character went missing")?;
+        if let (Some(f), true) = (self.shown.as_ref().filter(|f| f.seq == self.seq), self.front()) {
+            if let Err(e) = keep_card(data, &c, f) {
+                log::warn!("creator: {e}");
+            }
+        }
+        Ok(c)
+    }
+
+    /// Types `name` and presses Create (the start screen's tests).
+    #[cfg(test)]
+    pub(super) fn create_now(&mut self, data: &Path, name: &str) -> Option<CreatorAction> {
+        self.name = name.into();
+        self.try_save(data)
     }
 
     pub fn ui(&mut self, ui: &mut Ui, glass: &Glass, data: &Path, lib: &Library) -> CreatorAction {
@@ -496,8 +526,8 @@ impl Creator {
         }
         let confirm = pad.confirm && !self.typing && self.row != NAME;
         if ok && (resp.clicked() || confirm) {
-            if let Some(id) = self.try_save(data) {
-                return CreatorAction::Saved(id);
+            if let Some(action) = self.try_save(data) {
+                return action;
             }
         }
         CreatorAction::None

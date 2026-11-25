@@ -1,7 +1,10 @@
 //! Two real game instances meet on a central world: the account backend (`redex-backend`) on a real Postgres, the world
-//! (`redex-world --central`) on TCP + TLS with a self-signed certificate for `localhost`, and two headless games that log
-//! in with `--account-server` and `--login` (the password in REDEX_PASSWORD) and join `tls:localhost:PORT` with world
-//! tickets. Both start from one save state on the field (made first from the 100% save), so the run takes about a minute.
+//! (`redex-world --central`) on TCP + TLS with a self-signed certificate for `localhost`, and two headless games that
+//! join `tls:localhost:PORT` with world tickets. A signs in the way the start screen does (its account `Session`, which
+//! keeps the session token encrypted in A's data folder), then the game is relaunched with `--account-server` alone: no
+//! password anywhere, only the kept token. B logs in with `--login` (the password in REDEX_PASSWORD, the tests' path)
+//! and plays an online character, read from its account. Both start from one save state on the field (made first from
+//! the 100% save), so the run takes about a minute.
 //!
 //! ```text
 //! cargo build --release -p redex-backend -p redex-world --features redex-world/central
@@ -167,18 +170,48 @@ fn two_games_meet_on_a_central_tls_world() {
     );
     wait_port(world_port, &mut world.0, "redex-world --central");
 
-    // both games from the state, held to real time, 40 s in all
-    let game = |dir: &Path, email: &str, name: &str| {
-        Command::new(env!("CARGO_BIN_EXE_redex"))
-            .arg("--cci").arg(&cci).arg("--build").arg(dir.join("build/x-usa-v0.2.0"))
+    // A signs in as the start screen does (by username), and the session is kept in A's data folder, encrypted
+    use xr_frontend::start::account::{Servers, Session};
+    let servers = Servers { accounts: api.clone(), world: format!("tls:{world_id}") };
+    let mut s = Session::start(a.clone(), servers.clone());
+    s.wait();
+    assert!(s.unreachable.is_none() && s.me().is_none(), "the start screen's first look: up, signed out");
+    s.sign_in(emails[0].split('@').next().unwrap().to_string(), PASSWORD.to_string());
+    s.wait();
+    assert!(s.can_play_online(), "signed in through the start screen's session: {:?}", s.note);
+    assert!(xr_net::account::session_file(&a).is_file());
+    // a relaunch of the start screen signs in with the kept token alone
+    let mut again = Session::start(a.clone(), servers);
+    again.wait();
+    assert!(again.can_play_online(), "{:?}", again.note);
+    // B's online character: on its account (put the way the start screen's Create does), its saves on this PC by its id
+    let b_account = xr_net::account::Account::login(&api, &emails[1], PASSWORD, "e2e").unwrap();
+    let main = std::fs::read(b.join("user/savedata/0004000000055D00/main")).unwrap();
+    let look = xr_net::x::appearance(&main).unwrap().to_bytes().to_vec();
+    let online = redex_proto::Character { id: 0x0e2e_0000_0000_0b0b, name: "Online B".into(), look, created: 1, changed: 1 };
+    assert!(b_account.put_character(&online).unwrap().iter().any(|c| c.id == online.id));
+    // an online character's saves live under the account's own root on this PC, never characters/<id>
+    let b_user = xr_frontend::start::characters::online_user_dir(&b, b_account.public_id, online.id);
+    std::fs::create_dir_all(b_user.parent().unwrap()).unwrap();
+    std::fs::rename(b.join("user"), &b_user).unwrap();
+
+    // both games from the state, held to real time, 40 s in all: A with the kept session only (no password in its
+    // environment), B with --login and its online character
+    let game = |dir: &Path, name: &str, extra: &[&str], password: bool| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_redex"));
+        c.arg("--cci").arg(&cci).arg("--build").arg(dir.join("build/x-usa-v0.2.0"))
             .args(["--headless", "--realtime", "--renderer", "vulkan", "--frames", "3420", "--script", &format!("{SCRIPTS}/mp-field-walk.txt")])
-            .args(["--world", &format!("tls:{world_id}"), "--account-server", &api, "--login", email, "--name", name])
-            .env("XR_STATE_LOAD", &state).env("REDEX_PASSWORD", PASSWORD).env("REDEX_WORLD_CA", &cert_pem)
-            .stdout(Stdio::null()).stderr(std::fs::File::create(dir.join("stderr.txt")).unwrap())
-            .spawn().unwrap()
+            .args(["--world", &format!("tls:{world_id}"), "--account-server", &api, "--name", name]).args(extra)
+            .env("XR_STATE_LOAD", &state).env("REDEX_WORLD_CA", &cert_pem).env_remove("REDEX_PASSWORD")
+            .stdout(Stdio::null()).stderr(std::fs::File::create(dir.join("stderr.txt")).unwrap());
+        if password {
+            c.env("REDEX_PASSWORD", PASSWORD);
+        }
+        c.spawn().unwrap()
     };
-    let mut ga = Kill(game(&a, &emails[0], "PlayerA"));
-    let mut gb = Kill(game(&b, &emails[1], "PlayerB"));
+    let character = format!("{:016x}", online.id);
+    let mut ga = Kill(game(&a, "PlayerA", &[], false));
+    let mut gb = Kill(game(&b, "PlayerB", &["--login", &emails[1], "--character", &character], true));
     let (mut ca, mut cb) = (None, None);
     let end = Instant::now() + Duration::from_secs(10 * 60);
     while ca.is_none() || cb.is_none() {
@@ -192,11 +225,28 @@ fn two_games_meet_on_a_central_tls_world() {
         println!("{who}: {}", l.lines().filter(|l| l.starts_with("account:") || l.starts_with("world:") || l.starts_with("puppets: spawn")).collect::<Vec<_>>().join("\n   "));
         let err = std::fs::read_to_string(if who == "A" { a.join("stderr.txt") } else { b.join("stderr.txt") }).unwrap_or_default();
         assert_eq!(code, Some(Some(0)), "{who} exited {code:?}\n{}\n{}", tail(l), tail(&err));
-        assert!(l.contains("account: logged in to"), "{who} did not log in to the backend\n{}", tail(l));
+        let signed = if who == "A" { "account: signed in to" } else { "account: logged in to" };
+        assert!(l.contains(signed), "{who} did not sign in to the backend\n{}", tail(l));
         assert!(l.contains(&format!("world: logged in to tls:{world_id}")), "{who} did not get into the TLS world\n{}", tail(l));
         assert!(l.contains("puppets: spawn session"), "{who} never saw the other player\n{}", tail(l));
         for bad in ["panic", "guest memory fault", "WARNING: puppets"] {
             assert!(!l.contains(bad), "{who}'s log has {bad:?}\n{}", tail(l));
+        }
+    }
+    assert!(la.contains("with the kept session"), "A did not use the kept session\n{}", tail(&la));
+    assert!(lb.contains(&format!("character {character}: ")), "B did not play its online character\n{}", tail(&lb));
+    assert!(!b.join(format!("characters/{character}")).exists(), "the online character's saves went to the local root");
+    // nothing of the account came into B's characters.json, and A's folder holds no password
+    assert!(!b.join("characters.json").exists(), "the account's characters landed on this PC's list");
+    let mut dirs = vec![a.clone()];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            if e.file_type().unwrap().is_dir() {
+                dirs.push(e.path());
+            } else if e.metadata().unwrap().len() < 64 << 20 {
+                let bytes = std::fs::read(e.path()).unwrap();
+                assert!(!bytes.windows(PASSWORD.len()).any(|w| w == PASSWORD.as_bytes()), "{} holds the password", e.path().display());
+            }
         }
     }
     drop((world, backend));

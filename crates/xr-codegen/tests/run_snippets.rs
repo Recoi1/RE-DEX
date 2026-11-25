@@ -192,7 +192,7 @@ fn one<'a>(name: &'a str, words: &'a [u32], funcs: &'a [(u32, u32)], regs: &'a [
 
 fn span(words: &[u32]) -> [(u32, u32); 1] { [(BASE, BASE + 4 * words.len() as u32)] }
 
-// ---- basic tests ----
+// ---- tests from the brief ----
 
 #[test]
 fn sum_loop() {

@@ -1,7 +1,7 @@
 # The central RE:DEX stack: Postgres (its own internal network, only the backend reaches it, never published), the
 # account backend behind Caddy (HTTPS), and the central world on TLS port 7777 with a copy of Caddy's certificate for
 # WORLD_HOST. Needs Docker Compose 2.27+ (volume `subpath`). Run from this folder:
-#   cp .env.example .env   # and set the host names
+#   cp .env.example .env   # and set the host names (one name for all three is fine: see the Caddyfile)
 #   mkdir secrets          # then write the secret files below (they never go in the repository)
 #   docker compose up -d --build
 # Secrets (one value per file, no trailing newline needed):
@@ -65,7 +65,9 @@ services:
 
   # The only service that sees Caddy's certificates (just the certificates folder, read-only, no network): every
   # 10 minutes it copies WORLD_HOST's certificate and key, whichever CA issued them, into `worldtls`, owned by the
-  # world's uid. The world reloads them when they change.
+  # world's uid. The world reloads them when they change (it looks every 10 minutes; after a WORLD_HOST change,
+  # `docker compose restart world` once certsync logged the copy, or it serves the old name's certificate until then).
+  # WORLD_HOST may equal ACCOUNTS_HOST: then it is the same certificate.
   certsync:
     image: alpine:3@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
     network_mode: none
@@ -153,6 +155,7 @@ configs:
       # no -e: a failed copy (Caddy mid-write, or no certificate yet) waits for the next round instead of exiting
       set -u
       echo "certsync: watching for $${WORLD_HOST}'s certificate"
+      synced=
       while true; do
         crt=$$(find /src -type f -path "*/$${WORLD_HOST}/$${WORLD_HOST}.crt" -exec ls -t {} + 2>/dev/null | head -n 1)
         if [ -n "$$crt" ] && [ -f "$${crt%.crt}.key" ]; then
@@ -162,9 +165,11 @@ configs:
             mv /dst/key.tmp /dst/key.pem && mv /dst/cert.tmp /dst/cert.pem
             echo "certsync: copied $$crt"
           fi
+          cmp -s "$$crt" /dst/cert.pem && cmp -s "$${crt%.crt}.key" /dst/key.pem && synced=1
         fi
-        # every 10 s until the first copy (Caddy gets the first certificate within a minute), then every 10 min
-        if [ -f /dst/cert.pem ]; then sleep 600; else sleep 10; fi
+        # every 10 s until this WORLD_HOST's certificate is in place (Caddy gets a new one within a minute; a copy left
+        # from an earlier WORLD_HOST does not count), then every 10 min
+        if [ -n "$$synced" ]; then sleep 600; else sleep 10; fi
       done
 
 secrets:

@@ -22,7 +22,7 @@ steamworks = "=0.13.1"
 steamworks-sys = "=0.13.0"
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 webpki-roots = "1"
-windows-sys = { version = "0.59", features = ["Win32_System_LibraryLoader", "Win32_System_Console"] }
+windows-sys = { version = "0.59", features = ["Win32_System_LibraryLoader", "Win32_System_Console", "Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [dev-dependencies]
 redex-world = { path = "../redex-world", features = ["central"] }

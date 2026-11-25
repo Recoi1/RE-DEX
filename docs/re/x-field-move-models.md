@@ -350,7 +350,7 @@ A puppet's: id 0x8000 and up, the player model, movement 0, script 2000, the rem
 - **Which 8:** with more players on the map, the 8 nearest to the local player (x/z) are shown, re-picked every tick.
   A shown puppet counts 3 tiles (`KEEP_MARGIN`) nearer than it is, so players at about the same distance do not swap
   in and out (each swap is a Delete and a Create). `Target.rank` goes first (0 for everyone now; friends and team
-  members, M6/M7).
+  members).
 - After Fly the puppets came back before the new map's NPCs were loaded (3 slots used at the first spawn). The Create
   hook covers that order: with no free slot a puppet is deleted before the game's Create runs.
 
@@ -687,7 +687,7 @@ that folder. In each run one puppet (model 2, XR_FAKE_PEERS=1) stood in the Lave
 
 | Create's `extra` | Puppet |
 |---|---|
-| 0 | the default look: red cap, brown hair (as in M1) |
+| 0 | the default look: red cap, brown hair |
 | `dress()` with the local player's own fashion | **dressed as the player**: panda hat and sunglasses (`puppet-default-vs-local-outfit.png`). The parts were already loaded, in slot 0 |
 | `dress()` with Red's fashion (another outfit), no request | **not drawn**: no slot holds the outfit, and the model heaps did not change in 640 frames |
 | `dress()` with Red's fashion, after RequestDressUp(sys, param) | **dressed as Red**: blond hair, red cap with sunglasses, blue jacket (`puppet-default-vs-other-outfit-zoom.png`). Slot 1 took the request |
@@ -695,7 +695,7 @@ that folder. In each run one puppet (model 2, XR_FAKE_PEERS=1) stood in the Lave
 ### Contract for applying an appearance to a puppet
 
 1. Call `Appearance::from_bytes(peer bytes)`. If it returns None, keep `extra` 0 (the plain boy or girl look).
-2. Pick the model: `MODEL_GIRL` if gender is 1, else `MODEL_BOY`. M1's residency fallback still applies: an absent
+2. Pick the model: `MODEL_GIRL` if gender is 1, else `MODEL_BOY`. The residency fallback still applies: an absent
    player model hangs Create.
 3. Build the parameter with `puppet::dress(g, at, &a)`.
    - `at` is DRESS_SIZE (0x60) bytes of guest memory that stay valid through the next two calls.

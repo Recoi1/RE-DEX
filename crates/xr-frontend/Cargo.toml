@@ -6,6 +6,10 @@ edition = "2021"
 license = "MIT"
 description = "RE:DEX's window, input and sound, ported from Zakuro's frontend"
 
+[features]
+# the MP test harness drives the start screen's account panel (XR_TEST_SIGNIN); never in a release
+test-hooks = []
+
 [dependencies]
 xr-hle = { path = "../xr-hle" }
 redex-builder = { path = "../redex-builder" }

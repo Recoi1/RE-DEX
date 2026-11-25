@@ -11,7 +11,7 @@ path = "src/main.rs"
 [features]
 # the MP test harness: --dev-id and the local wireless room flags, and dev inputs (headless, scripts, save states,
 # fake peers) allowed in a world. Never in a release: make-release builds without it
-mp-tests = ["xr-net/mp-tests"]
+mp-tests = ["xr-net/mp-tests", "xr-frontend/test-hooks"]
 
 [[test]]
 name = "two_instances"

@@ -502,7 +502,7 @@ fn rgba(path: &std::path::Path) -> Vec<u8> {
 }
 
 /// A fresh data dir of its own under the temp dir (no saves or extdata; the shared one keeps its own, and tests running
-/// at the same time, in this process or another worktree's, never share one), holding a copy of
+/// at the same time, in this process or another checkout's, never share one), holding a copy of
 /// <XR_DATA>/build/x-usa-v0.2.0/xgame.dll; None (skip) without XR_DATA/XR_CCI. A test removes it once it passed.
 fn own_data(name: &str) -> Option<(std::path::PathBuf, String)> {
     let (Ok(data), Ok(cci)) = (std::env::var("XR_DATA"), std::env::var("XR_CCI")) else {

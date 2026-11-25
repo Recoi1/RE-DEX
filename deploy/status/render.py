@@ -3,6 +3,9 @@
 
     python3 render.py progress.json OUT_DIR
 
+Caddy serves OUT_DIR at https://STATUS_HOST/status/ (and at / on a status host of its own) and the card at
+https://STATUS_HOST/progress.svg; the page links the card relatively, so both places work.
+
 The JSON is public: it may hold only `updated`, `release`, `milestones` (0-9: name + status) and `features` (3-5).
 Anything else is refused, so nothing private can slip onto the page.
 """

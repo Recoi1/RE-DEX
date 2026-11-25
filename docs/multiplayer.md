@@ -32,7 +32,7 @@ redex-world --dev [--bind ADDR:PORT]          (an mp-tests build only)
 ```
 
 - One of `--dev` or `--p2p` is needed; without either the server does not start.
-- **Invite-only until moderation (M8).** `--p2p` refuses to start without `--allow FILE`: one account a line, the
+- **Invite-only until moderation exists.** `--p2p` refuses to start without `--allow FILE`: one account a line, the
   only accounts let in. `<data>/bans.txt` (same form) keeps accounts out. A line is a SteamID64, `STEAM_0:X:Y`,
   `[U:1:N]` or a `steamcommunity.com/profiles/<id64>` URL; a BOM, spaces, blank lines and `#` comments are fine, and a
   line that names no account is warned about on the server's stderr with its line number (`WARNING: <file> line N
@@ -41,7 +41,7 @@ redex-world --dev [--bind ADDR:PORT]          (an mp-tests build only)
   the allow list, disconnects a player within 30 s. A list that can't be read refuses everyone (a missing `bans.txt`
   bans nobody). A refused player gets `AUTH` with the reason ("You're not on
   this world's list; ask its host", "you are banned from this world"), shown to them as "Cannot join: ...". Spacewar accounts are free, so a
-  SteamID ban is weak: the allow list is the real gate until M8.
+  SteamID ban is weak: the allow list is the real gate until moderation exists.
 - `--dev` (an `mp-tests` build only): TCP on `127.0.0.1:7777` (or `--bind`, localhost only). Dev ids and Steam logins. The server starts an
   anonymous Steam game server to check tickets; that needs `steamclient64.dll`, `tier0_s64.dll` and
   `vstdlib_s64.dll` from the Steam client or SteamCMD next to it. If Steam's game server cannot start, a dev server
@@ -114,7 +114,7 @@ The client keeps dev and test tools out of worlds; the server's checks above are
 - **The release guard** (`check-release.ps1`) refuses a `redex.exe` or `redex-world.exe` built with `mp-tests` (its
   `--help` text says `MP-TESTS BUILD`), so a test build can't ship by accident.
 - **Rule: no Pokémon, items or money on the wire yet.** No message carrying PK6 data, items or money may be added to
-  the protocol before the legality daemon, the registry and escrow exist (M3). Edited or imported saves join freely
+  the protocol before the legality daemon, the registry and escrow exist. Edited or imported saves join freely
   today and are harmless only because nothing Pokémon-shaped crosses the server; a client gate can't stop an edited
   save, so that fence is server-side only.
 
@@ -134,7 +134,23 @@ Between two PCs: run `redex-world --p2p` on one, and both players join with `--w
 be opened. Not over plain TCP: a Steam ticket sent over TCP is not bound to the server (see "The server"), so a TCP
 server takes logins on localhost only.
 
-## Finding a P2P server
+## The dev launchers (local scripts, not in this repository)
+
+Since the MP lockdown these are dev launchers: `--dev` and `--dev-id` need `mp-tests` builds of `redex-world` and
+`redex`, and the P2P server needs `--allow FILE`. They were not changed with it.
+
+| Launcher | What it starts |
+|---|---|
+| `Start world server.bat` | `redex-world --dev --name "RE:DEX test"` on 127.0.0.1:7777 (this PC only; dev ids and Steam logins) |
+| `Start world server (Steam P2P).bat` | `redex-world --p2p --name "RE:DEX test"`: a public world over Steam's relays. It prints `steam:<id64>`; friends find it in Multiplayer > Browse servers (a new server is listed 40 s to 2 minutes after it starts, and by its name only if UDP 27016 reaches this PC, otherwise as "Unnamed world") or join with `--world steam:<id64>`. Steam logins only: not the second-player launcher |
+| `Play online X (Steam).bat` | Pokémon X in a window with your Steam account, a copy of the 100% save (`x-online`) |
+| `Play online Y (Steam).bat` | Pokémon Y in a window with your Steam account, a new game (`y-online`) |
+| `Play online second player (test).bat` | Pokémon X in a second window with a dev id (`second-player`), to test alone on one PC |
+
+Start the server first (the localhost one for the second-player test, the P2P one to play with friends; the Steam
+launchers join 127.0.0.1:7777 by default, so for the P2P world open Multiplayer > Browse servers or start them with
+`--world steam:<id64>`). The Steam launchers need Steam running; only one of them can run at a time (one Steam
+account per PC), next to the second-player one.
 
 **The query port of a P2P server.** Players find a `--p2p` server through Steam's master list (tags `redex,v5,kalos`), which
 needs nothing opened. Its name, player count and ping come from a UDP query to `--query-port` (default 27016): if Steam
@@ -166,7 +182,7 @@ A character (made in the start screen's creator: a name and a look, `<data>/char
   `<data>/characters/<id>/backups/<title>/`), and its look in the game (a new game takes its gender, name and look;
   Continue its look, on a save of its gender). Online, the other players see that look on its puppet.
 
-## What other players look like (M1, outfits and modes since M1b)
+## What other players look like (outfits and modes)
 
 - A boy or a girl in the other player's own outfit (the 19-byte appearance: gen 6, version 1, gender, the save's 16
   fashion bytes; sent at login from the save, then again whenever the field shows a new one, e.g. after a boutique).
@@ -181,8 +197,7 @@ A character (made in the start screen's creator: a name and a look, `<data>/char
   outfit draws fine, but a girl's long hair is drawn as a brown plank and short hair not at all. The player part set
   takes one of the game's two player heaps (`[0x5E9EE4]+0x2C` and `+0x30`) and your own outfit holds the
   other, so one girl outfit is on the player set at a time: a second girl in the same outfit shares it, a girl in
-  another outfit, or in your exact outfit (a twin: the game's own slot is never shared), wears hers on the NPC set:
-  her clothes, skin and eyes are right, long hair is the plank. Each outfit keeps the set it was
+  another outfit, or in your exact outfit (a twin: the game's own slot is never shared), wears hers on the NPC set: her clothes, skin and eyes are right, long hair is the plank. Each outfit keeps the set it was
   asked for on when it is asked for again after a battle or released. While a shared girl outfit's parts are gone
   (after a battle) and no player heap is free, a new girl in it waits rather than load into a null heap. The girl model
   has no body of its own (it is all dress-up parts), so a girl with no outfit at all (a stuck loader, no free slot or
@@ -396,5 +411,5 @@ the script clock until `puppets>=1`, `map!=0`, a memory word (`818290C=0`) or th
   heap has 343,800 bytes, under the 368,640 gate). The Lumiose salon (Coiffure Clips) has not been run.
 - Surfers are hidden; bikers and skaters run in place at their own speed, with no bicycle or skating pose.
 - In the pair tests the Y biker uses the X 100% save, and the fake feed's look rotation changes multi-peer looks.
-- Trade, Battle and Invite to team come in M3, M4 and M7. Rich presence says "In Kalos" with no map name.
+- Trade, Battle and Invite to team come later. Rich presence says "In Kalos" with no map name.
 - A Refresh pressed while the server list is still being asked leaks one Steam request handle (a documented `shortcut:`).

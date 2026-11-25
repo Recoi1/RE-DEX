@@ -141,7 +141,7 @@ pub struct Target {
     /// their outfit, validated (`Appearance::from_bytes`); None: the plain look
     pub look: Option<Appearance>,
     /// Who is shown first when more than MAX_PUPPETS players are on the map: a higher rank, then the nearest. 0 for
-    /// everyone for now; friends and team members (M6/M7) get more.
+    /// everyone for now; friends and team members get more.
     pub rank: u8,
 }
 
@@ -1178,7 +1178,7 @@ mod tests {
             g.put(mgr + MGR_RES, &MODEL_BOY.to_le_bytes());
             g.put(mgr + MGR_RES + RES_SIZE, &MODEL_GIRL.to_le_bytes());
             g.set_map(map);
-            // the local player wears the 100% save's outfit, loaded in dress-up slot 0
+            // the local player wears the save trainer's outfit (the 100% save's), loaded in dress-up slot 0
             g.put(mgr + MGR_MODEL_SYS, &SYS.to_le_bytes());
             g.put(PLAYER_HEAPS, &HEAPS.to_le_bytes());
             g.put(HEAPS + 0x2C, &0x0B80_0000u32.to_le_bytes());
@@ -1818,7 +1818,7 @@ mod tests {
         g.put(SYS + SYS_DRESS_SLOTS + i * DRESS_SLOT_SIZE, &[0, 3]);
         // the header as the player's own (boy layout) but for PUPPET_MARK, its body pointer moved into the model
         assert_eq!(g.u32(shown[0] + MM_DRESS), Some(0x00_FF_01_00));
-        // The local player's twin gets a slot of its own: the player's (header byte 3 = 1) is never shared
+        // the save trainer's twin of the local player gets a slot of its own: the player's (header byte 3 = 1) is never shared
         assert_eq!(g.count(CODE + REQUEST_DRESS), 2);
         assert_eq!(g.dress_used(), 3);
         assert_ne!(g.slot_of(shown[1]), 0);
@@ -2112,7 +2112,7 @@ mod tests {
         let twin = g.puppets()[0];
         let slot = g.slot_of(twin);
         assert_ne!(slot, 0);
-        // the local player changes clothes: the game asks for Red and releases the save's trainer (its own parameter)
+        // the local player changes clothes: the game asks for Red and releases the save trainer (its own parameter)
         g.set_local(RED);
         let (red, jorge) = (g.local_outfit(RED), g.local_outfit(TOBIN));
         g.put_slot(1 + DRESS_SLOTS - 2, Some(red));

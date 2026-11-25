@@ -227,24 +227,30 @@ pub struct Played {
     sync: LookSync,
     data: std::path::PathBuf,
     id: u64,
+    /// an online character (the account's): its look goes to the account through the world, never to characters.json
+    online: Option<redex_proto::Character>,
 }
 
 impl Played {
     /// `user`: the character's saves folder; a new game when it has no save the player made for `title` yet. None for
     /// a look out of the game's ranges (characters.json's loader drops those).
-    pub fn new(c: &redex_proto::Character, data: &std::path::Path, user: &std::path::Path, title: u64) -> Option<Played> {
+    pub fn new(c: &redex_proto::Character, data: &std::path::Path, user: &std::path::Path, title: u64, online: bool) -> Option<Played> {
         let new_game = !played_save(&user.join(format!("savedata/{title:016X}/main")));
         let look = Appearance::from_bytes(&c.look)?;
         let sync = LookSync::new(look, &c.name, new_game);
         crate::intro::arm(look, &c.name);
-        Some(Played { sync, data: data.to_path_buf(), id: c.id })
+        Some(Played { sync, data: data.to_path_buf(), id: c.id, online: online.then(|| c.clone()) })
     }
 
-    /// After each frame: `LookSync::frame`, and a look the game changed into characters.json. The character as kept
-    /// then (for the account), else None.
+    /// After each frame: `LookSync::frame`, and a look the game changed into characters.json (an online character's
+    /// only into its copy here). The character as kept then (for the account), else None.
     pub fn frame(&mut self, m: &mut exec::Machine) -> Option<redex_proto::Character> {
         use xr_frontend::start::characters::{now_ms, Store};
         let look = self.sync.frame(m)?;
+        if let Some(c) = &mut self.online {
+            (c.look, c.changed) = (look.to_bytes().to_vec(), now_ms());
+            return Some(c.clone());
+        }
         let kept = match Store::try_load(&self.data) {
             None => Err("characters.json can't be read now".into()),
             Some(mut store) => match store.set_look(self.id, look, now_ms()) {
@@ -426,10 +432,10 @@ mod tests {
             assert_eq!(s.step(Some(&mut ms), None), None);
             assert_eq!(ms, mystatus(0, TOBIN, "Tobin"), "touched nothing");
         }
-        let jorge = Appearance { gender: 0, fashion: TOBIN };
-        assert_eq!(s.step(Some(&mut ms), Some(jorge)), None);
+        let tobin = Appearance { gender: 0, fashion: TOBIN };
+        assert_eq!(s.step(Some(&mut ms), Some(tobin)), None);
         // the boy's outfits in that save never become the girl character's
-        let mut other = jorge;
+        let mut other = tobin;
         other.fashion[0] ^= 0x40;
         assert!(other.validate());
         assert_eq!(s.step(Some(&mut ms), Some(other)), None);
@@ -438,16 +444,16 @@ mod tests {
 
     #[test]
     fn after_the_field_a_change_is_reported_once() {
-        // features unlike the save trainer's (his are skin 2, hair style 3, colour 1, eyes 2)
+        // features unlike Tobin's (his are skin 2, hair style 3, colour 1, eyes 2)
         let boy = || Look { gender: 0, skin: 1, hair_style: 0, hair_colour: 0, eyes: 0 }.appearance().unwrap();
         let mut s = LookSync::new(boy(), "Calem", false);
         s.step(None, Some(boy()));
         assert_eq!(s.step(None, Some(boy())), None, "the same look is no change");
-        let jorge = Appearance { gender: 0, fashion: TOBIN };
-        assert_eq!(s.step(None, Some(jorge)), Some(jorge));
-        assert_eq!(s.step(None, Some(jorge)), None, "once");
+        let tobin = Appearance { gender: 0, fashion: TOBIN };
+        assert_eq!(s.step(None, Some(tobin)), Some(tobin));
+        assert_eq!(s.step(None, Some(tobin)), None, "once");
         assert_eq!(s.step(None, None), None, "out of the field (a battle) is no change");
-        assert_eq!(s.step(None, Some(jorge)), None);
+        assert_eq!(s.step(None, Some(tobin)), None);
         assert_eq!(s.step(None, Some(boy())), Some(boy()), "back again is a change");
     }
 
@@ -632,9 +638,9 @@ mod tests {
     #[test]
     fn applied_is_logged_only_when_written_and_shown() {
         let s = LookSync::new(boy(), "Calem", false);
-        let jorge = Appearance { gender: 0, fashion: TOBIN };
+        let tobin = Appearance { gender: 0, fashion: TOBIN };
         assert_eq!(s.verdict(boy()), None, "the save had it already: nothing was written");
-        assert!(s.verdict(jorge).unwrap().starts_with("character: look not applied: the field shows 06010088b9"));
+        assert!(s.verdict(tobin).unwrap().starts_with("character: look not applied: the field shows 06010088b9"));
         assert!(s.verdict(girl()).unwrap().contains("the save is a girl, the character a boy"));
         let mut s = LookSync::new(girl(), "Mira", true);
         s.step(Some(&mut mystatus(0, TOBIN, "Red")), None);

@@ -517,7 +517,7 @@ mod tests {
         assert_eq!(g.count(TEARDOWN), torn);
     }
 
-    /// A look asked for whose slot went before it was worn is asked for again only while a player heap
+    /// a look asked for whose slot went before it was worn is asked for again only while a player heap
     /// is free (the fake panics on a load with both taken, as the real loader faults).
     #[test]
     fn asked_again_only_with_a_free_player_heap() {

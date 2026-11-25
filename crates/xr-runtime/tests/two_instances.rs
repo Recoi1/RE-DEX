@@ -1,4 +1,4 @@
-//! Two real game instances meet through a `redex-world` server (the multiplayer M1 proof). Each test
+//! Two real game instances meet through a `redex-world` server (the first multiplayer proof). Each test
 //! starts the server binary (`--dev`, loopback) and two headless games held to real time (`--realtime`), each in a data
 //! dir of its own with its own dev id, and scripts them with `wait_until` (scripts/playthrough/mp-pair-*.txt): the
 //! scripts wait on each other, never on frame numbers. Long (minutes each) and they need saves, so they are ignored by
@@ -403,7 +403,7 @@ fn a_skin_joins_and_a_data_mod_does_not() {
 // (XR_MP_WHISPER / XR_MP_REPORT: a headless game has no menu). The scripts are driven by these tests (they have
 // checkpoints but no expects: the asserts are here). Needs the Y game too, else the tests skip:
 //   XR_CCI_Y (default: Pokemon Y (USA) ... Decrypted.3ds beside XR_CCI), XR_DATA_Y (a data dir with
-//   build/y-usa-v0.2.0/xgame.dll, default <XR_DATA>/../play-online/y-online), XR_SAVE_Y (a Y `user` dir: the new game saved in
+//   build/y-usa-v0.2.0/xgame.dll, default <XR_DATA>/../y-online), XR_SAVE_Y (a Y `user` dir: the new game saved in
 //   the Vaniville house, default <XR_DATA>/../work/xy-cross/ysave/user). Y's biker is the X 100% save placed in Y's folder.
 
 const LOOK: &str = "4864090101cb08034100000000000000";

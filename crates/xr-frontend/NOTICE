@@ -12,8 +12,7 @@ Files taken from zakuro/src, and what we changed in them:
   to 2x instead of 3x.
 - lib.rs: rewritten from Zakuro's lib.rs, keeping its window/backend setup (`resumed`), event handling, key handling
   (F1, F9, F10, F11, Tab fast forward, M to blow into the mic), touch and tilt, frame pacing (`step`, FRAME_TIME,
-  CATCH_UP_LIMIT, MAX_SKIPPED, `skips_showing` and its test), `emulate`, `present`, `shown` and `shown_right`, and its
-  interface wiring: egui fed the window's events (`window_event`, `pointer_taken`), the key rebinding in
+  CATCH_UP_LIMIT, MAX_SKIPPED, `skips_showing` and its test), `emulate`, `present`, `shown` and `shown_right`, and (later) its interface wiring: egui fed the window's events (`window_event`, `pointer_taken`), the key rebinding in
   `key`, `poll_gamepads` (Home), `apply_settings`, `apply_microphone`, `interface` and the game's keyboard.
   Changes:
   - one game, booted through a closure the runtime passes (`run(options, config, boot)`), driven through the `Game`

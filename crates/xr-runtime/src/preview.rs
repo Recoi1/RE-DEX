@@ -40,7 +40,7 @@ static REBUILT: Mutex<Option<u32>> = Mutex::new(None);
 /// The player wears the game's own outfit on the way between two looks (`Wardrobe::between`): no frame then.
 static BETWEEN: AtomicBool = AtomicBool::new(false);
 
-/// World units from the feet to the top of the head (the bedroom, spike report).
+/// World units from the feet to the top of the head (the bedroom).
 const HEAD: f32 = 40.0;
 /// The yellow item in the girl's hand in her bedroom state (the game's own prop, not part of any look): its mesh
 /// (`zakuro_gpu` mesh id, from the state's buffers, so the same every run of a state made by `--make-preview`), found by
@@ -48,10 +48,10 @@ const HEAD: f32 = 40.0;
 const HELD_ITEM: u64 = 0x0460_60DD_1606_5F5E;
 /// Frames a `face` tap holds the d-pad.
 const TAP: u64 = 4;
-/// The 3DS's sideways turn from the field camera's clip space to the GPU's: x_gpu = y, y_gpu = -x (the spike found it
+/// The 3DS's sideways turn from the field camera's clip space to the GPU's: x_gpu = y, y_gpu = -x (found by measuring it
 /// from one frame's clip positions of every draw; only this turn puts the player's meshes on the feet).
 const SIDEWAYS: zakuro_gpu::studio::M4 = [[0.0, 1.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
-/// The cylinder on the feet that holds the player, world units: the widest player seen reaches 8 (spike report); a draw
+/// The cylinder on the feet that holds the player, world units: the widest player seen reaches 8; a draw
 /// with most of its vertices in is kept, and any partly in is logged.
 const REACH: f32 = 18.0;
 const TALL: f32 = 48.0;

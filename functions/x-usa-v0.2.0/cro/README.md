@@ -48,7 +48,7 @@ loads PC-relatively. The walk adds these as entries:
   undecodable. This catches functions that are only reached indirectly and are separated by a literal pool.
 
 A seed that points at a data word in code (const objects the compiler put in `.text`, usually the last word of
-the segment) is reported as implausible and left out. After the fixed point the repairs from
+the segment) is reported as implausible and left out. After the fixed point the plan-1 repairs from
 `xr_recomp::repair` run: drop tiny entries, end ranges at no-return calls, add outside branch targets.
 
 ## ARM or Thumb

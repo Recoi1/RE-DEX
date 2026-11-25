@@ -889,7 +889,7 @@ mod tests {
         send(peer(2, bad.clone()));
         send(peer(3, vec![]));
         send(peer(4, vec![0xFF; 64]));
-        send(peer(5, vec![1])); // the M1 gender byte
+        send(peer(5, vec![1])); // the gender byte
         c.frame(None);
         assert_eq!(c.peers[&1].appearance, Some(girl));
         assert!((2..=5).all(|s| c.peers[&s].appearance.is_none()));
