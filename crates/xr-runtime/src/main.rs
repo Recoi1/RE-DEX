@@ -158,20 +158,9 @@ fn start_screen() -> Result<(), String> {
     let tools = redex_builder::Toolchain::from_release_dir(exe.parent().ok_or("no exe folder")?);
     let Some(launch) = xr_frontend::start::run_start(data, tools)? else { return Ok(()) };
     let mut cmd = std::process::Command::new(exe);
-    cmd.arg("--cci").arg(&launch.dump).arg("--build").arg(&launch.build_dir);
-    match (&launch.world, launch.offline) {
-        (Some(w), _) => drop(cmd.arg("--world").arg(w)),
-        // offline is offline even when the settings name a world
-        (None, true) => drop(cmd.arg("--offline")),
-        (None, false) => {}
-    }
-    if let Some(id) = launch.character {
-        cmd.arg("--character").arg(format!("{id:016x}"));
-    }
-    // an online character: the game signs in with the session the start screen kept, never a password
-    if let Some(server) = &launch.account {
-        cmd.arg("--account-server").arg(server);
-    }
+    // always one mode: --offline, --p2p or --world (P2P), or --world with --account-server (an online character, whose
+    // game signs in with the session the start screen kept, never a password)
+    cmd.args(launch.args());
     // no console of ours and no handles to it: closing a terminal RE:DEX was started from leaves the game running
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0000_0008); // DETACHED_PROCESS
@@ -181,11 +170,12 @@ fn start_screen() -> Result<(), String> {
 
 /// `redex --help`. The MP test harness's flags (--dev-id, --room, --room-server) exist only in an mp-tests build.
 const USAGE: &str = "usage: redex                      the start screen
-       redex --cci GAME --build <data>/build/<id> [--character ID] [--world HOST:PORT|steam:ID | --offline] [--name NAME]
+       redex --cci GAME --build <data>/build/<id> [--character ID] [--world HOST:PORT|steam:ID | --p2p | --offline] [--name NAME]
              [--renderer software|vulkan] [--resolution N] [--mute] [--frames N] [--press BUTTON@FRAME]...
              [--headless [--screens-every N] [--deterministic] [--realtime] [--script FILE [--record-expects]]]
              [--make-preview boy|girl --out PATH] [--preview STATE] [+connect steam:ID]
              [--account-server URL --world tls:HOST:PORT]   (signs in with the session the start screen kept)
+  Without --world, --p2p (Steam worlds; the settings' world if any) or --account-server the game plays offline.
   Dev and test options (--headless, --script, --press, --deterministic, --make-preview, XR_STATE_*, XR_EXPLORE*,
   XR_FAKE_*, XR_MP_*, XR_SET_FASHION, XR_RAILPOS) keep the game offline, and so do mods that change the game.";
 
@@ -207,7 +197,7 @@ fn run() -> Result<(), String> {
     let (mut room, mut room_server) = (None::<String>, None::<u16>);
     #[cfg_attr(not(feature = "mp-tests"), allow(unused_mut))]
     let (mut world, mut name, mut dev_id, mut offline) = (None::<String>, None::<String>, false, false);
-    let mut character = None::<u64>;
+    let (mut character, mut p2p) = (None::<u64>, false);
     // an account of the account backend (central worlds): the session the start screen kept, or (mp-tests) --login
     let mut account_server = None::<String>;
     #[cfg_attr(not(feature = "mp-tests"), allow(unused_mut))]
@@ -266,6 +256,8 @@ fn run() -> Result<(), String> {
                 world = Some(addr);
             }
             Some("--offline") => offline = true,
+            // Steam worlds with this PC's characters (P2P): the settings' world at boot if they name one
+            Some("--p2p") => p2p = true,
             Some("--account-server") => account_server = Some(value()?.to_string_lossy().into_owned()),
             #[cfg(feature = "mp-tests")]
             Some("--login") => login = Some(value()?.to_string_lossy().into_owned()),
@@ -341,9 +333,9 @@ fn run() -> Result<(), String> {
     if make_preview.is_none() {
         let _ = std::fs::remove_file(logs.join("loadcro.csv")); // xr-hle appends this run's LoadCRO rows
     }
-    // a window joins the world server its settings name when --world does not say
+    // a window with --p2p joins the world server its settings name when --world does not say; no mode at all is offline
     let settings = (!headless).then(xr_frontend::Settings::load);
-    let world = world.or(settings.as_ref().filter(|_| !offline).map(|s| s.world_address.clone()).filter(|a| !a.is_empty()));
+    let (world, offline) = boot_world(world, p2p, offline, account_server.is_some(), settings.as_ref().map(|s| s.world_address.as_str()));
     let mut notice = None;
     // --account-server: the session the start screen kept on this PC (DPAPI), checked with the service; with --login
     // (mp-tests builds only) a password login instead. No session, a dead one or no answer plays offline and says why
@@ -490,6 +482,14 @@ Playing offline."));
         }
         None => None,
     };
+    // an account login that did not happen plays offline (said above)
+    let offline = offline || (account_server.is_some() && account.is_none());
+    log::log(&match (&account, &world) {
+        (Some(a), Some(w)) => format!("mode: online, account {} on {w}", a.account_id),
+        (None, Some(w)) => format!("mode: P2P, world {w}"),
+        _ if !offline => "mode: P2P, no world at boot (Steam's server list and invites)".to_owned(),
+        _ => "mode: offline".to_owned(),
+    });
     let console_id = identity.map(xr_net::id::console_id);
     let config = match (&link, console_id) {
         (Some(_), Some(c)) => xr_hle::Config { console_id: c, username: nickname.chars().take(10).collect(), ..config },
@@ -531,8 +531,9 @@ Playing offline."));
                 let world = net.as_ref().and(world_shown);
                 let played = played(m.title_id);
                 let discord = discord::game_of(m.title_id).map(|g| discord::Handle::start(g, windowed_discord_settings, |t| log::log(t)));
-                // Steam from the start, online or not: friends see "in RE:DEX" and can write (never with --dev-id)
-                if !joiner.dev_id {
+                // Steam from the start when playing P2P or online: friends see "in RE:DEX" and can write (never with
+                // --dev-id). Offline is just the player: Steam starts only if they search or join from the game
+                if !joiner.dev_id && !offline {
                     let _ = joiner.steam();
                 }
                 #[cfg(feature = "mp-tests")]
@@ -1608,6 +1609,29 @@ mod tests {
         assert!(k("203.0.113.5:7777", true, true) && k("example.org:7777", false, false));
     }
 
+    /// A local character with no mode on the command line (an old shortcut, or the start screen's old toggle on
+    /// "Online") plays offline, even when the settings name a world; only --world, --p2p or --account-server go online,
+    /// and the explicit dev and test forms stay as they were.
+    #[test]
+    fn no_mode_on_the_command_line_plays_offline() {
+        use super::boot_world as b;
+        let w = |s: &str| Some(s.to_owned());
+        // `redex --cci X --build B --character ID`, settings with and without a world, window or headless
+        for settings in [Some("steam:90297831083063301"), Some(""), None] {
+            assert_eq!(b(None, false, false, false, settings), (None, true), "{settings:?}");
+            assert_eq!(b(None, false, true, false, settings), (None, true), "--offline, {settings:?}");
+        }
+        // --p2p: the settings' world, else none at boot (the server browser and invites), never offline
+        assert_eq!(b(None, true, false, false, Some("steam:9")), (w("steam:9"), false));
+        assert_eq!(b(None, true, false, false, Some("")), (None, false));
+        assert_eq!(b(None, true, false, false, None), (None, false));
+        assert_eq!(b(None, true, true, false, Some("steam:9")), (None, true), "--offline wins over the settings' world");
+        // explicit worlds (dev, tests, Steam's +connect) and online characters as before
+        assert_eq!(b(w("127.0.0.1:7777"), false, false, false, Some("steam:9")), (w("127.0.0.1:7777"), false));
+        assert_eq!(b(w("tls:h:7777"), false, false, true, None), (w("tls:h:7777"), false));
+        assert_eq!(b(None, false, false, true, Some("steam:9")), (None, false), "--account-server alone: its own error, not a P2P world");
+    }
+
     use super::*;
 
     /// Presence is recorded as set only once it was: a window that booted without Steam sets it (the `redex` key with it)
@@ -1790,6 +1814,15 @@ struct Windowed {
 const JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 use redex_proto::steam_world;
+
+/// The world joined at boot, and whether the run is offline. The game never goes online by itself: only `--world` (or
+/// Steam's `+connect`), `--p2p` (with the settings' world, if they name one) or `--account-server` choose it. Anything
+/// else, an old shortcut or a settings file from the start screen's old online/offline switch, plays offline.
+fn boot_world(world: Option<String>, p2p: bool, offline: bool, account: bool, settings_world: Option<&str>) -> (Option<String>, bool) {
+    let world = world.or_else(|| settings_world.filter(|a| p2p && !offline && !a.is_empty()).map(str::to_owned));
+    let offline = offline || (world.is_none() && !p2p && !account);
+    (world, offline)
+}
 
 /// Whether a boot-time world address is kept: with a Steam login (no `--dev-id`) only `steam:` and this PC's own TCP
 /// world are; anything else would send the ticket over TCP to another machine.

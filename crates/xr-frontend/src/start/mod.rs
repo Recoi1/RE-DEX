@@ -1,6 +1,6 @@
 //! The start screen: RE:DEX's own front door when it opens with no arguments. Game cards (a built game shows a blurred,
 //! dimmed picture of its own title screen, made on this PC), "Add your game" (a file picker, then the builder's
-//! progress), a row for characters, online or offline, the world, and Play. It paints with the liquid glass
+//! progress), a row for characters, the P2P world, and Play (offline, with friends over P2P, or online). It paints with the liquid glass
 //! look (glass.rs) on the same winit window + presenter the game uses, with no game booted: Play hands a [`Launch`]
 //! back and the runtime starts the game in a fresh process.
 pub mod account;
@@ -39,19 +39,53 @@ use xr_net::x::field::Appearance;
 use library::{label, GameEntry, Library};
 use redex_builder::{build_state, BuildJob, BuildState, Event, Stage, Toolchain};
 
-/// what the player chose to play: the runtime starts `redex --cci <dump> --build <build_dir> [--world W]
-/// [--character <id>]`
+/// the three ways to play: a character on this PC alone or with friends over Steam (P2P), an online character on the
+/// official world
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Play {
+    Offline,
+    P2p,
+    Online,
+}
+
+/// how the game starts; every launch says one, so the game never picks online by itself
+#[derive(Debug, Clone, PartialEq)]
+pub enum Mode {
+    /// `--offline`
+    Offline,
+    /// `--world W` (the P2P world the settings name), else `--p2p` (Steam's server list and invites in the game)
+    P2p { world: Option<String> },
+    /// `--world W --account-server S`: an online character of the account signed in to this service; the game joins
+    /// with world tickets from the session kept on this PC, never with a password
+    Online { world: String, account: String },
+}
+
+/// what the player chose to play: the runtime starts `redex` with [`Launch::args`]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Launch {
     pub dump: PathBuf,
     pub build_dir: PathBuf,
-    pub world: Option<String>,
-    pub offline: bool,
-    /// played as this character (its own saves); None plays the shared `<data>/user` saves
-    pub character: Option<u64>,
-    /// an online character of the account signed in to this service (`--account-server`): the game joins `world`
-    /// with world tickets from the session kept on this PC, never with a password
-    pub account: Option<String>,
+    pub mode: Mode,
+    /// played as this character (its own saves)
+    pub character: u64,
+}
+
+impl Launch {
+    /// the game's command line
+    pub fn args(&self) -> Vec<std::ffi::OsString> {
+        let mut a: Vec<std::ffi::OsString> = vec!["--cci".into(), self.dump.clone().into(), "--build".into(), self.build_dir.clone().into()];
+        match &self.mode {
+            Mode::Offline => a.push("--offline".into()),
+            Mode::P2p { world: Some(w) } => a.extend(["--world".into(), w.into()]),
+            Mode::P2p { world: None } => a.push("--p2p".into()),
+            Mode::Online { world, .. } => a.extend(["--world".into(), world.into()]),
+        }
+        a.extend(["--character".into(), format!("{:016x}", self.character).into()]);
+        if let Mode::Online { account, .. } = &self.mode {
+            a.extend(["--account-server".into(), account.into()]);
+        }
+        a
+    }
 }
 
 /// opens the start screen and returns what to play, None when the window was closed or Quit was pressed. `tools` is
@@ -101,6 +135,7 @@ impl Start {
     let mut app = Start {
         session,
         online_view: true,
+        sign_in_tab: false,
         p2p: false,
         panel: None,
         form: Form::default(),
@@ -111,7 +146,6 @@ impl Start {
         data,
         stamp: tools.as_ref().ok().map(Toolchain::stamp),
         tools,
-        offline: settings.world_address.is_empty(),
         settings,
         selected: 0,
         character: None,
@@ -199,6 +233,8 @@ struct Start {
     session: Session,
     /// the row shows the account's characters (while signed in), else this PC's
     online_view: bool,
+    /// signed out, the Online tab was chosen: it shows the sign-in prompt and no Play
+    sign_in_tab: bool,
     /// "Play with friends (P2P)" was chosen while the official server is unreachable
     p2p: bool,
     /// the account panel, while it is open (it stands in for the character row)
@@ -212,7 +248,6 @@ struct Start {
     stamp: Option<String>,
     library: Library,
     settings: Settings,
-    offline: bool,
     selected: usize,
     /// every character in characters.json (read when the window opens; never held across a game run)
     store: Store,
@@ -269,16 +304,9 @@ struct Start {
 }
 
 /// what Play starts: None until a game is selected and built, and a character is chosen
-fn launch_for(data: &Path, game: Option<&GameEntry>, ready: bool, character: Option<u64>, offline: bool, world: &str) -> Option<Launch> {
+fn launch_for(data: &Path, game: Option<&GameEntry>, ready: bool, character: Option<u64>, mode: Mode) -> Option<Launch> {
     let (game, character) = (game.filter(|_| ready)?, character?);
-    Some(Launch {
-        dump: game.dump.clone(),
-        build_dir: data.join("build").join(&game.build_id),
-        world: (!offline && !world.is_empty()).then(|| world.to_owned()),
-        offline,
-        character: Some(character),
-        account: None,
-    })
+    Some(Launch { dump: game.dump.clone(), build_dir: data.join("build").join(&game.build_id), mode, character })
 }
 
 fn stage_name(s: Stage) -> &'static str {
@@ -507,20 +535,39 @@ impl Start {
         self.job.is_none() && game.is_some_and(|g| self.state(&g.build_id) == BuildState::Ready && g.dump.is_file())
     }
 
-    /// what Play would start, None until the selected game is built and a character is chosen
-    fn playable(&self) -> Option<Launch> {
-        if self.online_view() {
-            // an online character plays on the official world only, with the session kept on this PC
-            let ready = self.ready() && self.session.can_play_online() && self.character.is_some_and(|id| self.shown_get(id).is_some());
-            return launch_for(&self.data, self.library.games.get(self.selected), ready, self.character, false, &self.session.servers.world)
-                .map(|l| Launch { account: Some(self.session.servers.accounts.clone()), ..l });
+    /// what `play` would start, None until the selected game is built and a character is chosen. A character on this PC
+    /// plays offline or P2P (the On this PC tab), an online one online only (the Online tab, signed in)
+    fn playable(&self, play: Play) -> Option<Launch> {
+        let shown = self.character.is_some_and(|id| self.shown_get(id).is_some());
+        let (ready, mode) = match play {
+            Play::Online => {
+                // the official world only, with the session kept on this PC
+                let s = &self.session.servers;
+                (self.online_view() && self.session.can_play_online(), Mode::Online { world: s.world.clone(), account: s.accounts.clone() })
+            }
+            Play::Offline => (!self.online_tab(), Mode::Offline),
+            Play::P2p => (!self.online_tab(), Mode::P2p { world: Some(self.settings.world_address.clone()).filter(|w| !w.is_empty()) }),
+        };
+        launch_for(&self.data, self.library.games.get(self.selected), ready && shown && self.ready(), self.character, mode)
+    }
+
+    /// the Online tab is up (signed out it shows the sign-in prompt)
+    fn online_tab(&self) -> bool {
+        if self.session.me().is_some() {
+            self.online_view
+        } else {
+            self.sign_in_tab
         }
-        launch_for(&self.data, self.library.games.get(self.selected), self.ready(), self.character, self.offline, &self.settings.world_address)
     }
 
     /// the row shows the account's characters: signed in, with the Online tab chosen
     fn online_view(&self) -> bool {
         self.online_view && self.session.me().is_some()
+    }
+
+    /// signed out on the Online tab: the row asks to sign in
+    fn sign_in_prompt(&self) -> bool {
+        self.online_tab() && self.session.me().is_none()
     }
 
     /// the characters the row shows: the account's (online) or this PC's
@@ -632,10 +679,10 @@ impl Start {
         glass.paint_backdrop(ui.painter(), full);
         let n = self.library.games.len();
         // focus order: the games, Add, the character row (Import, three cards, New, the page arrows, Edit look, Remove,
-        // Pokémon Storage), online or offline, World, Settings, Mods, Play, then the account pill, Try again, Play with
-        // friends (P2P) and the Online / On this PC tabs
+        // Pokémon Storage; or the Online tab's Sign in), Play with friends (P2P), World, Settings, Mods, Play (offline or
+        // online), then the account pill, Try again, the server-down Play with friends (P2P) and the Online / On this PC tabs
         let (add, chars) = (n, n + 1);
-        let (toggle, world, settings, mods_item, play) = (n + 11, n + 12, n + 13, n + 14, n + 15);
+        let (p2p_play, world, settings, mods_item, play) = (n + 11, n + 12, n + 13, n + 14, n + 15);
         let (acct, retry, p2p, tabs) = (n + 16, n + 17, n + 18, n + 19);
         let count = n + 21;
         let (pages, visible) = self.row();
@@ -646,17 +693,22 @@ impl Start {
         (present[chars + 5], present[chars + 6]) = (self.page > 0, self.page + 1 < pages);
         present[chars + 7] = selected_here;
         present[chars + 8] = self.character.is_some();
-        if self.online_view() {
+        if self.online_tab() {
             // this PC's own tools stay with this PC's characters (Import, Edit look, Remove, Pokémon Storage), and an
             // online character plays on the official world only
-            for i in [chars, chars + 7, chars + 8, chars + 9, toggle, world] {
+            for i in [chars, chars + 7, chars + 8, chars + 9, p2p_play, world] {
                 present[i] = false;
             }
         }
+        let row_up = self.job.is_none() && self.error.is_none() && self.panel.is_none() && self.removing.is_none() && self.removed.is_none() && !self.storage.panel_up();
+        if self.sign_in_prompt() {
+            // its Sign in stands in for the row
+            (chars..=chars + 9).for_each(|i| present[i] = false);
+            present[chars + 1] = row_up;
+        }
         let down = self.session.unreachable.is_some();
         (present[retry], present[p2p]) = (down && self.session.busy().is_none(), down && !self.p2p);
-        let row_up = self.job.is_none() && self.error.is_none() && self.panel.is_none() && self.removing.is_none() && self.removed.is_none() && !self.storage.panel_up();
-        (present[tabs], present[tabs + 1]) = (row_up && self.session.me().is_some(), row_up && self.session.me().is_some());
+        (present[tabs], present[tabs + 1]) = (row_up, row_up);
         if self.removing.is_some() || self.removed.is_some() {
             // the confirm (or its answer) stands in for the row: Keep (or OK) at the row's head, Remove after it
             (chars + 1..=chars + 9).for_each(|i| present[i] = false);
@@ -885,17 +937,23 @@ impl Start {
             self.storage_panel(ui, glass, low, chars);
         } else {
             glass.title(ui.painter(), pos2(32.0, low), "Characters", 14.0);
-            if self.session.me().is_some() {
-                self.view_tabs(ui, glass, w, low, tabs);
+            self.view_tabs(ui, glass, w, low, tabs);
+            if self.sign_in_prompt() {
+                self.sign_in_row(ui, glass, low, chars + 1);
+            } else {
+                self.characters(ui, glass, low, chars);
             }
-            self.characters(ui, glass, low, chars);
         }
 
-        // bottom bar: three 40 px pills, and the one big Play
+        // bottom bar: 40 px pills (Play with friends among them), and the one big Play
         let cy = h - 32.0 - 48.0;
         let mut commit = false;
         let mut editing = self.editing.take();
-        let official = self.online_view();
+        let official = self.online_tab();
+        // never beside Pokémon Storage: the game and PKVault would both write the saves
+        let blocked = self.storage.blocks_play().or_else(|| self.installer.busy().then_some("Wait for the mod install"));
+        let with_friends = self.playable(Play::P2p).filter(|_| blocked.is_none());
+        let mut chosen = None;
         let bar = Rect::from_min_max(pos2(32.0, cy - 20.0), pos2(w - 32.0 - 96.0 - 200.0, cy + 20.0));
         at(ui, bar, Layout::left_to_right(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 16.0;
@@ -903,10 +961,10 @@ impl Start {
                 // online characters play on the official world only
                 glass.pill(ui, "Official world", Some(304.0), false);
             } else {
-                // Steam's login belongs to the running game (it needs one to ask Steam): online just means "sign in when you play"
-                let r = glass.pill(ui, if self.offline { "Offline" } else { "Online" }, Some(144.0), true);
-                if self.item(ui, &r, toggle, 20.0) {
-                    self.offline = !self.offline;
+                // this PC's characters in Steam worlds (Steam's login belongs to the running game)
+                let r = glass.pill(ui, "Play with friends (P2P)", Some(224.0), with_friends.is_some());
+                if self.item(ui, &r, p2p_play, 20.0) {
+                    chosen = with_friends.clone();
                 }
             }
             if let Some(buf) = &mut editing {
@@ -942,31 +1000,32 @@ impl Start {
                 }
             }
         });
+        // what each way to play does, under the buttons
+        text(ui, pos2(32.0, cy + 20.0 + 14.0), Align2::LEFT_CENTER, "Offline: just you. P2P: friends over Steam, with your PC's characters. Online: the official world, with your RE:DEX account.", 12.0, CARD_BODY);
         self.editing = editing;
         if commit {
             let value = self.editing.clone().unwrap_or_default().trim().to_owned();
             if value.is_empty() || valid_address(&value) {
                 self.settings.world_address = value.clone();
                 self.settings.save();
-                self.offline = value.is_empty();
                 self.editing = None;
             } else {
                 self.edit_error = Some("That address doesn't look right. Use host:port or steam:<id>.");
             }
         }
 
-        // Play: the only primary action
-        // never beside Pokémon Storage: the game and PKVault would both write the saves
-        let blocked = self.storage.blocks_play().or_else(|| self.installer.busy().then_some("Wait for the mod install"));
-        let playable = self.playable().filter(|_| blocked.is_none());
+        // Play: the primary action, offline for this PC's characters, online for the account's
+        let main = if official { Play::Online } else { Play::Offline };
+        let playable = self.playable(main).filter(|_| blocked.is_none());
         let ready = self.ready();
         let selected = self.library.games.get(self.selected).map(|g| g.build_id.clone());
         let selected_name = selected.as_deref().map(game_name);
         let outdated = selected.as_deref().is_some_and(|id| self.state(id) == BuildState::Outdated);
         let c = pos2(w - 32.0 - 48.0, cy);
-        let who = self.character.and_then(|id| self.shown_get(id)).map(|c| c.name.clone());
+        let who = self.character.and_then(|id| self.shown_get(id)).map(|c| c.name.clone()).filter(|_| !self.sign_in_prompt());
         let caption = match (&playable, &selected_name) {
-            (Some(_), Some(_)) => ("Play".to_owned(), TITLE),
+            (Some(_), Some(_)) => ((if official { "Play online" } else { "Play offline" }).to_owned(), TITLE),
+            (None, Some(_)) if ready && self.sign_in_prompt() => ("Sign in to play online".to_owned(), BODY),
             (None, Some(_)) if ready && self.online_view() => (self.online_blocker().to_owned(), BODY),
             (None, Some(_)) if ready => ("Make a character to play".to_owned(), BODY),
             (None, Some(name)) if outdated => (format!("Update {name} to play"), BODY),
@@ -983,7 +1042,7 @@ impl Start {
                 _ if outdated => "needs an update",
                 _ => "not built yet",
             };
-            let net = if self.online_view() { "official world" } else if self.offline { "offline" } else { "online" };
+            let net = if official { "official world" } else { "offline or P2P" };
             let line = match &who {
                 Some(who) => format!("{name} · {who} · {state} · {net}"),
                 None => format!("{name} · {state} · {net}"),
@@ -991,8 +1050,10 @@ impl Start {
             text(ui, pos2(w - 32.0, cy - 48.0 - 20.0), Align2::RIGHT_CENTER, &line, 13.0, CARD_BODY);
         }
         let resp = ui.put(Rect::from_center_size(c, vec2(96.0, 96.0)), |ui: &mut Ui| glass.primary_button(ui, Icon::Play, 96.0, playable.is_some()));
-        let pressed = self.item(ui, &resp, play, 48.0);
-        if let (true, Some(launch)) = (pressed, playable) {
+        if self.item(ui, &resp, play, 48.0) {
+            chosen = chosen.or(playable);
+        }
+        if let Some(launch) = chosen {
             // the preview child and a state maker go before the game starts
             (self.cards, self.warm) = (None, None);
             self.launch = Some(launch);
@@ -1204,23 +1265,37 @@ impl Start {
         if self.flat_pill(ui, glass, r, 121, "Play with friends (P2P)") | self.focus_ring(ui, r, acct + 2) {
             // the existing Steam worlds, with this PC's characters only: nothing played there reaches the account
             self.close_panel();
-            (self.p2p, self.online_view, self.offline) = (true, false, false);
+            (self.p2p, self.online_view, self.sign_in_tab) = (true, false, false);
             (self.page, self.character) = (0, self.store.characters.first().map(|c| c.id));
         }
     }
 
-    /// Online or On this PC: which characters the row shows, while signed in
+    /// Online or On this PC: which characters the row shows (signed out, Online asks to sign in)
     fn view_tabs(&mut self, ui: &mut Ui, glass: &Glass, w: f32, low: f32, first: usize) {
-        let tabs = [(format!("Online ({})", self.session.characters.len()), true), (format!("On this PC ({})", self.store.characters.len()), false)];
+        let online_label = match self.session.me() {
+            Some(_) => format!("Online ({})", self.session.characters.len()),
+            None => "Online".to_owned(),
+        };
+        let tabs = [(online_label, true), (format!("On this PC ({})", self.store.characters.len()), false)];
         for (i, (label, online)) in tabs.into_iter().enumerate() {
             let r = Rect::from_min_size(pos2(w - 32.0 - 2.0 * 144.0 - 8.0 + i as f32 * 152.0, low - 4.0), vec2(144.0, 24.0));
-            if self.online_view == online {
+            if self.online_tab() == online {
                 ui.painter().add(egui::Shape::mesh(glass::rim_mesh(r, 12.0, 1.0)));
             }
-            if (self.flat_pill(ui, glass, r, 110 + i, &label) | self.focus_ring(ui, r, first + i)) && self.online_view != online {
-                self.online_view = online;
+            if (self.flat_pill(ui, glass, r, 110 + i, &label) | self.focus_ring(ui, r, first + i)) && self.online_tab() != online {
+                (self.online_view, self.sign_in_tab) = (online, online);
                 (self.page, self.character) = (0, self.shown().first().map(|c| c.id));
             }
+        }
+    }
+
+    /// the Online tab while signed out: what it is for, and Sign in (the account panel); no Play
+    fn sign_in_row(&mut self, ui: &mut Ui, glass: &Glass, low: f32, item: usize) {
+        let y = low + 28.0 + 36.0;
+        text(ui, pos2(32.0, y), Align2::LEFT_CENTER, "Online characters live on your RE:DEX account. Sign in to play them on the official world.", 14.0, TITLE);
+        let r = Rect::from_min_size(pos2(32.0, y + 24.0), vec2(96.0, 32.0));
+        if self.flat_pill(ui, glass, r, 130, "Sign in") | self.focus_ring(ui, r, item) {
+            self.panel = Some(Panel::SignIn);
         }
     }
 
@@ -1602,14 +1677,163 @@ mod tests {
     fn playable_needs_a_ready_game_and_a_character() {
         let data = Path::new("data");
         let game = GameEntry { build_id: "x-abc".into(), dump: "x.cci".into() };
-        assert_eq!(launch_for(data, Some(&game), true, None, true, ""), None, "no character");
-        assert_eq!(launch_for(data, Some(&game), false, Some(7), true, ""), None, "game not built");
-        assert_eq!(launch_for(data, None, true, Some(7), true, ""), None, "no game");
-        let l = launch_for(data, Some(&game), true, Some(7), false, "host:1").unwrap();
-        assert_eq!((l.character, l.world.as_deref(), l.offline), (Some(7), Some("host:1"), false));
+        assert_eq!(launch_for(data, Some(&game), true, None, Mode::Offline), None, "no character");
+        assert_eq!(launch_for(data, Some(&game), false, Some(7), Mode::Offline), None, "game not built");
+        assert_eq!(launch_for(data, None, true, Some(7), Mode::Offline), None, "no game");
+        let l = launch_for(data, Some(&game), true, Some(7), Mode::P2p { world: Some("host:1".into()) }).unwrap();
+        assert_eq!(l.character, 7);
         assert_eq!(l.build_dir, data.join("build").join("x-abc"));
-        // offline plays offline even when a world is saved
-        assert_eq!(launch_for(data, Some(&game), true, Some(7), true, "host:1").unwrap().world, None);
+    }
+
+    /// a ready X with one character on this PC ("Here") and one the account would have ("Away")
+    fn ready_screen(name: &str) -> (Start, PathBuf, characters::Character, egui::Context, Glass) {
+        let data = account::testing::temp(name);
+        let build = data.join("build/x-usa-v0.2.0");
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(build.join("xgame.dll"), b"").unwrap();
+        std::fs::write(build.join("verified.txt"), b"").unwrap();
+        std::fs::write(data.join("x.cci"), b"").unwrap();
+        let library = serde_json::json!({ "games": [{ "build_id": "x-usa-v0.2.0", "dump": data.join("x.cci") }] });
+        std::fs::write(data.join("library.json"), library.to_string()).unwrap();
+        let mut store = Store::load(&data);
+        store.create("Here", boy(), 1).unwrap();
+        store.save(&data).unwrap();
+        let elsewhere = account::testing::temp(&format!("{name}-account"));
+        let mut theirs = Store::load(&elsewhere);
+        let id = theirs.create("Away", boy(), 1).unwrap();
+        let away = theirs.get(id).unwrap().clone();
+        let _ = std::fs::remove_dir_all(&elsewhere);
+        let mut app = Start::new(data.clone(), Err("a test".into()), Settings::default());
+        app.session = Session::idle(data.clone(), Servers::official());
+        assert!(app.ready(), "the test game is not ready");
+        let ctx = egui::Context::default();
+        let glass = Glass::new(&ctx, [1040, 640]);
+        (app, data, away, ctx, glass)
+    }
+
+    fn me() -> xr_net::account::Me {
+        xr_net::account::Me { account_id: 7, public_id: 4242, username: "tester".into(), email_verified: true }
+    }
+
+    fn args_of(l: &Launch) -> Vec<String> {
+        l.args().iter().map(|a| a.to_string_lossy().into_owned()).collect()
+    }
+
+    /// Every way to ask for a game: tab (Online, On this PC) x action (Play offline, Play with friends (P2P), Play
+    /// online) x signed in or out x the official server answering or not x what the old online/offline switch left
+    /// behind. That switch was never saved itself: it started on "Online" whenever the settings named a P2P world, so
+    /// its two saved states are a world address and none (an old settings file with stray keys still loads). Each
+    /// launch's exact command line, one mode always said, and only Play online passes --account-server.
+    #[test]
+    fn every_launch_names_its_mode_and_only_play_online_signs_in() {
+        let (mut app, data, away, ..) = ready_screen("modes");
+        let here = app.store.characters[0].id;
+        let (cci, build) = (data.join("x.cci").display().to_string(), data.join("build").join("x-usa-v0.2.0").display().to_string());
+        let old: Settings = toml::from_str("world_address = \"steam:90297831083063301\"\nworld_name = \"Friends\"\noffline = false\nonline = true\n").unwrap();
+        assert_eq!(old.world_address, "steam:90297831083063301", "an old settings file still loads");
+        let mut rows = Vec::new();
+        for world in ["", old.world_address.as_str()] {
+            for signed_in in [false, true] {
+                for reachable in [true, false] {
+                    for online_tab in [true, false] {
+                        app.settings.world_address = world.to_owned();
+                        app.session.assume(signed_in.then(me), (!reachable).then(|| "down".into()));
+                        app.session.characters = if signed_in { vec![away.clone()] } else { Vec::new() };
+                        (app.online_view, app.sign_in_tab) = (online_tab, online_tab);
+                        app.character = app.shown().first().map(|c| c.id);
+                        for play in [Play::Offline, Play::P2p, Play::Online] {
+                            let got = app.playable(play).map(|l| args_of(&l));
+                            let base = |mode: &[&str], id: u64| -> Vec<String> {
+                                let mut v: Vec<String> = ["--cci", &cci, "--build", &build].iter().map(|s| s.to_string()).collect();
+                                v.extend(mode.iter().map(|s| s.to_string()));
+                                v.extend(["--character".to_string(), format!("{id:016x}")]);
+                                v
+                            };
+                            let want = match (online_tab, play) {
+                                // the Online tab: Play online only, signed in with the server answering
+                                (true, Play::Online) if signed_in && reachable => {
+                                    let mut v = base(&["--world", xr_net::account::OFFICIAL_WORLD], away.id);
+                                    v.extend(["--account-server".to_string(), xr_net::account::OFFICIAL_ACCOUNTS.to_string()]);
+                                    Some(v)
+                                }
+                                (true, _) => None,
+                                // On this PC: offline or P2P, whatever the account does
+                                (false, Play::Offline) => Some(base(&["--offline"], here)),
+                                (false, Play::P2p) if world.is_empty() => Some(base(&["--p2p"], here)),
+                                (false, Play::P2p) => Some(base(&["--world", world], here)),
+                                (false, Play::Online) => None,
+                            };
+                            let row = format!("world {world:?} signed_in {signed_in} reachable {reachable} online_tab {online_tab} {play:?}");
+                            assert_eq!(got, want, "{row}");
+                            if let Some(args) = &got {
+                                assert_eq!(args.iter().filter(|a| ["--offline", "--p2p", "--world"].contains(&a.as_str())).count(), 1, "one mode: {row}");
+                                assert_eq!(args.iter().any(|a| a == "--account-server"), play == Play::Online, "{row}");
+                            }
+                            rows.push(format!("{row} -> {}", got.map_or("no launch".into(), |a| a[4..].join(" "))));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(rows.len(), 2 * 2 * 2 * 2 * 3);
+        // the table, for the report (cargo test -- --nocapture)
+        rows.iter().for_each(|r| println!("{r}"));
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// with the pad alone: on this PC, Play with friends (P2P), World and Play (offline) are reached and P2P starts
+    /// with --p2p; signed out, the Online tab's Sign in is reached and there is no Play; signed in, Play online starts
+    /// the official world
+    #[test]
+    fn the_pad_reaches_every_way_to_play() {
+        let (mut app, data, away, ctx, glass) = ready_screen("pad-play");
+        let next = Nav { next: true, ..Nav::default() };
+        let tour = |app: &mut Start| {
+            let mut seen = std::collections::BTreeSet::new();
+            for _ in 0..30 {
+                frame_with(&ctx, &glass, app, next);
+                seen.insert(app.focus);
+            }
+            seen
+        };
+        let press = |app: &mut Start, item: usize| {
+            for _ in 0..30 {
+                if app.focus == item {
+                    break;
+                }
+                frame_with(&ctx, &glass, app, next);
+            }
+            assert_eq!(app.focus, item);
+            frame_with(&ctx, &glass, app, Nav { select: true, ..Nav::default() });
+        };
+        // one game: chars 2, Sign in on the Online tab 3, P2P 12, World 13, Settings 14, Mods 15, Play 16, tabs 20 and 21
+        let seen = tour(&mut app);
+        assert!([12, 13, 14, 15, 16, 20, 21].iter().all(|i| seen.contains(i)), "{seen:?}");
+        press(&mut app, 12);
+        let l = app.launch.take().expect("P2P did not start");
+        assert_eq!(args_of(&l)[4..5], ["--p2p".to_string()]);
+        (app.quit, app.focus) = (false, 0);
+        press(&mut app, 16);
+        assert_eq!(args_of(&app.launch.take().expect("Play offline did not start"))[4..5], ["--offline".to_string()]);
+        // signed out, the Online tab: its Sign in, no P2P, World or Play
+        (app.quit, app.focus) = (false, 0);
+        press(&mut app, 20);
+        assert!(app.sign_in_prompt());
+        let seen = tour(&mut app);
+        assert!(seen.contains(&3) && !seen.contains(&12) && !seen.contains(&13), "{seen:?}");
+        press(&mut app, 16);
+        assert_eq!(app.launch, None, "Play started signed out on the Online tab");
+        press(&mut app, 3);
+        assert_eq!(app.panel, Some(Panel::SignIn));
+        app.close_panel();
+        // signed in: Play online
+        app.session.assume(Some(me()), None);
+        app.session.characters = vec![away.clone()];
+        app.character = Some(away.id);
+        press(&mut app, 16);
+        let args = args_of(&app.launch.take().expect("Play online did not start"));
+        assert_eq!(args[4..], ["--world", xr_net::account::OFFICIAL_WORLD, "--character", &format!("{:016x}", away.id), "--account-server", xr_net::account::OFFICIAL_ACCOUNTS]);
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     /// the focus list (Mods and Pokémon Storage both in it) is built and stepped through all the way round, w/ and w/o
@@ -1646,7 +1870,7 @@ mod tests {
                 frame(&mut app, true);
                 seen.insert(app.focus);
             }
-            // one game: Pokémon Storage (chars + 9 = 11), online or offline, World, Settings, Mods and Play (16) are reached
+            // one game: Pokémon Storage (chars + 9 = 11), Play with friends (P2P), World, Settings, Mods and Play (16) are reached
             // (while Storage's note is up its buttons stand in for the row, the pill among them)
             let first = if asking { 12 } else { 11 };
             assert!((first..=16).all(|i| seen.contains(&i)), "{seen:?}");
@@ -1760,7 +1984,7 @@ mod tests {
         press(&mut app, 21);
         assert!(!app.online_view(), "On this PC was not chosen");
         press(&mut app, 19);
-        assert!(app.p2p && !app.offline, "P2P was not chosen");
+        assert!(app.p2p && !app.online_tab(), "P2P was not chosen");
         press(&mut app, 17);
         assert_eq!(app.panel, Some(Panel::Account));
         let _ = std::fs::remove_dir_all(&data);
