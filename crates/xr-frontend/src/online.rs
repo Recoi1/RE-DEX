@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use egui::{Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
 use crate::menus::{self, Menus, ACCENT};
+use crate::start::glass;
 use crate::settings::Orientation;
 
 #[path = "friends_ui.rs"]
@@ -381,6 +382,48 @@ impl Default for Online {
 }
 
 impl Online {
+    /// A panel open on made-up players, for screenshots (start/scenes.rs): `lobby` (the host form), `lobby-host` (a
+    /// lobby with two players in it), `players`, `friends` or `chat`.
+    #[cfg(feature = "test-hooks")]
+    pub fn demo(&mut self, scene: &str) -> View {
+        let peer = |session: u32, name: &str, version: &'static str, tiles: f32| Peer { session, name: name.into(), steam: 0, version, tiles, label: None };
+        let friend = |steam: u64, name: &str, in_redex: bool, status: Option<&str>| Friend { steam, name: name.into(), in_redex, status: status.map(Into::into) };
+        let mut view = View {
+            world: Some("steam:90297831083063301".into()),
+            online: true,
+            peers: vec![peer(2, "Ava", "X", 3.0), peer(3, "Jun", "Y", 7.5), peer(4, "Rafe", "X", 12.0)],
+            friends: vec![friend(11, "Jun", true, Some("In Ava's world")), friend(12, "Noor", true, Some("Playing offline")), friend(13, "Kit", false, None)],
+            ..View::default()
+        };
+        match scene {
+            "lobby" => self.open_lobby(),
+            "lobby-host" => {
+                self.open_lobby();
+                let settings = LobbySettings { name: "Mira's lobby".into(), max: 4, access: Access::Friends };
+                view.lobby = Some(LobbyView { code: "K7MQ2X".into(), settings, members: vec![(2, "Ava".into()), (3, "Jun".into())], open: true });
+            }
+            "friends" => (self.players, self.fr.tab_friends) = (true, true),
+            "chat" => {
+                let mut chat = friends_ui::Chat { steam: 11, name: "Jun".into(), lines: Vec::new(), unread: 0 };
+                for (mine, text) in [(false, "Meet by the fountain?"), (true, "On my way, two minutes"), (false, "Bring your best team")] {
+                    chat.lines.push(friends_ui::ChatLine { mine, text: text.into(), failed: None });
+                }
+                self.fr.chats.push(chat);
+                (self.fr.chat_open, self.fr.active) = (true, 0);
+            }
+            "browser" => {
+                self.browser = true;
+                let server = |id: u64, name: &str, players: u32, ping: u32| Server { address: format!("steam:{id}"), name: name.into(), players: Some(players), max: Some(8), ping: Some(ping) };
+                view.servers = vec![server(90297831083063301, "Ava's world", 3, 24), server(90297831083063302, "Kalos friends", 5, 61), server(90297831083063303, "", 1, 140)];
+            }
+            "toast" => {}
+            _ => self.players = true,
+        }
+        view
+    }
+}
+
+impl Online {
     fn time(&self, seconds: f32) -> f32 {
         if self.motion { seconds } else { 0.0 }
     }
@@ -681,6 +724,7 @@ impl Online {
             self.labels.clear();
         }
         self.world = Some(view.world.clone());
+        crate::ui_sound::edge(ctx, Id::new("online panels sound"), self.takes_input());
         for note in &view.notes {
             menus.toast(note.clone());
         }
@@ -822,7 +866,7 @@ impl Online {
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
                 ui.multiply_opacity(t);
-                card(ui, 280.0, |ui| {
+                card_with(ui, 280.0, Some((crate::icons::Icon::Group, crate::theme::AZURE)), |ui| {
                     tab = self.tabs(ui, peers.len());
                     let (status, color) = match (&view.world, view.online) {
                         _ if view.joining.is_some() => (format!("Joining {}\u{2026}", short(view.joining.as_deref().unwrap_or(""), 26)), menus::NOTE),
@@ -907,8 +951,9 @@ impl Online {
             .interactable(self.menu_open)
             .show(ctx, |ui| {
                 ui.multiply_opacity(t);
-                card(ui, 220.0, |ui| {
+                card_with(ui, 220.0, Some((crate::icons::Icon::Person, crate::theme::AZURE)), |ui| {
                     ui.horizontal(|ui| {
+                        ui.add_space(30.0);
                         version_pill(ui, who.version);
                         ui.add(egui::Label::new(RichText::new(&who.name).strong().size(16.0)).truncate());
                     });
@@ -953,8 +998,9 @@ impl Online {
             .interactable(self.whisper_open)
             .show(ctx, |ui| {
                 ui.multiply_opacity(t);
-                card(ui, 340.0, |ui| {
+                card_with(ui, 340.0, Some((crate::icons::Icon::Chat, crate::theme::VIOLET)), |ui| {
                     ui.horizontal(|ui| {
+                        ui.add_space(30.0);
                         ui.label(RichText::new("Whisper to").weak());
                         version_pill(ui, who.version);
                         ui.add(egui::Label::new(RichText::new(&who.name).strong()).truncate());
@@ -1013,8 +1059,9 @@ impl Online {
             .interactable(self.report_open)
             .show(ctx, |ui| {
                 ui.multiply_opacity(t);
-                card(ui, 360.0, |ui| {
+                card_with(ui, 360.0, Some((crate::icons::Icon::Warning, crate::theme::AMBER)), |ui| {
                     ui.horizontal(|ui| {
+                        ui.add_space(30.0);
                         ui.label(RichText::new("Report").strong().size(17.0));
                         version_pill(ui, r.who.version);
                         ui.add(egui::Label::new(RichText::new(&r.who.name).strong().size(17.0)).truncate());
@@ -1080,7 +1127,7 @@ impl Online {
             .interactable(self.browser)
             .show(ctx, |ui| {
                 ui.multiply_opacity(t);
-                card(ui, width, |ui| {
+                card_with(ui, width, Some((crate::icons::Icon::Globe, crate::theme::AZURE)), |ui| {
                     ui.horizontal(|ui| {
                         title(ui, "Browse servers", None);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1256,21 +1303,62 @@ pub fn valid_address(a: &str) -> bool {
     }
 }
 
-/// a panel: the window's colours, rounded, a red line along its top like the gear's
-fn card(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
-    let frame = egui::Frame::window(ui.style()).inner_margin(egui::Margin::symmetric(14, 12));
-    let r = frame.show(ui, |ui| {
+/// a panel: smoked glass over the game (start/glass.rs), with the panel's own icon as a sticker over its top-left
+/// corner
+fn card_with(ui: &mut egui::Ui, width: f32, icon: Option<(crate::icons::Icon, Color32)>, add: impl FnOnce(&mut egui::Ui)) {
+    if !ui.visuals().dark_mode {
+        // the light theme keeps its plain window
+        let frame = egui::Frame::window(ui.style()).inner_margin(egui::Margin::symmetric(14, 12));
+        let r = frame.show(ui, |ui| {
+            ui.set_width(width);
+            add(ui);
+        });
+        let rect = r.response.rect;
+        let line = Rect::from_min_max(Pos2::new(rect.left() + 14.0, rect.top()), Pos2::new(rect.right() - 14.0, rect.top() + 3.0));
+        ui.painter().rect_filled(line, 2.0, ACCENT);
+        return;
+    }
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let r = egui::Frame::NONE.inner_margin(egui::Margin::symmetric(20, 18)).show(ui, |ui| {
         ui.set_width(width);
         add(ui);
     });
     let rect = r.response.rect;
-    let line = Rect::from_min_max(Pos2::new(rect.left() + 14.0, rect.top()), Pos2::new(rect.right() - 14.0, rect.top() + 3.0));
-    ui.painter().rect_filled(line, 2.0, ACCENT);
+    glass::paint_behind(ui.painter(), slot, |p| glass::smoke(p, rect, crate::theme::R_PANEL, (rect.width() * 3.0) as u32));
+    if let Some((icon, hue)) = icon {
+        // on the panel's corner, tilted like a sticker
+        crate::icons::draw(&ui.painter().with_clip_rect(ui.ctx().content_rect()), icon, rect.min + Vec2::new(26.0, 26.0), 30.0, hue, -10.0);
+    }
+}
+
+/// a glass button over the game, with its icon, in its kind's colours
+fn glass_button(ui: &mut egui::Ui, text: &str, icon: Option<(crate::icons::Icon, Color32)>, kind: glass::Kind) -> egui::Response {
+    let font = crate::theme::heavy(ui.ctx(), crate::theme::LABEL - 0.5);
+    let tw = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE).size().x + if icon.is_some() { 24.0 } else { 0.0 };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(tw + 32.0, 36.0), Sense::click());
+    let enabled = ui.is_enabled();
+    let (hover, scale) = if enabled { glass::press_scale(ui, &response, 1.04) } else { (0.0, 1.0) };
+    glass::face(ui.painter(), rect, scale, hover, kind, enabled);
+    let r = Rect::from_center_size(rect.center(), rect.size() * scale);
+    let mut x = r.center().x - tw / 2.0;
+    let alpha = if enabled { 1.0 } else { 0.45 };
+    if let Some((icon, hue)) = icon {
+        crate::icons::draw_alpha(ui.painter(), icon, Pos2::new(x + 9.0, r.center().y - 0.5), 20.0, hue, -8.0, alpha);
+        x += 24.0;
+    }
+    let color = match kind {
+        glass::Kind::Danger => crate::theme::CORAL,
+        _ => crate::theme::TITLE,
+    };
+    glass::shadowed(ui.painter(), Pos2::new(x, r.center().y), Align2::LEFT_CENTER, text, font, color.gamma_multiply(alpha));
+    response
 }
 
 fn title(ui: &mut egui::Ui, text: &str, count: Option<usize>) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(text).strong().size(17.0));
+        // clear of the panel's icon on the corner
+        ui.add_space(30.0);
+        ui.label(RichText::new(text).font(crate::theme::heavy(ui.ctx(), 17.0)));
         if let Some(n) = count {
             let color = if n == 0 { ui.visuals().weak_text_color() } else { Color32::WHITE };
             let galley = ui.painter().layout_no_wrap(n.to_string(), FontId::proportional(12.0), color);
@@ -1283,7 +1371,7 @@ fn title(ui: &mut egui::Ui, text: &str, count: Option<usize>) {
 
 fn hint(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
-    ui.label(RichText::new(text).small().weak());
+    ui.label(RichText::new(text).size(crate::theme::CAPTION).color(menus::palette(ui.visuals().dark_mode).weak));
 }
 
 /// "X" or "Y" in its version's colour
@@ -1351,7 +1439,7 @@ fn radio(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, on: bool
 }
 
 fn focus_ring(ui: &mut egui::Ui, rect: Rect) {
-    ui.painter().rect_stroke(rect.expand(2.5), 9.0, Stroke::new(1.5, ACCENT), egui::StrokeKind::Outside);
+    glass::focus_ring(ui.painter(), rect, 10.0, ui.input(|i| i.time));
 }
 
 /// a server's row: its name (or "Unnamed world" and the end of its id), players, ping
@@ -1911,7 +1999,7 @@ mod tests {
             Friend { steam: SERENA, name: "Serena".into(), in_redex: true, status: Some("Kalos Friends \u{b7} In Kalos".into()) },
             Friend { steam: CALEM, name: "Calem".into(), in_redex: true, status: Some("Playing offline".into()) },
             Friend { steam: TIERNO, name: "Tierno".into(), in_redex: false, status: None },
-            Friend { steam: 76_561_197_960_287_937, name: "Shauna".into(), in_redex: true, status: Some("In Kalos".into()) },
+            Friend { steam: 76_561_197_960_287_937, name: "Jun".into(), in_redex: true, status: Some("In Kalos".into()) },
             Friend { steam: 76_561_197_960_287_938, name: "Trevor".into(), in_redex: false, status: None },
         ];
         let view = View { world: Some("steam:90297831083063301".into()), online: true, peers: vec![peer(4, "Serena", 3.0), peer(3, "Calem", 6.0)], friends, ..View::default() };

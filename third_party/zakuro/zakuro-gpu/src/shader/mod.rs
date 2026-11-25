@@ -553,12 +553,240 @@ fn if_ranges(pc: u32, destination: u32, count: u32) -> ((u32, u32), (u32, u32), 
     ((pc + 1, then_end), (destination, destination + count), destination + count)
 }
 
+/// the uniforms a value can come from: the ones read as they are, and the ones read thru an addr register (any from
+/// the one named on), one bit each
+type Taint = (u128, u128);
+
+/// what each component of the temps and the outputs can come from at a point of the program
+#[derive(Clone, PartialEq)]
+struct Tainted {
+    temps: [[Taint; 4]; TEMP_REGISTERS],
+    outputs: [[Taint; 4]; OUTPUT_REGISTERS],
+}
+
+impl Tainted {
+    fn merge(&mut self, other: &Tainted) {
+        for (mine, theirs) in self.temps.iter_mut().chain(self.outputs.iter_mut()).zip(other.temps.iter().chain(other.outputs.iter())) {
+            for (a, b) in mine.iter_mut().zip(theirs) {
+                *a = (a.0 | b.0, a.1 | b.1);
+            }
+        }
+    }
+}
+
+fn merged(a: Option<Tainted>, b: Option<Tainted>) -> Option<Tainted> {
+    match (a, b) {
+        (Some(mut a), Some(b)) => {
+            a.merge(&b);
+            Some(a)
+        }
+        (a, b) => a.or(b),
+    }
+}
+
+/// a walk of the program that follows what each component of each register can come from, in the order the
+/// program runs: a temp written again forgets what it held, so a temp a texture's coords were worked out in and that
+/// then places the vertex doesn't make the coords' uniforms place it. Both ways of every condition are taken
+/// (merging what each gives), loops till nothing new comes thru, calls go in
+struct Taints<'a> {
+    ops: &'a [Op],
+    /// the outputs at each End reached, merged
+    ended: Option<Tainted>,
+    /// ops walked, past BUDGET it gives up (the coarser analysis answers then)
+    walked: u32,
+    /// why it gave up, when it did
+    gave_up: Option<&'static str>,
+}
+
+impl Taints<'_> {
+    const BUDGET: u32 = 200_000;
+
+    /// walks [pc, end) from `state`: the state at end (none when every way ended), and the states breaking out of
+    /// the innermost loop around (none for a walk that gave up, see walked)
+    fn run(&mut self, mut pc: u32, end: u32, state: Tainted, depth: u32) -> Option<(Option<Tainted>, Option<Tainted>)> {
+        let mut state = Some(state);
+        // the ways that jumped to the end, and those that broke out
+        let (mut at_end, mut broke) = (None, None);
+        while pc < end && (pc as usize) < self.ops.len() {
+            let Some(mut now) = state.take() else { break };
+            self.walked += 1;
+            if self.walked > Self::BUDGET || depth > 16 {
+                return self.give_up("too long or too deep a walk");
+            }
+            let op = &self.ops[pc as usize];
+            let (destination, count) = op.instruction.flow_target();
+            match op.opcode {
+                OpCode::End => {
+                    self.ended = merged(self.ended.take(), Some(now));
+                    return Some((merged(at_end, None), broke));
+                }
+                OpCode::Call | OpCode::CallC | OpCode::CallU => {
+                    let (called, out) = self.run(destination, destination + count, now.clone(), depth + 1)?;
+                    broke = merged(broke, out);
+                    state = match op.opcode {
+                        OpCode::Call => called,
+                        _ => merged(called, Some(now)),
+                    };
+                }
+                OpCode::JmpC | OpCode::JmpU => {
+                    // a jump out of the if, call or loop body it's in skips the rest of what encloses it, not
+                    // modelled: walking on after the block would forget temps that are still what they were
+                    if destination <= pc || destination >= end {
+                        return self.give_up("a jump out of its block or back");
+                    }
+                    let (jumped, out) = self.run(destination, end, now.clone(), depth + 1)?;
+                    at_end = merged(at_end, jumped);
+                    broke = merged(broke, out);
+                    state = Some(now);
+                }
+                OpCode::IfC | OpCode::IfU => {
+                    let (then, otherwise, next) = if_ranges(pc, destination, count);
+                    let (a, out_a) = self.run(then.0, then.1, now.clone(), depth + 1)?;
+                    let (b, out_b) = self.run(otherwise.0, otherwise.1, now, depth + 1)?;
+                    broke = merged(broke, merged(out_a, out_b));
+                    state = merged(a, b);
+                    if next <= pc {
+                        break;
+                    }
+                    pc = next;
+                    continue;
+                }
+                OpCode::Loop => {
+                    // at least once, then again till the state at its end stops growing, then whatever broke out
+                    let mut exit: Option<Tainted> = None;
+                    let mut round = Some(now);
+                    let mut seen: Option<Tainted> = None;
+                    let mut settled = false;
+                    for _ in 0..32 {
+                        let Some(start) = round.take() else {
+                            settled = true;
+                            break;
+                        };
+                        let (after, out) = self.run(pc + 1, destination + 1, start, depth + 1)?;
+                        exit = merged(exit, out);
+                        let grown = merged(seen.clone(), after.clone());
+                        if grown == seen {
+                            settled = true;
+                            break;
+                        }
+                        seen = grown.clone();
+                        round = grown;
+                    }
+                    if !settled {
+                        return self.give_up("a loop still growing after 32 rounds");
+                    }
+                    state = merged(seen, exit);
+                    if destination < pc {
+                        break;
+                    }
+                    pc = destination + 1;
+                    continue;
+                }
+                OpCode::Break => {
+                    broke = merged(broke, Some(now));
+                    state = None;
+                }
+                OpCode::BreakC => {
+                    broke = merged(broke, Some(now.clone()));
+                    state = Some(now);
+                }
+                opcode if opcode.writes() => {
+                    Self::write(op, &mut now);
+                    state = Some(now);
+                }
+                _ => state = Some(now),
+            }
+            pc += 1;
+        }
+        Some((merged(state, at_end), broke))
+    }
+
+    fn give_up<T>(&mut self, why: &'static str) -> Option<T> {
+        self.gave_up.get_or_insert(why);
+        None
+    }
+
+    /// what an arithmetic op leaves in the components it writes
+    fn write(op: &Op, state: &mut Tainted) {
+        let sources = match op.opcode {
+            OpCode::Mad | OpCode::MadI => 3,
+            OpCode::Mov | OpCode::Rcp | OpCode::Rsq | OpCode::Ex2 | OpCode::Lg2 | OpCode::Flr | OpCode::LitP => 1,
+            _ => 2,
+        };
+        let read = |operand: &Operand, component: usize| -> Taint {
+            match operand.register {
+                0x10..=0x1F => state.temps[operand.register as usize - 0x10][operand.swizzle[component] as usize & 3],
+                0x20..=0x7F if operand.index != 0 => (0, !0 << (operand.register - 0x20)),
+                0x20..=0x7F => (1 << (operand.register - 0x20), 0),
+                _ => (0, 0),
+            }
+        };
+        // the source components each written component takes
+        let across = |components: std::ops::Range<usize>| {
+            let mut all = (0, 0);
+            for operand in &op.sources[..sources] {
+                for component in components.clone() {
+                    let (a, b) = read(operand, component);
+                    all = (all.0 | a, all.1 | b);
+                }
+            }
+            all
+        };
+        let taints: [Taint; 4] = match op.opcode {
+            OpCode::Dp3 => [across(0..3); 4],
+            OpCode::Dp4 | OpCode::Dph | OpCode::DphI | OpCode::LitP | OpCode::Dst | OpCode::DstI => [across(0..4); 4],
+            OpCode::Rcp | OpCode::Rsq | OpCode::Ex2 | OpCode::Lg2 => [across(0..1); 4],
+            _ => std::array::from_fn(|component| across(component..component + 1)),
+        };
+        let target = match op.destination {
+            destination @ 0x00..=0x0F => &mut state.outputs[destination as usize],
+            destination @ 0x10..=0x1F => &mut state.temps[destination as usize - 0x10],
+            _ => return,
+        };
+        // the mask's most significant bit is x
+        for (component, taint) in taints.into_iter().enumerate() {
+            if op.mask & (8 >> component) != 0 {
+                target[component] = taint;
+            }
+        }
+    }
+}
+
 impl Program {
     /// the float uniforms what lands in the given output registers can come from,
     /// in what the program can run from its entry point, one bit each
     /// the ones read as they are and the ones read thru an addr register, which can be any from the one named on
     /// the addr registers and the conditions are left out, they pick what runs instead of feeding what it works out
+    /// in the order the program runs (see Taints), or anywhere in it for a program too big to walk that way
     pub(crate) fn uniforms_feeding(&self, entry: u32, outputs: u16) -> (u128, u128) {
+        let start = Tainted { temps: [[(0, 0); 4]; TEMP_REGISTERS], outputs: [[(0, 0); 4]; OUTPUT_REGISTERS] };
+        let mut taints = Taints { ops: &self.ops, ended: None, walked: 0, gave_up: None };
+        let last = match taints.run(entry, self.ops.len() as u32, start, 0) {
+            Some((last, None)) => last,
+            // a break outside any loop goes on after it in the interpreter, not modelled
+            Some((_, Some(_))) => taints.give_up("a break outside a loop").unwrap_or(None),
+            None => None,
+        };
+        if let Some(why) = taints.gave_up {
+            static TOLD: std::sync::Mutex<Option<std::collections::HashSet<(u64, u32)>>> = std::sync::Mutex::new(None);
+            if TOLD.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert((self.fingerprint, entry)) {
+                log::info!("Smooth motion: program {:016X} at {entry} read in any order ({why})", self.fingerprint);
+            }
+            return self.uniforms_feeding_anywhere(entry, outputs);
+        }
+        let Some(ended) = merged(taints.ended, last) else { return (0, 0) };
+        let all = (1 << FLOAT_UNIFORMS) - 1;
+        let (mut uniforms, mut indexed) = (0u128, 0u128);
+        for register in (0..OUTPUT_REGISTERS).filter(|r| outputs & (1 << r) != 0) {
+            for (a, b) in ended.outputs[register] {
+                (uniforms, indexed) = (uniforms | a, indexed | b);
+            }
+        }
+        (uniforms & all, indexed & all)
+    }
+
+    /// uniforms_feeding w/o the order: what any write of a register anywhere reads feeds it
+    fn uniforms_feeding_anywhere(&self, entry: u32, outputs: u16) -> (u128, u128) {
         let reached = self.reached(entry);
         // outputs 0x00 to 0x0F and temps 0x10 to 0x1F, like both destinations and sources number them
         let mut wanted = outputs as u32;
@@ -1290,6 +1518,197 @@ mod tests {
         unit.prepare();
         let own = ((1 << 30) - 1) & !((1 << 20) - 1);
         assert_eq!(unit.uniforms_feeding(0b001, 0b100), (own, ((1 << 96) - 1) & !((1 << 30) - 1)));
+    }
+
+    /// a temp a texture's coords were worked out in, written again for the position, places the vertex w/ what it
+    /// holds then only: X's character shaders work the eyes' coords (c11-c13, a picture of the eye in a sheet) out in
+    /// temps they then place the vertex with, and moving the coords in between drew the eye from the wrong picture
+    #[test]
+    fn a_temp_written_again_forgets_what_it_held() {
+        let arithmetic = |op: u32, destination: u32, wide: u32, narrow: u32| (op << 26) | (destination << 21) | (wide << 12) | (narrow << 7);
+        let (dp4, mul, mov, end) = (0x02, 0x08, 0x13, 0x22 << 26);
+        let program = [
+            // r0 = c5 * v1, o2 = r0 (the coords), r0 = c0 . v0, o0 = r0 (the position)
+            arithmetic(mul, 0x10, 0x25, 0x01),
+            arithmetic(mov, 0x02, 0x10, 0x00),
+            arithmetic(dp4, 0x10, 0x20, 0x00),
+            arithmetic(mov, 0x00, 0x10, 0x00),
+            end,
+        ];
+        let mut unit = unit_with(&program, &[IDENTITY]);
+        unit.prepare();
+        assert_eq!(unit.uniforms_feeding(0b001, 0b100), (1 << 0, 0), "the position reads c0 alone");
+        assert_eq!(unit.uniforms_feeding(0b100, 0), (1 << 5, 0), "the coords read c5");
+    }
+
+    /// an op w/ a descriptor: op, destination, wide source (a uniform is 0x20 + n), narrow source, descriptor
+    fn op(op: u32, destination: u32, wide: u32, narrow: u32, descriptor: u32) -> u32 {
+        (op << 26) | (destination << 21) | (wide << 12) | (narrow << 7) | descriptor
+    }
+
+    /// a flow op: op, destination, count, bool uniform
+    fn flow(op: u32, destination: u32, count: u32, boolean: u32) -> u32 {
+        (op << 26) | (boolean << 22) | (destination << 10) | count
+    }
+
+    const MOV: u32 = 0x13;
+    const END: u32 = 0x22 << 26;
+    const NOP: u32 = 0x21 << 26;
+
+    /// the uniforms o0 is found to come from
+    fn o0_feeding(program: &[u32], descriptors: &[u32]) -> u128 {
+        let mut unit = unit_with(program, descriptors);
+        unit.prepare();
+        let (own, shared) = unit.uniforms_feeding(0b1, 0);
+        own | shared
+    }
+
+    fn c(uniforms: &[u32]) -> u128 {
+        uniforms.iter().fold(0, |all, &n| all | 1 << n)
+    }
+
+    /// a temp written in one arm of an if keeps what it held for the other, written in both it forgets it
+    #[test]
+    fn an_if_forgets_only_what_both_arms_write() {
+        // r0 = c1; ifu b0 { r0 = c2 } else { nop | r0 = c3 }; o0 = r0
+        let one = [op(MOV, 0x10, 0x21, 0, 0), flow(0x27, 3, 1, 0), op(MOV, 0x10, 0x22, 0, 0), NOP, op(MOV, 0x00, 0x10, 0, 0), END];
+        assert_eq!(o0_feeding(&one, &[IDENTITY]), c(&[1, 2]));
+        let mut both = one;
+        both[3] = op(MOV, 0x10, 0x23, 0, 0);
+        assert_eq!(o0_feeding(&both, &[IDENTITY]), c(&[2, 3]));
+    }
+
+    /// a call always made forgets what it overwrote, a call made on a condition (callu, callc) keeps both
+    #[test]
+    fn calls_on_a_condition_keep_what_they_may_not_overwrite() {
+        // r0 = c1; call 4..5 (r0 = c2); o0 = r0; end; 4: r0 = c2
+        for (opcode, expected) in [(0x24, c(&[2])), (0x26, c(&[1, 2])), (0x25, c(&[1, 2]))] {
+            let program = [op(MOV, 0x10, 0x21, 0, 0), flow(opcode, 4, 1, 0), op(MOV, 0x00, 0x10, 0, 0), END, op(MOV, 0x10, 0x22, 0, 0)];
+            assert_eq!(o0_feeding(&program, &[IDENTITY]), expected, "opcode {opcode:02X}");
+        }
+    }
+
+    /// what a loop writes late in its body reaches what it reads early in the next round
+    #[test]
+    fn a_loop_carries_what_it_writes_into_its_next_round() {
+        // loop { o0 = r1; r1 = c5 }
+        let program = [flow(0x29, 2, 0, 0), op(MOV, 0x00, 0x11, 0, 0), op(MOV, 0x11, 0x25, 0, 0), END];
+        assert_eq!(o0_feeding(&program, &[IDENTITY]), c(&[5]));
+    }
+
+    /// a break before a write keeps what the temp held, from a breakc or a break in an if; a break outside any loop
+    /// gives the analysis in any order
+    #[test]
+    fn breaks_keep_what_the_rest_of_the_body_would_overwrite() {
+        // r0 = c1; loop { breakc; r0 = c2 }; o0 = r0
+        let breakc = [op(MOV, 0x10, 0x21, 0, 0), flow(0x29, 3, 0, 0), 0x23 << 26, op(MOV, 0x10, 0x22, 0, 0), op(MOV, 0x00, 0x10, 0, 0), END];
+        assert_eq!(o0_feeding(&breakc, &[IDENTITY]), c(&[1, 2]));
+        // r0 = c1; loop { ifu b0 { break }; r0 = c2 }; o0 = r0
+        let broken = [op(MOV, 0x10, 0x21, 0, 0), flow(0x29, 4, 0, 0), flow(0x27, 4, 0, 0), 0x20 << 26, op(MOV, 0x10, 0x22, 0, 0), op(MOV, 0x00, 0x10, 0, 0), END];
+        assert_eq!(o0_feeding(&broken, &[IDENTITY]), c(&[1, 2]));
+        // r0 = c1; break; r0 = c2; o0 = r0: the interpreter goes on, the walk would end there
+        let outside = [op(MOV, 0x10, 0x21, 0, 0), 0x20 << 26, op(MOV, 0x10, 0x22, 0, 0), op(MOV, 0x00, 0x10, 0, 0), END];
+        assert_eq!(o0_feeding(&outside, &[IDENTITY]), c(&[1, 2]), "the analysis in any order");
+    }
+
+    /// an end in one arm keeps what that arm wrote, w/ what the other arm and what follows write
+    #[test]
+    fn an_end_in_a_branch_keeps_its_outputs() {
+        // ifu b0 { o0 = c6; end } else { o0 = c7 }; end
+        let program = [flow(0x27, 3, 1, 0), op(MOV, 0x00, 0x26, 0, 0), END, op(MOV, 0x00, 0x27, 0, 0), END];
+        assert_eq!(o0_feeding(&program, &[IDENTITY]), c(&[6, 7]));
+    }
+
+    /// a jump forward inside its block is followed both ways; one out of its block or back gives the analysis in
+    /// any order
+    #[test]
+    fn jumps_out_of_their_block_give_the_analysis_in_any_order() {
+        // r0 = c1; r1 = c3; jmpu b0 -> 4; r0 = c2; 4: r1 = c4; o0 = r1
+        let inside = [op(MOV, 0x10, 0x21, 0, 0), op(MOV, 0x11, 0x23, 0, 0), flow(0x2D, 4, 0, 0), op(MOV, 0x10, 0x22, 0, 0), op(MOV, 0x11, 0x24, 0, 0), op(MOV, 0x00, 0x11, 0, 0), END];
+        assert_eq!(o0_feeding(&inside, &[IDENTITY]), c(&[4]), "r1 is written on both ways");
+        // ifu b0 { r0 = c40; jmpu b1 -> 4 }; r0 = c0 . v0; 4: o0 = r0: on b0 and b1 o0 is c40
+        let out = [flow(0x27, 3, 0, 0), op(MOV, 0x10, 0x20 + 40, 0, 0), flow(0x2D, 4, 0, 1), op(0x02, 0x10, 0x20, 0, 0), op(MOV, 0x00, 0x10, 0, 0), END];
+        assert_eq!(o0_feeding(&out, &[IDENTITY]), c(&[0, 40]), "the jump out keeps c40");
+        // r0 = c2; r0 = c1; o0 = r0; jmpu b0 -> 0
+        let back = [op(MOV, 0x10, 0x22, 0, 0), op(MOV, 0x10, 0x21, 0, 0), op(MOV, 0x00, 0x10, 0, 0), flow(0x2D, 0, 0, 0), END];
+        assert_eq!(o0_feeding(&back, &[IDENTITY]), c(&[1, 2]), "the analysis in any order");
+    }
+
+    /// components are followed one by one, thru write masks and swizzles, and dot products read only theirs
+    #[test]
+    fn components_are_followed_thru_masks_and_swizzles() {
+        let swizzled = |mask: u32, source: u32| mask | (source << 5) | (0b00_01_10_11 << 14);
+        let (x, y, w) = (swizzled(0x8, 0b00_01_10_11), swizzled(0x4, 0b00_01_10_11), swizzled(0x1, 0b00_01_10_11));
+        let x_from_y = swizzled(0x8, 0b01_01_10_11);
+        // r0.x = c1; r0.y = c2; o0.x = r0.x (or r0.y)
+        let program = |last: u32| [op(MOV, 0x10, 0x21, 0, 1), op(MOV, 0x10, 0x22, 0, 2), op(MOV, 0x00, 0x10, 0, last), END];
+        assert_eq!(o0_feeding(&program(1), &[IDENTITY, x, y, x_from_y]), c(&[1]));
+        assert_eq!(o0_feeding(&program(3), &[IDENTITY, x, y, x_from_y]), c(&[2]));
+        // r0.x = c1; r0.w = c2; o0 = r0 dp3 v0 (x, y, z) or dp4
+        let dot = |dp: u32| [op(MOV, 0x10, 0x21, 0, 1), op(MOV, 0x10, 0x22, 0, 2), op(dp, 0x00, 0x10, 0, 0), END];
+        assert_eq!(o0_feeding(&dot(0x01), &[IDENTITY, x, w]), c(&[1]));
+        assert_eq!(o0_feeding(&dot(0x02), &[IDENTITY, x, w]), c(&[1, 2]));
+    }
+
+    /// what the analysis leaves out of o0 never changes o0: over random programs w/ an if, a call and a loop, each
+    /// uniform not found is changed and the interpreter's o0 stays the same (addr registers and conditions aren't
+    /// data, so the programs set a0 from an input once, branch on bools and compare nothing)
+    #[test]
+    fn uniforms_left_out_of_the_position_never_move_it() {
+        let mut random = Random(7);
+        let arithmetic = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x13];
+        for _ in 0..200 {
+            let mut unit = ShaderUnit::new();
+            for uniform in unit.float_uniforms.iter_mut() {
+                *uniform = std::array::from_fn(|_| random.float());
+            }
+            for descriptor in unit.descriptors.iter_mut() {
+                *descriptor = (random.next() & 0x7FFF_FFF0) | (random.below(15) + 1);
+            }
+            unit.bool_uniforms = random.next() as u16;
+            let ops = |random: &mut Random, n: u32| -> Vec<u32> {
+                (0..n)
+                    .map(|_| {
+                        let opcode = arithmetic[random.below(arithmetic.len() as u32) as usize];
+                        op(opcode, random.below(32), random.below(0x80), random.below(0x20), random.below(32))
+                    })
+                    .collect()
+            };
+            // body: ops, ifu { ops } else { ops }, ops, loop { ops }, ops, callu sub, ops, end, sub: ops
+            let mut program = ops(&mut random, 8);
+            let (then, otherwise) = (1 + random.below(4), random.below(4));
+            let at = program.len() as u32;
+            program.push(flow(0x27, at + 1 + then, otherwise, random.below(16)));
+            program.extend(ops(&mut random, then + otherwise + 4));
+            let body = 1 + random.below(4);
+            let at = program.len() as u32;
+            program.push(flow(0x29, at + body, 0, 0));
+            program.extend(ops(&mut random, body + 3));
+            let call = program.len();
+            program.push(0);
+            program.extend(ops(&mut random, 3));
+            program.push(END);
+            let sub = program.len() as u32;
+            program[call] = flow([0x24, 0x26][random.below(2) as usize], sub, 4, random.below(16));
+            program.extend(ops(&mut random, 4));
+            for (i, &word) in program.iter().enumerate() {
+                unit.program[i] = word;
+            }
+            // two rounds of the loop
+            unit.int_uniforms[0] = [1, 0, 1, 0];
+            unit.prepare();
+            let (own, shared) = unit.uniforms_feeding(0b1, 0);
+            let inputs: Vec<[Vec4; INPUT_REGISTERS]> = (0..3).map(|_| std::array::from_fn(|_| std::array::from_fn(|_| random.float()))).collect();
+            let o0 = |unit: &ShaderUnit| one_by_one(unit, &inputs).iter().map(|out| out[0]).collect::<Vec<_>>();
+            let before = o0(&unit);
+            for uniform in (0..FLOAT_UNIFORMS).filter(|&u| (own | shared) & (1 << u) == 0) {
+                let mut changed = unit.clone();
+                changed.float_uniforms[uniform] = std::array::from_fn(|i| changed.float_uniforms[uniform][i] * 3.0 + 1.25);
+                let after = o0(&changed);
+                let same = before.iter().flatten().zip(after.iter().flatten()).all(|(a, b)| (a.is_nan() && b.is_nan()) || a.to_bits() == b.to_bits());
+                assert!(same, "c{uniform} moved o0, left out of {own:X}/{shared:X}, program {program:08X?}");
+            }
+        }
     }
 
     /// the batches give exactly what the interpreter gives,

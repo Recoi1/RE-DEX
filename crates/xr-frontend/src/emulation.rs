@@ -41,6 +41,8 @@ pub(crate) struct Controls {
 pub(crate) struct Live {
     /// Smooth motion: the monitor rate its pictures in between are made for (60 or the monitor's, up to 240), 0 off
     pub smooth_hz: u32,
+    /// Responsive movement (the setting, on w/ Smooth motion): the player and camera drawn ahead in the pictures in between
+    pub responsive: bool,
     /// the monitor's vblank, Smooth motion's pictures in between go at its vblanks where they fit
     pub vblank: Duration,
     pub slider_3d: f32,
@@ -108,6 +110,8 @@ pub(crate) struct Pictures {
     /// XR_FRAMESTATS' counts, and the GPU's time recording command lists
     pub cadence: Cadence,
     pub busy: Duration,
+    /// Responsive movement drew this picture ahead (w/ one more picture: the pace guard gives back the K that cost)
+    pub ahead: bool,
 }
 
 /// what the two threads share
@@ -225,6 +229,7 @@ fn run<G: Game>(start: Start<G>, link: &Link, requests: &Receiver<Request>, even
         events: events.clone(),
         began: Instant::now(),
         motion: None,
+        ahead: (0, 0),
         load_guard: LoadGuard::new(),
         pace_cap: MOST_STEPS,
         rate: 0,
@@ -257,6 +262,9 @@ struct Runner<G> {
     began: Instant,
     /// the picture w/ pictures in between last published, and when its first set was
     motion: Option<(u64, Instant)>,
+    /// the picture w/ pictures in between last published and the refresh it first was (Responsive movement's own picture
+    /// drawn ahead shows till its next picture is due)
+    ahead: (u64, u64),
     /// Smooth motion's load guard (see LoadGuard), and the refreshes' time and count since it last looked
     load_guard: LoadGuard,
     load: (Duration, u32, Duration),
@@ -468,8 +476,8 @@ impl<G: Game> Runner<G> {
     /// hands the window the screens as they are now, w/ what goes over them
     fn publish(&mut self, link: &Link, stereo: bool, interval: Duration) {
         let system = self.game.system();
-        let (top, bottom) = (crate::shown(system, Screen::Top), crate::shown(system, Screen::Bottom));
-        let right = stereo.then(|| crate::shown_right(system)).flatten();
+        let (mut top, bottom) = (crate::shown(system, Screen::Top), crate::shown(system, Screen::Bottom));
+        let mut right = stereo.then(|| crate::shown_right(system)).flatten();
         let motion = system.motion();
         let mut between = Vec::new();
         for k in 0..motion.map_or(0, |motion| motion.steps - 1) {
@@ -477,6 +485,23 @@ impl<G: Game> Runner<G> {
             let t = motion.map_or(1.0, |motion| motion.t(k));
             let right = if stereo { system.gpu_between(Screen::Top, true, k) } else { None };
             between.push(Between { t, top, bottom: system.gpu_between(Screen::Bottom, false, k), right });
+        }
+        // drawn ahead (Responsive movement), the game's own picture is an update behind its pictures in between: its own
+        // drawn ahead goes in its place, until the next picture is due (a fade, a stall or a door brings no next: then
+        // the game's own, as it has it)
+        if let Some(motion) = motion {
+            if self.ahead.0 != motion.picture {
+                self.ahead = (motion.picture, self.frame);
+            }
+        }
+        let due = motion.is_some_and(|motion| self.frame - self.ahead.1 <= motion.gap);
+        if let Some(extra) = motion.and_then(|motion| motion.ahead).filter(|_| due) {
+            if let Some(own) = system.gpu_between(Screen::Top, false, extra) {
+                top.1 = Some(own);
+            }
+            if let Some(right) = right.as_mut() {
+                right.1 = system.gpu_between(Screen::Top, true, extra).or(right.1);
+            }
         }
         let now = Instant::now();
         let since = match (motion, self.motion) {
@@ -499,6 +524,7 @@ impl<G: Game> Runner<G> {
             answers: self.answers,
             cadence: system.cadence.clone(),
             busy: system.gpu.busy,
+            ahead: motion.is_some_and(|motion| motion.ahead.is_some()),
         };
         queue_up(&mut lock(&link.pictures), pictures, |pictures| pictures.frame);
         link.published.notify_all();
@@ -588,6 +614,7 @@ impl<G: Game> Runner<G> {
             self.follow_rate("the setting");
         }
         let system = self.game.system();
+        system.responsive = live.responsive;
         // games read the 3D slider every frame
         if system.config.slider_3d != live.slider_3d {
             system.set_slider_3d(live.slider_3d);

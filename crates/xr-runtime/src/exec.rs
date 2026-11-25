@@ -44,6 +44,8 @@ pub struct State {
     pub deadline: u64,
     /// X's field camera from change to change, for frame interpolation's cut hint (see camera_cut)
     camera: xr_net::x::field::CameraCuts,
+    /// Responsive movement's predictor (see ahead.rs)
+    ahead: crate::ahead::Ahead,
     /// per host index: where it waits for the baton (see Park)
     parked: Vec<Park>,
     /// per host index: the hook bodies (hooks.rs) it is inside of; a save state can't resume Rust code
@@ -324,7 +326,7 @@ impl Machine {
         sys.module_hook = Some(bridge::module_hook);
         std::mem::forget(game); // the DLL stays loaded for the life of the process
         let deadline = sys.next_frame_boundary;
-        let state = State { sys, hosts: Vec::new(), host_tid: Vec::new(), deadline, camera: Default::default(), parked: Vec::new(), in_hook: Vec::new(), resume: Default::default() };
+        let state = State { sys, hosts: Vec::new(), host_tid: Vec::new(), deadline, camera: Default::default(), ahead: Default::default(), parked: Vec::new(), in_hook: Vec::new(), resume: Default::default() };
         EXEC.set(Exec { turn: Mutex::new(Turn::Main), waiters: Mutex::default(), state: UnsafeCell::new(state), lookup })
             .map_err(|_| "a Machine is already booted in this process".to_string())?;
         // GPU coherency phase 2 (XR_EAGER_GPU=1 keeps phase 1's write-back after every command list, for bisecting)
@@ -452,6 +454,10 @@ impl Machine {
         crate::hostprof::FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         {
             let st = unsafe { x.st() };
+            if outcome(&st.sys).is_none() {
+                let data = field_data(&st.sys);
+                st.ahead.refresh(&mut st.sys, data);
+            }
             let s = &mut st.sys;
             if let Some(o) = outcome(s) {
                 return o;
@@ -525,11 +531,16 @@ fn camera_cut(st: &mut State) {
         st.camera = Default::default();
         return;
     }
-    let Some(data) = s.cro.modules.iter().rev().find(|m| m.name == "DllField").and_then(|m| m.segments.get(2)).copied() else { return };
+    let Some(data) = field_data(s) else { return };
     let Some(now) = xr_net::x::field::camera(&mut crate::Mem(&mut s.memory), data) else { return };
     if st.camera.see(now) {
         s.camera_cut();
     }
+}
+
+/// DllField's data segment while it's loaded
+fn field_data(s: &System) -> Option<u32> {
+    s.cro.modules.iter().rev().find(|m| m.name == "DllField").and_then(|m| m.segments.get(2)).copied()
 }
 
 fn outcome(s: &System) -> Option<FrameOutcome> {

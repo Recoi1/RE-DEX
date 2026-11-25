@@ -10,6 +10,7 @@ mod framestats;
 mod gamebanana;
 mod gamepad;
 mod gui;
+mod icons;
 #[allow(dead_code)]
 mod input;
 mod menubar;
@@ -24,6 +25,8 @@ mod pro_controller;
 mod settings;
 /// the start screen and its liquid glass look
 pub mod start;
+mod theme;
+mod ui_sound;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -363,6 +366,17 @@ fn due(first: Option<f32>, elapsed: Duration, vblank: Duration, span: Duration, 
     }
 }
 
+/// XR_PACE_HOLD=1 (test-hooks builds): the pace guard never lowers K, for measurements at the setting's own K
+fn pace_held() -> bool {
+    #[cfg(feature = "test-hooks")]
+    {
+        static HOLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *HOLD.get_or_init(|| std::env::var_os("XR_PACE_HOLD").is_some_and(|v| v == "1"))
+    }
+    #[cfg(not(feature = "test-hooks"))]
+    false
+}
+
 /// Smooth motion's pace guard: the GPU draws the pictures in between too, and where that's more than it can do and
 /// still have each present on time (8x: a frame's full-screen draws again for each picture in between), presents come
 /// a vblank late. Each second it counts the presents while pictures repeat and those later than 1.5 vblanks: more than
@@ -374,7 +388,9 @@ fn due(first: Option<f32>, elapsed: Duration, vblank: Duration, span: Duration, 
 /// line is 1%); the 2% catches a K the GPU can't keep up w/ at once. The window owns the cap and sends it whole
 /// (Request::Pace); a new Smooth motion setting starts it over at 8. A refresh of the game that took two console frames
 /// or more (a load, a new scene's shaders) leaves its second and the two after it uncounted: their late presents aren't
-/// K's (a GPU that can't keep up w/ K makes refreshes a bit long, not that long, and counts)
+/// K's (a GPU that can't keep up w/ K makes refreshes a bit long, not that long, and counts). K taken down in seconds
+/// that showed pictures Responsive movement drew ahead (each w/ one more picture) comes back at once when none came for
+/// AHEAD_GONE seconds: a battle or a menu after a walk isn't left at the walk's K
 struct PaceGuard {
     /// the Smooth motion setting it learned for
     setting: SmoothMotion,
@@ -391,11 +407,18 @@ struct PaceGuard {
     /// K last changed by a step up, and the seconds counted since
     raised: bool,
     since_raise: u32,
+    /// a picture drawn ahead was shown this second; the K b4 steps down taken w/ them, and the seconds since the last
+    ahead: bool,
+    ahead_cut: Option<usize>,
+    ahead_gone: u32,
 }
+
+/// seconds w/o pictures drawn ahead after which the K they cost comes back
+const AHEAD_GONE: u32 = 3;
 
 impl PaceGuard {
     fn new() -> PaceGuard {
-        PaceGuard { setting: SmoothMotion::Off, cap: 8, presents: 0, late: 0, window: Default::default(), since: Instant::now(), calm: 0, wait: 4, stalled: 0, raised: false, since_raise: 0 }
+        PaceGuard { setting: SmoothMotion::Off, cap: 8, presents: 0, late: 0, window: Default::default(), since: Instant::now(), calm: 0, wait: 4, stalled: 0, raised: false, since_raise: 0, ahead: false, ahead_cut: None, ahead_gone: 0 }
     }
 
     /// a present `interval` after the one b4 while pictures repeat, w/ K what the game shows now; once a second, the new
@@ -411,6 +434,7 @@ impl PaceGuard {
         }
         self.since = Instant::now();
         let second = (std::mem::take(&mut self.presents), std::mem::take(&mut self.late));
+        let ahead = std::mem::take(&mut self.ahead);
         if self.stalled > 0 {
             self.stalled -= 1;
             return None;
@@ -433,6 +457,21 @@ impl PaceGuard {
         } else if self.cap >= 8 && self.calm >= 60 {
             // a minute at the top: what flapped back then is no reason to come back slowly now
             self.wait = 4;
+        }
+        if ahead {
+            self.ahead_gone = 0;
+            if self.cap < before {
+                self.ahead_cut.get_or_insert(before);
+            }
+        } else if let Some(cut) = self.ahead_cut {
+            self.ahead_gone += 1;
+            if self.ahead_gone >= AHEAD_GONE {
+                self.ahead_cut = None;
+                if cut > self.cap {
+                    (self.cap, self.calm, self.raised, self.since_raise) = (cut, 0, true, 0);
+                    self.window.clear();
+                }
+            }
         }
         if self.cap < before {
             // measured again at the new K
@@ -664,6 +703,7 @@ impl<G: Game> App<G> {
         let settings = &self.settings;
         Live {
             smooth_hz: smooth_hz(settings.frame_interpolation, self.monitor_hz, self.repeats && repeats_at(self.vblank)),
+            responsive: settings.responsive_movement && settings.frame_interpolation != SmoothMotion::Off,
             vblank: self.vblank,
             slider_3d: settings.slider_3d(),
             microphone: settings.microphone,
@@ -1203,7 +1243,8 @@ impl<G: Game> App<G> {
         let interval = self.last_present - before;
         // K as the pictures shown now have it (the load guard may have it lower than the pace guard's cap)
         let now = self.pictures.as_ref().map_or(8, |pictures| self.shown_k(pictures));
-        if let Some(cap) = repeating.then(|| self.pace.present(interval, self.vblank, now)).flatten() {
+        self.pace.ahead |= self.pictures.as_ref().is_some_and(|pictures| pictures.ahead);
+        if let Some(cap) = repeating.then(|| self.pace.present(interval, self.vblank, now)).flatten().filter(|_| !pace_held()) {
             self.ask(Request::Pace(cap));
         }
         if repeating && waits && waits_itself(waits, took, self.vblank) {
@@ -1344,6 +1385,10 @@ impl<G: Game> App<G> {
             layout(size.width, size.height, self.arrangement(), s.orientation.screen_orientation(), s.top_shape.width(), s.integer_scale).0
         });
         let (Some(gui), Some(window)) = (&mut self.gui, &self.window) else { return Overlay::default() };
+        // the panels scale with the window like the start screen (never smaller than drawn)
+        let size = window.inner_size().to_logical::<f32>(window.scale_factor());
+        gui.ctx.set_zoom_factor(theme::game_scale(size.width, size.height));
+        ui_sound::set_enabled(self.settings.ui_sounds);
         let points = gui.ctx.pixels_per_point();
         let top = top.map(|v| egui::Rect::from_min_size(egui::pos2(v.x, v.y) / points, egui::vec2(v.width, v.height) / points));
         let (orientation, names, active) = (self.settings.orientation, self.settings.show_names, !self.menus.configure_open);
@@ -1850,6 +1895,16 @@ mod tests {
         assert_eq!(up, [8]);
         (0..10).for_each(|_| assert_eq!(second(&mut guard, 0), None));
         assert_eq!((second(&mut guard, 20), guard.wait), (Some(7), 4), "ten seconds after the step up");
+        // K taken down while pictures were drawn ahead comes back AHEAD_GONE seconds after the last one, at once
+        let mut ahead_guard = PaceGuard::new();
+        let ahead = |guard: &mut PaceGuard, late: u32, ahead: bool| {
+            guard.ahead = ahead;
+            second(guard, late)
+        };
+        assert_eq!([ahead(&mut ahead_guard, 20, true), ahead(&mut ahead_guard, 20, true), ahead(&mut ahead_guard, 0, true)], [Some(7), Some(6), None]);
+        assert_eq!([ahead(&mut ahead_guard, 0, false), ahead(&mut ahead_guard, 0, false), ahead(&mut ahead_guard, 0, false)], [None, None, Some(8)]);
+        assert_eq!(ahead(&mut ahead_guard, 20, false), Some(7), "a step down w/o them stays");
+        assert_eq!([ahead(&mut ahead_guard, 0, false), ahead(&mut ahead_guard, 0, false), ahead(&mut ahead_guard, 0, false)], [None; 3]);
     }
 
     /// a present that comes back in a fraction of a vblank (minimized, zero size) leaves the loop to wait, a blocking one doesn't

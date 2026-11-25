@@ -10,6 +10,8 @@ pub mod glass;
 pub mod library;
 pub mod mods;
 pub mod preview;
+#[cfg(feature = "test-hooks")]
+mod scenes;
 pub mod storage;
 
 use std::collections::HashMap;
@@ -112,6 +114,8 @@ pub fn run_start(data: PathBuf, tools: Result<Toolchain, String>) -> Result<Opti
         if let (Ok(login), Ok(password)) = (std::env::var("XR_TEST_SIGNIN"), std::env::var("REDEX_PASSWORD")) {
             (app.panel, app.form.login, app.form.password, app.hook_submit) = (Some(Panel::SignIn), login, password, true);
         }
+        // screenshots: one state of the screen, or an in-game panel over a still (scenes.rs)
+        app.scene(&std::env::var("XR_TEST_SCENE").unwrap_or_default());
     }
     #[cfg(windows)]
     let event_loop = {
@@ -184,6 +188,8 @@ impl Start {
         gui: None,
         backend: None,
         window: None,
+        #[cfg(feature = "test-hooks")]
+        overlay: None,
     };
     app.character = app.store.characters.first().map(|c| c.id);
     app
@@ -307,6 +313,9 @@ struct Start {
     // the backend is dropped before the window it draws on
     backend: Option<Backend>,
     window: Option<Window>,
+    /// an in-game panel drawn instead of the screen, for screenshots (scenes.rs)
+    #[cfg(feature = "test-hooks")]
+    overlay: Option<scenes::Overlay>,
 }
 
 /// what Play starts: None until a game is selected and built, and a character is chosen
@@ -357,12 +366,76 @@ fn logical(window: &Window) -> [u32; 2] {
     [s.width.max(1.0) as u32, s.height.max(1.0) as u32]
 }
 
-/// text in bold (the font has one weight: drawn a hair apart), centred on `pos.y`
-fn bold(ui: &Ui, pos: egui::Pos2, s: &str, size: f32, color: Color32) {
-    let g = ui.painter().layout_no_wrap(s.to_owned(), FontId::proportional(size), color);
-    for dx in [0.0, 0.4, 0.8] {
-        ui.painter().galley(pos2(pos.x + dx, pos.y - g.size().y / 2.0), g.clone(), color);
+/// Play: the biggest, brightest glass, red, breathing a soft glow while it can start a game, a sheen crossing it now
+/// and then; dimmed with its label quiet when it cannot
+fn play_button(ui: &mut Ui, glass: &Glass, rect: Rect, label: &str, enabled: bool) -> egui::Response {
+    let resp = ui.interact(rect, ui.id().with("play"), if enabled { Sense::click() } else { Sense::hover() });
+    let (hover, scale) = if enabled { glass::press_scale(ui, &resp, 1.04) } else { (0.0, 1.0) };
+    let time = ui.input(|i| i.time) as f32;
+    let motion = crate::animations();
+    let r = Rect::from_center_size(rect.center(), rect.size() * scale);
+    if enabled {
+        let breath = if motion { 0.5 + 0.5 * (time * 2.4).sin() } else { 0.5 };
+        glass::glow(ui.painter(), r, r.height() / 2.0, crate::theme::BRAND, 1.3 + 0.7 * breath + 0.6 * hover);
+        ui.ctx().request_repaint();
     }
+    glass.button_face(ui.painter(), rect, scale, hover, if enabled { glass::Kind::Primary } else { glass::Kind::Secondary }, enabled);
+    if enabled && motion {
+        // one pass every 3.5 s
+        let phase = (time / 3.5).fract() * 2.4 - 0.4;
+        glass::sheen(ui.painter(), r, r.height() / 2.0, phase);
+    }
+    let font = crate::theme::heavy(ui.ctx(), crate::theme::H1);
+    let tw = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), TITLE).size().x + 34.0;
+    let x = r.center().x - tw / 2.0;
+    crate::icons::draw_alpha(ui.painter(), crate::icons::Icon::Play, pos2(x + 11.0, r.center().y), 26.0, Color32::WHITE, -8.0, if enabled { 1.0 } else { 0.5 });
+    glass::shadowed(ui.painter(), pos2(x + 34.0, r.center().y), Align2::LEFT_CENTER, label, font, if enabled { TITLE } else { crate::theme::MUTED });
+    resp
+}
+
+/// text in the heavy weight on its soft shadow, left-aligned and centred on `pos.y`
+fn bold(ui: &Ui, pos: egui::Pos2, s: &str, size: f32, color: Color32) {
+    glass::shadowed(ui.painter(), pos, Align2::LEFT_CENTER, s, crate::theme::heavy(ui.ctx(), size), color);
+}
+
+/// a screen laid out on the 1040-wide canvas (the creator, Mods), centred in a wider window: drawn in a layer of its
+/// own, moved over (its input moves with it)
+fn centred<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let full = ui.max_rect();
+    let dx = ((full.width() - crate::theme::CANVAS[0]) / 2.0).max(0.0).round();
+    let id = egui::Id::new("canvas screen");
+    ui.ctx().set_transform_layer(egui::LayerId::new(egui::Order::Middle, id), egui::emath::TSTransform::from_translation(vec2(dx, 0.0)));
+    egui::Area::new(id)
+        .order(egui::Order::Middle)
+        .fixed_pos(full.min)
+        .show(ui.ctx(), |ui| {
+            ui.set_min_size(vec2(crate::theme::CANVAS[0], full.height()));
+            add(ui)
+        })
+        .inner
+}
+
+/// a panel standing in for the character row (account, remove, Storage, a build, a failure): glass from its title down
+/// to the play dock, and its title as an eyebrow with its icon
+fn panel_head(ui: &Ui, glass: &Glass, low: f32, icon: crate::icons::Icon, hue: Color32, title: &str) {
+    let (w, h) = (ui.max_rect().width(), ui.max_rect().height());
+    let rect = Rect::from_min_max(pos2(32.0, low - 18.0), pos2(w - 32.0, h - 24.0 - 100.0 - 34.0));
+    glass.paint(ui.painter(), rect, crate::theme::R_PANEL, glass::Look { lift: 0.8, seed: 9, ..glass::Look::default() });
+    eyebrow(ui, glass, pos2(52.0, low - 4.0), icon, hue, title);
+}
+
+/// where an eyebrow starting at `x` ends
+fn eyebrow_end(ui: &Ui, x: f32, s: &str) -> f32 {
+    let size = crate::theme::EYEBROW + 1.0;
+    x + 26.0 + ui.painter().layout_no_wrap(s.to_uppercase(), crate::theme::heavy(ui.ctx(), size), TITLE).size().x + s.chars().count() as f32 * size * 0.08
+}
+
+/// a section's eyebrow: its icon, then its name in heavy caps
+fn eyebrow(ui: &Ui, glass: &Glass, pos: egui::Pos2, icon: crate::icons::Icon, hue: Color32, s: &str) -> f32 {
+    crate::icons::draw(ui.painter(), icon, pos + vec2(9.0, 8.0), 20.0, hue, -8.0);
+    glass.title(ui.painter(), pos + vec2(26.0, 0.0), s, crate::theme::EYEBROW + 1.0);
+    let w = ui.painter().layout_no_wrap(s.to_uppercase(), crate::theme::heavy(ui.ctx(), crate::theme::EYEBROW + 1.0), TITLE).size().x;
+    pos.x + 26.0 + w + s.chars().count() as f32 * (crate::theme::EYEBROW + 1.0) * 0.08
 }
 
 /// `s` cut with an ellipsis to fit `max` px
@@ -671,23 +744,52 @@ impl Start {
             self.show_focus = false;
         }
         if self.show_focus && self.focus == item {
-            ui.painter().add(egui::Shape::mesh(glass::rim_mesh(r.rect, radius, 1.0)));
+            glass::focus_ring(ui.painter(), r.rect, radius, ui.input(|i| i.time));
         }
         r.clicked() || (self.nav.select && self.focus == item)
     }
 
     /// a plain pill on a card (no glass inside glass)
     fn flat_pill(&self, ui: &mut Ui, glass: &Glass, rect: Rect, id: usize, s: &str) -> bool {
+        self.icon_pill(ui, glass, rect, id, s, None)
+    }
+
+    /// a flat pill with its icon: a quiet chip that lifts on hover and dips on a press
+    fn icon_pill(&self, ui: &mut Ui, glass: &Glass, rect: Rect, id: usize, s: &str, icon: Option<(crate::icons::Icon, Color32)>) -> bool {
         let r = ui.interact(rect, ui.id().with(("flat", id)), Sense::click());
-        let hover = glass.hover_of(ui, &r);
-        ui.painter().rect_filled(rect, rect.height() / 2.0, Color32::from_white_alpha((36.0 + 30.0 * hover) as u8));
-        text(ui, rect.center(), Align2::CENTER_CENTER, s, 14.0, TITLE);
+        let (hover, scale) = glass::press_scale(ui, &r, 1.03);
+        let _ = glass;
+        let rect = Rect::from_center_size(rect.center(), rect.size() * scale);
+        let radius = rect.height() / 2.0;
+        ui.painter().rect_filled(rect, radius, Color32::from_white_alpha((20.0 + 22.0 * hover) as u8));
+        ui.painter().rect_stroke(rect, radius, Stroke::new(1.0, Color32::from_white_alpha((46.0 + 50.0 * hover) as u8)), egui::StrokeKind::Inside);
+        let font = crate::theme::heavy(ui.ctx(), crate::theme::CAPTION + 0.5);
+        let w = ui.painter().layout_no_wrap(s.to_owned(), font.clone(), TITLE).size().x + if icon.is_some() { 22.0 } else { 0.0 };
+        let mut x = rect.center().x - w / 2.0;
+        if let Some((icon, hue)) = icon {
+            crate::icons::draw(ui.painter(), icon, pos2(x + 8.0, rect.center().y), 17.0, hue, -8.0);
+            x += 22.0;
+        }
+        glass::shadowed(ui.painter(), pos2(x, rect.center().y), Align2::LEFT_CENTER, s, font, TITLE);
         r.clicked()
     }
 
+    /// how wide an icon pill is for `s`
+    fn pill_width(ui: &Ui, s: &str) -> f32 {
+        ui.painter().layout_no_wrap(s.to_owned(), crate::theme::heavy(ui.ctx(), crate::theme::CAPTION + 0.5), TITLE).size().x + 22.0 + 28.0
+    }
+
     fn ui(&mut self, ui: &mut Ui, glass: &Glass) {
+        #[cfg(feature = "test-hooks")]
+        if let Some(o) = &mut self.overlay {
+            return o.ui(ui, &mut self.menus);
+        }
         let full = ui.max_rect();
         let (w, h) = (full.width(), full.height());
+        // a screen over the row (the creator, Mods, a panel) chimes as it opens and closes; a failure gets the low one
+        let over = self.creator.is_some() || self.mods.is_some() || self.panel.is_some() || self.removing.is_some() || self.storage.asking();
+        crate::ui_sound::edge(ui.ctx(), ui.id().with("over sound"), over);
+        crate::ui_sound::edge_with(ui.ctx(), ui.id().with("error sound"), self.error.is_some(), Some(crate::ui_sound::Sound::Refuse), None);
         glass.paint_backdrop(ui.painter(), full);
         let n = self.library.games.len();
         // focus order: the games, Add, the character row (Import, three cards, New, the page arrows, Edit look, Remove,
@@ -787,25 +889,19 @@ impl Start {
         // header: the logo, and Quit as a plain icon
         if let Some(logo) = &self.logo {
             // the RE:DEX mark straight on the backdrop (256 x 183, background keyed out), then the wordmark with the colon in red
-            let r = Rect::from_min_size(pos2(32.0, 32.0), vec2(48.0 * 256.0 / 183.0, 48.0));
+            let r = Rect::from_min_size(pos2(32.0, 26.0), vec2(42.0 * 256.0 / 183.0, 42.0));
             ui.painter().image(logo.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-            let font = FontId::proportional(32.0);
-            let mut x = 112.0;
-            for (part, color) in [("RE", TITLE), (":", Color32::from_rgb(0xf0, 0x3c, 0x56)), ("DEX", TITLE)] {
-                let g = ui.painter().layout_no_wrap(part.to_owned(), font.clone(), color);
-                let w = g.size().x;
-                // painted twice, offset a hair, for a bold weight (the font has only one)
-                for dx in [0.0, 0.7, 1.4] {
-                    ui.painter().galley(pos2(x + dx, 56.0 - g.size().y / 2.0), g.clone(), color);
-                }
-                x += w + 2.0;
+            let font = crate::theme::heavy(ui.ctx(), crate::theme::DISPLAY);
+            let mut x = r.max.x + 14.0;
+            for (part, color) in [("RE", TITLE), (":", crate::theme::BRAND_HI), ("DEX", TITLE)] {
+                x = glass::shadowed(ui.painter(), pos2(x, 47.0), Align2::LEFT_CENTER, part, font.clone(), color).max.x + 1.0;
             }
         }
-        let quit = Rect::from_min_size(pos2(w - 32.0 - 40.0, 40.0), vec2(40.0, 40.0));
+        let quit = Rect::from_min_size(pos2(w - 32.0 - 40.0, 28.0), vec2(40.0, 40.0));
         let resp = ui.interact(quit, ui.id().with("quit"), Sense::click());
-        let hover = glass.hover_of(ui, &resp);
-        ui.painter().circle_filled(quit.center(), 20.0, Color32::from_white_alpha((28.0 * hover) as u8));
-        glass::draw_icon(ui.painter(), Icon::Close, quit.center(), 9.0 + 1.0 * hover);
+        let (hover, scale) = glass::press_scale(ui, &resp, 1.06);
+        glass.button_face(ui.painter(), quit, scale, hover, glass::Kind::Secondary, true);
+        crate::icons::draw(ui.painter(), crate::icons::Icon::Power, quit.center(), 20.0 * scale, crate::theme::SLATE, 0.0);
         if resp.clicked() {
             self.quit = true;
         }
@@ -824,14 +920,15 @@ impl Start {
             // the Mods screen takes the moves (up and down its list), A and B
             let nav = mods::ModsNav { up: self.nav.prev, down: self.nav.next, select: self.nav.select, back: self.nav.back };
             self.nav = Nav::default();
-            if screen.ui(ui, glass, nav, &mut self.installer) == mods::ModsAction::Close {
+            if centred(ui, |ui| screen.ui(ui, glass, nav, &mut self.installer)) == mods::ModsAction::Close {
                 self.mods = None;
             }
             return;
         }
         if let Some(c) = &mut self.creator {
             c.pad = self.nav.pad;
-            let action = c.ui(ui, glass, &self.data, &self.library);
+            let (data, library) = (&self.data, &self.library);
+            let action = centred(ui, |ui| c.ui(ui, glass, data, library));
             self.creator_done(action);
             if self.creator.is_none() {
                 self.check_cards = true;
@@ -840,38 +937,40 @@ impl Start {
         }
 
         // games
-        let (card_w, card_h, gap) = (280.0, 160.0, 24.0);
-        let top = 148.0;
-        glass.title(ui.painter(), pos2(32.0, top - 28.0), "Games", 14.0);
+        let gap = 16.0;
+        let card_w = ((w - 64.0 - n as f32 * gap) / (n + 1) as f32).clamp(240.0, 420.0);
+        let card_h = 150.0;
+        let top = 132.0;
+        eyebrow(ui, glass, pos2(32.0, top - 30.0), crate::icons::Icon::Cartridge, crate::theme::BRAND_HI, "Library");
         let busy = self.job.as_ref().and_then(|r| r.build_id.clone());
         for (i, id) in ids.iter().enumerate() {
             let rect = Rect::from_min_size(pos2(32.0 + i as f32 * (card_w + gap), top), vec2(card_w, card_h));
             let state = self.state(id);
             let resp = ui.interact(rect, ui.id().with(("game", i)), Sense::click());
-            let hover = glass.hover_of(ui, &resp);
             let tex = self.pictures.get(id).and_then(|t| t.as_ref()).map(|t| t.id());
             let wash = if id.starts_with('y') { Color32::from_rgb(0xd0, 0x30, 0x30) } else { Color32::from_rgb(0x2f, 0x5f, 0xd0) };
-            glass.card(ui.painter(), rect, 24.0, i == self.selected, hover, tex, wash);
-            glass.title(ui.painter(), rect.min + vec2(24.0, card_h - 76.0), &game_name(id), 16.0);
-            let (status, dot) = match (state, busy.as_deref() == Some(id.as_str())) {
-                (_, true) => ("Building now", AMBER),
-                (BuildState::Ready, _) => ("Ready to play", GREEN),
-                (BuildState::Outdated, _) => ("Update available", AMBER),
-                (BuildState::Partial, _) => ("Build paused", AMBER),
-                (BuildState::Missing, _) => ("Not built yet", BODY),
+            let (hover, scale) = glass::press_scale(ui, &resp, 1.02);
+            let rect = Rect::from_center_size(rect.center(), rect.size() * scale);
+            glass.card(ui.painter(), rect, crate::theme::R_CARD, i == self.selected, hover, tex, wash);
+            bold(ui, rect.min + vec2(20.0, card_h - 58.0), &game_name(id), crate::theme::H2 + 2.0, TITLE);
+            let (status, dot, icon) = match (state, busy.as_deref() == Some(id.as_str())) {
+                (_, true) => ("Building now", crate::theme::AMBER, None),
+                (BuildState::Ready, _) => ("Ready to play", crate::theme::MINT, Some(crate::icons::Icon::Check)),
+                (BuildState::Outdated, _) => ("Update available", crate::theme::AMBER, None),
+                (BuildState::Partial, _) => ("Build paused", crate::theme::AMBER, None),
+                (BuildState::Missing, _) => ("Not built yet", crate::theme::SLATE, None),
             };
-            ui.painter().circle_filled(rect.min + vec2(28.0, card_h - 40.0), 4.0, dot);
-            text(ui, rect.min + vec2(40.0, card_h - 40.0), Align2::LEFT_CENTER, status, 14.0, BODY);
+            glass::chip(ui.painter(), rect.min + vec2(18.0, card_h - 38.0), status, icon, dot);
             let can_build = self.tools.is_ok() && self.job.is_none() && state != BuildState::Ready;
             if can_build {
-                let b = Rect::from_min_size(pos2(rect.max.x - 24.0 - 80.0, rect.max.y - 24.0 - 32.0), vec2(80.0, 32.0));
+                let b = Rect::from_min_size(pos2(rect.max.x - 18.0 - 84.0, rect.max.y - 18.0 - 30.0), vec2(84.0, 30.0));
                 if self.flat_pill(ui, glass, b, i, label(&self.data, id, self.stamp.as_deref())) {
                     self.selected = i;
                     let dump = self.library.games[i].dump.clone();
                     self.start_build(dump, Some(id.clone()), (Self::cores() / 2).max(1));
                 }
             }
-            if self.item(ui, &resp, i, 24.0) {
+            if self.item(ui, &resp, i, crate::theme::R_CARD) {
                 self.selected = i;
             }
         }
@@ -880,31 +979,31 @@ impl Start {
         let enabled = self.tools.is_ok() && self.job.is_none();
         let resp = ui.interact(rect, ui.id().with("add"), if enabled { Sense::click() } else { Sense::hover() });
         let hover = if enabled { glass.hover_of(ui, &resp) } else { 0.0 };
-        glass.dashed_card(ui.painter(), rect, 24.0, hover, if enabled { 1.0 } else { 0.6 });
-        let tone = if enabled { TITLE } else { dim(BODY, 0.7) };
-        glass::draw_icon(ui.painter(), Icon::Plus, rect.center() - vec2(0.0, 30.0), 14.0);
-        text(ui, rect.center() + vec2(0.0, 4.0), Align2::CENTER_CENTER, "Add your game", 16.0, tone);
+        glass.dashed_card(ui.painter(), rect, crate::theme::R_CARD, hover, if enabled { 1.0 } else { 0.6 });
+        let tone = if enabled { TITLE } else { crate::theme::MUTED };
+        crate::icons::draw_alpha(ui.painter(), crate::icons::Icon::AddGame, rect.center() - vec2(0.0, 32.0), 38.0 + 4.0 * hover, crate::theme::BRAND_HI, -8.0, if enabled { 1.0 } else { 0.55 });
+        glass::shadowed(ui.painter(), rect.center() + vec2(0.0, 6.0), Align2::CENTER_CENTER, "Add your game", crate::theme::heavy(ui.ctx(), crate::theme::H2), tone);
         let hint = match (&self.tools, n) {
             (Err(_), _) => "Building games needs the full RE:DEX download",
             (_, 0) => "Add your Pokémon X or Y dump to get started.",
             _ => "A decrypted .cci or .3ds dump",
         };
-        let hint_rect = Rect::from_center_size(rect.center() + vec2(0.0, 46.0), vec2(card_w - 48.0, 36.0));
+        let hint_rect = Rect::from_center_size(rect.center() + vec2(0.0, 44.0), vec2(card_w - 40.0, 36.0));
         at(ui, hint_rect, Layout::top_down(Align::Center), |ui| {
-            ui.label(egui::RichText::new(hint).size(12.0).color(BODY));
+            ui.label(egui::RichText::new(hint).size(crate::theme::CAPTION).color(crate::theme::BODY));
         });
-        if self.item(ui, &resp, add, 24.0) && enabled {
+        if self.item(ui, &resp, add, crate::theme::R_CARD) && enabled {
             self.add_game();
         }
 
         // characters, or the build's progress while one runs
-        let low = top + card_h + 32.0;
+        let low = top + card_h + 46.0;
         if let Some(run) = &self.job {
             let heading = run.build_id.as_deref().map_or("Adding your game".to_owned(), |id| format!("Building {}", game_name(id)));
-            glass.title(ui.painter(), pos2(32.0, low), &heading, 14.0);
+            panel_head(ui, glass, low, crate::icons::Icon::Bolt, crate::theme::AMBER, &heading);
             let (stage, done, total, jobs) = (run.stage, run.done, run.total, run.jobs);
             let (mut cancel, mut faster) = (false, false);
-            at(ui, Rect::from_min_size(pos2(32.0, low + 32.0), vec2(560.0, 120.0)), Layout::top_down(Align::Min), |ui| {
+            at(ui, Rect::from_min_size(pos2(52.0, low + 30.0), vec2(560.0, 120.0)), Layout::top_down(Align::Min), |ui| {
                 let shown = if total > 0 { format!("{stage}  ({done} of {total})") } else { stage.to_owned() };
                 ui.label(egui::RichText::new(shown).size(16.0).color(TITLE));
                 ui.add_space(8.0);
@@ -913,9 +1012,9 @@ impl Start {
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 16.0;
-                    cancel = glass.pill_button(ui, "Cancel").clicked();
+                    cancel = glass.button(ui, "Cancel", Some((crate::icons::Icon::Close, crate::theme::SLATE)), glass::Kind::Secondary, None, true).clicked();
                     if jobs < Self::cores() {
-                        faster = glass.pill_button(ui, "Build faster").clicked();
+                        faster = glass.button(ui, "Build faster", Some((crate::icons::Icon::Bolt, crate::theme::AMBER)), glass::Kind::Tint(crate::theme::AMBER), None, true).clicked();
                     }
                 });
             });
@@ -931,12 +1030,12 @@ impl Start {
                 }
             }
         } else if let Some(e) = self.error.clone() {
-            glass.title(ui.painter(), pos2(32.0, low), "That didn't work", 14.0);
+            panel_head(ui, glass, low, crate::icons::Icon::Warning, crate::theme::AMBER, "That didn't work");
             let mut dismiss = false;
-            at(ui, Rect::from_min_size(pos2(32.0, low + 32.0), vec2(640.0, 120.0)), Layout::top_down(Align::Min), |ui| {
-                ui.label(egui::RichText::new(e).size(14.0).color(RED));
+            at(ui, Rect::from_min_size(pos2(52.0, low + 30.0), vec2(720.0, 120.0)), Layout::top_down(Align::Min), |ui| {
+                ui.label(egui::RichText::new(e).size(crate::theme::BODY_SIZE + 1.0).color(RED));
                 ui.add_space(16.0);
-                dismiss = glass.pill_button(ui, "Dismiss").clicked();
+                dismiss = glass.button(ui, "Dismiss", Some((crate::icons::Icon::Close, crate::theme::SLATE)), glass::Kind::Secondary, None, true).clicked();
             });
             if dismiss {
                 self.error = None;
@@ -948,7 +1047,7 @@ impl Start {
         } else if self.storage.panel_up() {
             self.storage_panel(ui, glass, low, chars);
         } else {
-            glass.title(ui.painter(), pos2(32.0, low), "Characters", 14.0);
+            eyebrow(ui, glass, pos2(32.0, low - 4.0), crate::icons::Icon::Person, crate::theme::PINK, "Characters");
             self.view_tabs(ui, glass, w, low, tabs);
             if self.sign_in_prompt() {
                 self.sign_in_row(ui, glass, low, chars + 1);
@@ -957,8 +1056,14 @@ impl Start {
             }
         }
 
-        // bottom bar: 40 px pills (Play with friends among them), and the one big Play
-        let cy = h - 32.0 - 48.0;
+        // the play dock along the bottom: the ways to play and the tools (Play with friends, World, Settings, Mods),
+        // what each way means under them, and the one big Play
+        use crate::icons::Icon as I;
+        use crate::theme as t;
+        let dock = Rect::from_min_max(pos2(32.0, h - 24.0 - 100.0), pos2(w - 32.0, h - 24.0));
+        glass.paint(ui.painter(), dock, t::R_PANEL, glass::Look { lift: 1.0, seed: 5, ..glass::Look::default() });
+        let cy = dock.min.y + 14.0 + 20.0;
+        let play_w = 236.0;
         let mut commit = false;
         let mut editing = self.editing.take();
         let official = self.online_tab();
@@ -966,23 +1071,23 @@ impl Start {
         let blocked = self.storage.blocks_play().or_else(|| self.installer.busy().then_some("Wait for the mod install"));
         let with_friends = self.playable(Play::P2p).filter(|_| blocked.is_none());
         let mut chosen = None;
-        let bar = Rect::from_min_max(pos2(32.0, cy - 20.0), pos2(w - 32.0 - 96.0 - 200.0, cy + 20.0));
+        let bar = Rect::from_min_max(pos2(dock.min.x + 16.0, cy - 20.0), pos2(dock.max.x - 16.0 - play_w - 16.0, cy + 20.0));
         at(ui, bar, Layout::left_to_right(Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = 16.0;
+            ui.spacing_mut().item_spacing.x = 12.0;
             if official {
                 // online characters play on the official world only
-                glass.pill(ui, "Official world", Some(304.0), false);
+                glass.button(ui, "Official world", Some((I::Globe, t::AZURE)), glass::Kind::Secondary, Some(236.0), false);
             } else {
                 // this PC's characters in Steam worlds (Steam's login belongs to the running game)
-                let r = glass.pill(ui, "Play with friends (P2P)", Some(224.0), with_friends.is_some());
+                let r = glass.button(ui, "Play with friends (P2P)", Some((I::Friends, t::VIOLET)), glass::Kind::Tint(t::VIOLET), None, with_friends.is_some());
                 if self.item(ui, &r, p2p_play, 20.0) {
                     chosen = with_friends.clone();
                 }
             }
             if let Some(buf) = &mut editing {
-                let edit = ui.add_sized([232.0, 40.0], egui::TextEdit::singleline(buf).hint_text("room code, steam:<id> or host:port").font(FontId::proportional(16.0)));
+                let edit = ui.add_sized([232.0, 40.0], egui::TextEdit::singleline(buf).hint_text("room code, steam:<id> or host:port").font(FontId::proportional(t::BODY_SIZE + 1.0)));
                 commit |= edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                let r = glass.pill(ui, "Save", Some(80.0), true);
+                let r = glass.button(ui, "Save", Some((I::Check, t::MINT)), glass::Kind::Secondary, None, true);
                 commit |= self.item(ui, &r, world, 20.0);
                 if let Some(e) = self.edit_error {
                     ui.label(egui::RichText::new(e).size(12.0).color(RED));
@@ -995,7 +1100,7 @@ impl Start {
                     (false, true) => format!("World: {}", short(addr, 12)),
                     (false, false) => format!("World: {}", short(&self.settings.world_name, 12)),
                 };
-                let r = glass.pill(ui, &shown, Some(144.0), true);
+                let r = glass.button(ui, &shown, Some((I::Pin, t::CORAL)), glass::Kind::Secondary, None, true);
                 if self.item(ui, &r, world, 20.0) {
                     editing = Some(self.settings.world_address.clone());
                     self.edit_error = None;
@@ -1003,18 +1108,27 @@ impl Start {
             }
             if editing.is_none() {
                 // the game's own Configure window, the same settings the game uses
-                let r = glass.pill(ui, "Settings", Some(144.0), true);
+                let r = glass.button(ui, "Settings", Some((I::Sliders, t::SLATE)), glass::Kind::Secondary, None, true);
                 if self.item(ui, &r, settings, 20.0) {
                     self.menus.configure_open = true;
                 }
-                let r = glass.pill(ui, "Mods", Some(112.0), true);
+                let r = glass.button(ui, "Mods", Some((I::Puzzle, t::AMBER)), glass::Kind::Secondary, None, true);
                 if self.item(ui, &r, mods_item, 20.0) {
                     self.mods = Some(mods::Mods::new(self.data.clone()));
                 }
             }
         });
-        // what each way to play does, under the buttons
-        text(ui, pos2(32.0, cy + 20.0 + 14.0), Align2::LEFT_CENTER, "Offline: just you. P2P: friends over Steam, with your PC's characters. Online: the official world, with your RE:DEX account.", 12.0, CARD_BODY);
+        // what each way to play does, under the buttons, each with its icon
+        let (mut lx, ly) = (dock.min.x + 20.0, dock.max.y - 21.0);
+        for (icon, hue, said) in [
+            (I::House, t::SLATE, "Offline: just you"),
+            (I::Friends, t::VIOLET, "P2P: friends over Steam, this PC's characters"),
+            (I::Globe, t::AZURE, "Online: the official world, your RE:DEX account"),
+        ] {
+            crate::icons::draw(ui.painter(), icon, pos2(lx + 8.0, ly), 16.0, hue, 0.0);
+            let r = ui.painter().text(pos2(lx + 22.0, ly), Align2::LEFT_CENTER, said, FontId::proportional(t::CAPTION), t::BODY);
+            lx = r.max.x + 22.0;
+        }
         self.editing = editing;
         if commit {
             let value = self.editing.clone().unwrap_or_default().trim().to_owned();
@@ -1041,10 +1155,9 @@ impl Start {
         let selected = self.library.games.get(self.selected).map(|g| g.build_id.clone());
         let selected_name = selected.as_deref().map(game_name);
         let outdated = selected.as_deref().is_some_and(|id| self.state(id) == BuildState::Outdated);
-        let c = pos2(w - 32.0 - 48.0, cy);
         let who = self.character.and_then(|id| self.shown_get(id)).map(|c| c.name.clone()).filter(|_| !self.sign_in_prompt());
         let caption = match (&playable, &selected_name) {
-            (Some(_), Some(_)) => ((if official { "Play online" } else { "Play offline" }).to_owned(), TITLE),
+            (Some(_), Some(_)) => (String::new(), TITLE),
             (None, Some(_)) if ready && self.sign_in_prompt() => ("Sign in to play online".to_owned(), BODY),
             (None, Some(_)) if ready && self.online_view() => (self.online_blocker().to_owned(), BODY),
             (None, Some(_)) if ready => ("Make a character to play".to_owned(), BODY),
@@ -1053,7 +1166,13 @@ impl Start {
             _ => ("Add a game to play".to_owned(), BODY),
         };
         let caption = blocked.filter(|_| ready).map_or(caption, |why| (why.to_owned(), BODY));
-        text(ui, pos2(c.x - 48.0 - 16.0, cy), Align2::RIGHT_CENTER, &caption.0, 16.0, caption.1);
+        // above the dock on the right: why Play waits (when it does), and what it would start
+        let mut above = dock.min.y - 16.0;
+        if !caption.0.is_empty() {
+            crate::icons::draw(ui.painter(), I::Pin, pos2(w - 32.0 - 8.0, above), 15.0, t::AMBER, 0.0);
+            glass::shadowed(ui.painter(), pos2(w - 32.0 - 22.0, above), Align2::RIGHT_CENTER, &caption.0, t::heavy(ui.ctx(), t::LABEL), TITLE);
+            above -= 22.0;
+        }
         if let Some(name) = &selected_name {
             let building = self.job.as_ref().is_some_and(|r| r.build_id.is_some() && r.build_id == selected);
             let state = match (ready, building) {
@@ -1067,13 +1186,20 @@ impl Start {
                 Some(who) => format!("{name} · {who} · {state} · {net}"),
                 None => format!("{name} · {state} · {net}"),
             };
-            text(ui, pos2(w - 32.0, cy - 48.0 - 20.0), Align2::RIGHT_CENTER, &line, 13.0, CARD_BODY);
+            text(ui, pos2(w - 32.0, above), Align2::RIGHT_CENTER, &line, t::CAPTION, t::BODY);
         }
-        let resp = ui.put(Rect::from_center_size(c, vec2(96.0, 96.0)), |ui: &mut Ui| glass.primary_button(ui, Icon::Play, 96.0, playable.is_some()));
-        if self.item(ui, &resp, play, 48.0) {
+        let label = match (&playable, official) {
+            (Some(_), true) => "Play online",
+            (Some(_), false) => "Play offline",
+            (None, _) => "Play",
+        };
+        let play_rect = Rect::from_min_size(pos2(dock.max.x - 16.0 - play_w, dock.min.y + 14.0), vec2(play_w, 56.0));
+        let resp = play_button(ui, glass, play_rect, label, playable.is_some());
+        if self.item(ui, &resp, play, 28.0) {
             chosen = chosen.or(playable);
         }
         if let Some(launch) = chosen {
+            crate::ui_sound::play(crate::ui_sound::Sound::Confirm);
             // the preview child and a state maker go before the game starts
             (self.cards, self.warm) = (None, None);
             self.launch = Some(launch);
@@ -1098,7 +1224,7 @@ impl Start {
     /// the focus ring of something drawn by hand; true when A is pressed on it
     fn focus_ring(&self, ui: &Ui, rect: Rect, item: usize) -> bool {
         if self.show_focus && self.focus == item {
-            ui.painter().add(egui::Shape::mesh(glass::rim_mesh(rect, rect.height() / 2.0, 1.0)));
+            glass::focus_ring(ui.painter(), rect, rect.height() / 2.0, ui.input(|i| i.time));
         }
         self.nav.select && self.focus == item
     }
@@ -1119,29 +1245,32 @@ impl Start {
         self.page = self.page.min(pages - 1);
         let ry = low + 28.0;
         let n = self.shown().len();
+        // four slots share the row, leaving the page arrows their room
+        let cw = ((ui.max_rect().width() - 64.0 - 3.0 * 16.0 - if self.row().0 > 1 { 96.0 } else { 0.0 }) / 4.0).clamp(200.0, 320.0);
         let (online, signed_in) = (self.online_view(), self.session.me().is_some());
 
         // this PC's own tools, for this PC's characters only
         if !online {
             // the secondary action, beside the row's title, on the grid and 8 px above the cards
-            let imp = Rect::from_min_size(pos2(152.0, low - 4.0), vec2(120.0, 24.0));
-            let hit = self.flat_pill(ui, glass, imp, 100, "Import a save");
+            let x0 = eyebrow_end(ui, 32.0, "Characters") + 16.0;
+            let imp = Rect::from_min_size(pos2(x0, low - 9.0), vec2(Self::pill_width(ui, "Import a save"), 26.0));
+            let hit = self.icon_pill(ui, glass, imp, 100, "Import a save", Some((crate::icons::Icon::Import, crate::theme::TEAL)));
             if hit | self.focus_ring(ui, imp, base) {
                 self.import_save();
                 return;
             }
             // the selected character off the list (after a confirm), e.g. junk a hostile world sent
             if let Some(id) = self.character {
-                let rm = Rect::from_min_size(pos2(280.0, low - 4.0), vec2(144.0, 24.0));
-                if self.flat_pill(ui, glass, rm, 102, "Remove character") | self.focus_ring(ui, rm, base + 8) {
+                let rm = Rect::from_min_size(pos2(imp.max.x + 8.0, low - 9.0), vec2(Self::pill_width(ui, "Remove character"), 26.0));
+                if self.icon_pill(ui, glass, rm, 102, "Remove character", Some((crate::icons::Icon::Trash, crate::theme::CORAL))) | self.focus_ring(ui, rm, base + 8) {
                     // Keep is the default
                     (self.removing, self.focus) = (Some(id), base);
                     return;
                 }
             }
             // every character's boxes in PKVault (storage.rs), after Remove
-            let x = if self.character.is_some() { 432.0 } else { 280.0 };
-            self.storage_pill(ui, glass, Rect::from_min_size(pos2(x, low - 4.0), vec2(136.0, 24.0)), base);
+            let x = if self.character.is_some() { imp.max.x + 8.0 + Self::pill_width(ui, "Remove character") + 8.0 } else { imp.max.x + 8.0 };
+            self.storage_pill(ui, glass, Rect::from_min_size(pos2(x, low - 9.0), vec2(Self::pill_width(ui, "Pokémon Storage"), 26.0)), base);
             if self.storage.asking() {
                 return;
             }
@@ -1150,13 +1279,14 @@ impl Start {
         for k in 0..visible {
             let ch = self.shown()[self.page * 3 + k].clone();
             self.ensure_face(ui.ctx(), &ch);
-            let rect = Rect::from_min_size(pos2(32.0 + k as f32 * 216.0, ry), vec2(200.0, 120.0));
+            let rect = Rect::from_min_size(pos2(32.0 + k as f32 * (cw + 16.0), ry), vec2(cw, 120.0));
             let resp = ui.interact(rect, ui.id().with(("char", k)), Sense::click());
-            let hover = glass.hover_of(ui, &resp);
+            let (hover, scale) = glass::press_scale(ui, &resp, 1.03);
+            let rect = Rect::from_center_size(rect.center(), rect.size() * scale);
             let selected = self.character == Some(ch.id);
             let girl = Appearance::gender_of(&ch.look) == 1;
-            let wash = if girl { Color32::from_rgb(0xd6, 0x4c, 0x8c) } else { Color32::from_rgb(0x3d, 0x6b, 0xff) };
-            glass.card(ui.painter(), rect, 24.0, selected, hover, None, wash);
+            let wash = if girl { crate::theme::PINK } else { crate::theme::BLUE };
+            glass.card(ui.painter(), rect, crate::theme::R_CARD, selected, hover, None, wash);
             // the figure, 1:1 on screen
             let fig = Rect::from_min_size(rect.min + vec2(16.0, 8.0), vec2(64.0, 104.0));
             match self.faces.get(&ch.id).and_then(|(_, t)| t.as_ref()) {
@@ -1165,64 +1295,59 @@ impl Start {
                     // frosted glass with a trainer's outline until the picture is drawn
                     ui.painter().rect_filled(fig, 12.0, Color32::from_white_alpha(14));
                     ui.painter().add(egui::Shape::mesh(glass::rim_mesh(fig, 12.0, 0.0)));
-                    creator::silhouette(ui, fig.shrink2(vec2(14.0, 16.0)));
+                    crate::icons::draw_alpha(ui.painter(), crate::icons::Icon::Person, fig.center(), 40.0, wash, 0.0, 0.55);
                 }
             }
             glass.dot(ui.painter(), rect, 24.0);
             let x = rect.min.x + 96.0;
-            bold(ui, pos2(x, rect.min.y + 24.0), &fit(ui, &ch.name, 16.0, 88.0), 16.0, TITLE);
-            // "X ✓ · Y –": a tick where there is a save (the font has no tick), a dash where there is not
+            bold(ui, pos2(x, rect.min.y + 22.0), &fit(ui, &ch.name, crate::theme::H2, 92.0), crate::theme::H2, TITLE);
+            // a save in X, in Y: the version's keycap lit with a tick, or dark with a dash
             let mut sx = x;
-            for (i, (label, title)) in [("X", TITLE_X), ("Y", TITLE_Y)].into_iter().enumerate() {
-                let cy = rect.min.y + 48.0;
-                let g = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(13.0), CARD_BODY);
-                ui.painter().galley(pos2(sx, cy - g.size().y / 2.0), g.clone(), CARD_BODY);
-                sx += g.size().x + 6.0;
-                if has_save(&self.data, ch.id, title) {
-                    let tick = Stroke::new(1.6, GREEN);
-                    ui.painter().line_segment([pos2(sx, cy), pos2(sx + 3.0, cy + 3.5)], tick);
-                    ui.painter().line_segment([pos2(sx + 3.0, cy + 3.5), pos2(sx + 9.0, cy - 4.0)], tick);
+            for (label, title, hue) in [("X", TITLE_X, Color32::from_rgb(0x3D, 0x7E, 0xEA)), ("Y", TITLE_Y, Color32::from_rgb(0xE5, 0x3D, 0x4E))] {
+                let cap = Rect::from_min_size(pos2(sx, rect.min.y + 38.0), vec2(40.0, 20.0));
+                let saved = has_save(&self.data, ch.id, title);
+                ui.painter().rect_filled(cap, 6.0, if saved { hue.gamma_multiply(0.85) } else { Color32::from_white_alpha(14) });
+                ui.painter().rect_stroke(cap, 6.0, Stroke::new(1.0, if saved { hue.lerp_to_gamma(Color32::WHITE, 0.4) } else { Color32::from_white_alpha(40) }), egui::StrokeKind::Inside);
+                ui.painter().text(pos2(cap.min.x + 8.0, cap.center().y), Align2::LEFT_CENTER, label, crate::theme::heavy(ui.ctx(), crate::theme::CAPTION), if saved { TITLE } else { crate::theme::MUTED });
+                if saved {
+                    crate::icons::draw(ui.painter(), crate::icons::Icon::Check, pos2(cap.max.x - 11.0, cap.center().y), 12.0, TITLE, 0.0);
                 } else {
-                    ui.painter().line_segment([pos2(sx + 1.0, cy), pos2(sx + 8.0, cy)], Stroke::new(1.4, CARD_BODY));
+                    ui.painter().line_segment([pos2(cap.max.x - 16.0, cap.center().y), pos2(cap.max.x - 8.0, cap.center().y)], Stroke::new(1.6, crate::theme::MUTED));
                 }
-                sx += 9.0 + 6.0;
-                if i == 0 {
-                    text(ui, pos2(sx, cy), Align2::LEFT_CENTER, "·", 13.0, CARD_BODY);
-                    sx += 6.0 + 6.0;
-                }
+                sx = cap.max.x + 6.0;
             }
             if signed_in {
                 // which list it is on, said on the card too
-                let (tag, color) = if online { ("Online", GREEN) } else { ("On this PC", CARD_BODY) };
-                text(ui, pos2(x, rect.min.y + 68.0), Align2::LEFT_CENTER, tag, 12.0, color);
+                let (tag, icon, hue) = if online { ("Online", crate::icons::Icon::Globe, crate::theme::AZURE) } else { ("On this PC", crate::icons::Icon::Monitor, crate::theme::SLATE) };
+                glass::chip(ui.painter(), pos2(x, rect.min.y + 62.0), tag, Some(icon), hue);
             }
             if selected && !online {
-                let b = Rect::from_min_size(pos2(x, rect.max.y - 8.0 - 32.0), vec2(88.0, 32.0));
-                if self.flat_pill(ui, glass, b, 101, "Edit look") | self.focus_ring(ui, b, base + 7) {
+                let b = Rect::from_min_size(pos2(x - 2.0, rect.max.y - 8.0 - 26.0), vec2(96.0, 26.0));
+                if self.icon_pill(ui, glass, b, 101, "Edit look", Some((crate::icons::Icon::Shirt, crate::theme::PINK))) | self.focus_ring(ui, b, base + 7) {
                     self.creator_request = Some(Some(ch.id));
                 }
             }
-            if self.item(ui, &resp, base + 1 + k, 24.0) {
+            if self.item(ui, &resp, base + 1 + k, crate::theme::R_CARD) {
                 self.character = Some(ch.id);
             }
         }
 
         // New character, after the cards on the last page
         if self.page + 1 == pages {
-            let rect = Rect::from_min_size(pos2(32.0 + visible as f32 * 216.0, ry), vec2(200.0, 120.0));
+            let rect = Rect::from_min_size(pos2(32.0 + visible as f32 * (cw + 16.0), ry), vec2(cw, 120.0));
             let full = n >= MAX_CHARACTERS;
             let resp = ui.interact(rect, ui.id().with("new"), if full { Sense::hover() } else { Sense::click() });
             let hover = if full { 0.0 } else { glass.hover_of(ui, &resp) };
-            glass.dashed_card(ui.painter(), rect, 24.0, hover, if full { 0.6 } else { 1.0 });
+            glass.dashed_card(ui.painter(), rect, crate::theme::R_CARD, hover, if full { 0.6 } else { 1.0 });
             let c = rect.center();
             if full {
-                text(ui, c - vec2(0.0, 12.0), Align2::CENTER_CENTER, "All 8 characters made", 16.0, TITLE);
-                text(ui, c + vec2(0.0, 16.0), Align2::CENTER_CENTER, "That's the most you can have", 13.0, CARD_BODY);
+                text(ui, c - vec2(0.0, 12.0), Align2::CENTER_CENTER, "All 8 characters made", crate::theme::H2, TITLE);
+                text(ui, c + vec2(0.0, 16.0), Align2::CENTER_CENTER, "That's the most you can have", crate::theme::CAPTION, crate::theme::BODY);
             } else {
-                glass::draw_icon(ui.painter(), Icon::Plus, c - vec2(0.0, 28.0), 12.0);
-                text(ui, c + vec2(0.0, 4.0), Align2::CENTER_CENTER, "New character", 16.0, TITLE);
-                text(ui, c + vec2(0.0, 28.0), Align2::CENTER_CENTER, "Pick a look and a name", 13.0, CARD_BODY);
-                if self.item(ui, &resp, base + 4, 24.0) {
+                crate::icons::draw(ui.painter(), crate::icons::Icon::NewPerson, c - vec2(0.0, 28.0), 34.0 + 4.0 * hover, crate::theme::PINK, -8.0);
+                glass::shadowed(ui.painter(), c + vec2(0.0, 8.0), Align2::CENTER_CENTER, "New character", crate::theme::heavy(ui.ctx(), crate::theme::H2 - 1.0), TITLE);
+                text(ui, c + vec2(0.0, 30.0), Align2::CENTER_CENTER, "Pick a look and a name", crate::theme::CAPTION, crate::theme::BODY);
+                if self.item(ui, &resp, base + 4, crate::theme::R_CARD) {
                     self.creator_request = Some(None);
                 }
             }
@@ -1230,7 +1355,8 @@ impl Start {
 
         // the page arrows
         if pages > 1 {
-            for (i, (icon, x, go)) in [(Icon::Prev, 936.0, self.page > 0), (Icon::Next, 976.0, self.page + 1 < pages)].into_iter().enumerate() {
+            let right = ui.max_rect().width() - 32.0;
+            for (i, (icon, x, go)) in [(Icon::Prev, right - 72.0, self.page > 0), (Icon::Next, right - 32.0, self.page + 1 < pages)].into_iter().enumerate() {
                 let r = Rect::from_min_size(pos2(x, ry + 44.0), vec2(32.0, 32.0));
                 let resp = ui.put(r, |ui: &mut Ui| glass.circle_button(ui, icon, 32.0));
                 if !go {
@@ -1248,11 +1374,19 @@ impl Start {
     fn account_header(&mut self, ui: &mut Ui, glass: &Glass, w: f32, acct: usize) {
         let label = match (self.session.busy(), self.session.me()) {
             (Some(b), _) => b.to_owned(),
-            (None, Some(me)) => format!("Signed in: {}", short(&me.username, 16)),
+            (None, Some(me)) => short(&me.username, 16),
             (None, None) => "Sign in".to_owned(),
         };
-        let r = Rect::from_min_size(pos2(w - 32.0 - 40.0 - 16.0 - 248.0, 40.0), vec2(248.0, 40.0));
-        let resp = at(ui, r, Layout::right_to_left(Align::Center), |ui| glass.pill(ui, &label, Some(248.0), true));
+        let r = Rect::from_min_size(pos2(w - 32.0 - 40.0 - 12.0 - 320.0, 28.0), vec2(320.0, 40.0));
+        let signed = self.session.me().is_some();
+        let (kind, hue) = if signed { (glass::Kind::Tint(crate::theme::AZURE), crate::theme::AZURE) } else { (glass::Kind::Secondary, crate::theme::SLATE) };
+        let resp = at(ui, r, Layout::right_to_left(Align::Center), |ui| glass.button(ui, &label, Some((crate::icons::Icon::Account, hue)), kind, None, true));
+        if signed {
+            // online: a mint dot on the pill's right
+            let d = pos2(resp.rect.max.x - 14.0, resp.rect.min.y + 9.0);
+            ui.painter().circle_filled(d, 6.5, Color32::from_rgba_premultiplied(8, 40, 26, 160));
+            ui.painter().circle_filled(d, 4.0, crate::theme::MINT);
+        }
         if self.item(ui, &resp, acct, 20.0) {
             match (self.panel, self.session.me()) {
                 (Some(_), _) => drop(self.close_panel()),
@@ -1263,7 +1397,7 @@ impl Start {
         if self.session.unreachable.is_none() {
             return;
         }
-        let y = 100.0;
+        let y = 84.0;
         ui.painter().circle_filled(pos2(36.0, y), 4.0, AMBER);
         let said = if self.session.servers.is_official() { "Official server unreachable".to_owned() } else { format!("Server {} unreachable", short(self.session.servers.host(), 28)) };
         let shown = ui.painter().layout_no_wrap(said.clone(), FontId::proportional(14.0), TITLE).size().x;
@@ -1296,13 +1430,24 @@ impl Start {
             Some(_) => format!("Online ({})", self.session.characters.len()),
             None => "Online".to_owned(),
         };
-        let tabs = [(online_label, true), (format!("On this PC ({})", self.store.characters.len()), false)];
-        for (i, (label, online)) in tabs.into_iter().enumerate() {
-            let r = Rect::from_min_size(pos2(w - 32.0 - 2.0 * 144.0 - 8.0 + i as f32 * 152.0, low - 4.0), vec2(144.0, 24.0));
-            if self.online_tab() == online {
-                ui.painter().add(egui::Shape::mesh(glass::rim_mesh(r, 12.0, 1.0)));
-            }
-            if (self.flat_pill(ui, glass, r, 110 + i, &label) | self.focus_ring(ui, r, first + i)) && self.online_tab() != online {
+        let tabs = [(online_label, true, crate::icons::Icon::Globe, crate::theme::AZURE), (format!("On this PC ({})", self.store.characters.len()), false, crate::icons::Icon::Monitor, crate::theme::SLATE)];
+        let track = Rect::from_min_size(pos2(w - 32.0 - 2.0 * 152.0 - 6.0, low - 12.0), vec2(2.0 * 152.0 + 6.0, 34.0));
+        ui.painter().rect_filled(track, 17.0, Color32::from_rgba_premultiplied(4, 6, 14, 90));
+        ui.painter().rect_stroke(track, 17.0, Stroke::new(1.0, Color32::from_white_alpha(34)), egui::StrokeKind::Inside);
+        let on = ui.ctx().animate_bool_with_time(ui.id().with("tab slide"), self.online_tab(), if crate::animations() { 0.15 } else { 0.0 });
+        let lit = Rect::from_min_size(pos2(track.min.x + 3.0 + (1.0 - on) * 152.0, track.min.y + 3.0), vec2(152.0, 28.0));
+        glass.button_face(ui.painter(), lit, 1.0, 0.0, glass::Kind::Tint(crate::theme::BRAND), true);
+        for (i, (label, online, icon, hue)) in tabs.into_iter().enumerate() {
+            let r = Rect::from_min_size(pos2(track.min.x + 3.0 + i as f32 * 152.0, track.min.y + 3.0), vec2(152.0, 28.0));
+            let resp = ui.interact(r, ui.id().with(("flat", 110 + i)), Sense::click());
+            let hover = glass.hover_of(ui, &resp);
+            let font = crate::theme::heavy(ui.ctx(), crate::theme::CAPTION + 0.5);
+            let tw = ui.painter().layout_no_wrap(label.clone(), font.clone(), TITLE).size().x + 22.0;
+            let x = r.center().x - tw / 2.0;
+            crate::icons::draw(ui.painter(), icon, pos2(x + 8.0, r.center().y), 17.0 + 1.0 * hover, hue, -8.0);
+            let color = if self.online_tab() == online { TITLE } else { crate::theme::BODY.lerp_to_gamma(TITLE, hover) };
+            glass::shadowed(ui.painter(), pos2(x + 22.0, r.center().y), Align2::LEFT_CENTER, &label, font, color);
+            if (resp.clicked() | self.focus_ring(ui, r, first + i)) && self.online_tab() != online {
                 (self.online_view, self.sign_in_tab) = (online, online);
                 (self.page, self.character) = (0, self.shown().first().map(|c| c.id));
             }
@@ -1335,7 +1480,7 @@ impl Start {
             true => title.to_owned(),
             false => format!("{title} on {} (not the official server)", short(self.session.servers.host(), 40)),
         };
-        glass.title(ui.painter(), pos2(32.0, low), &title, 14.0);
+        panel_head(ui, glass, low, crate::icons::Icon::Account, crate::theme::AZURE, &title);
         let (mut next, mut submit) = (Some(panel), false);
         // the test harness's filled form goes once nothing is out (test-hooks)
         if self.hook_submit && busy.is_none() {
@@ -1343,11 +1488,12 @@ impl Start {
         }
         let (me, note) = (self.session.me().cloned(), self.session.note.clone());
         let form = &mut self.form;
-        at(ui, Rect::from_min_size(pos2(32.0, low + 28.0), vec2(760.0, 200.0)), Layout::top_down(Align::Min), |ui| {
+        at(ui, Rect::from_min_size(pos2(52.0, low + 26.0), vec2(760.0, 200.0)), Layout::top_down(Align::Min), |ui| {
             ui.spacing_mut().item_spacing = vec2(12.0, 10.0);
             // a field; true when Enter is pressed in it
             let field = |ui: &mut Ui, buf: &mut String, hint: &str, secret: bool| {
-                let r = ui.add_sized([280.0, 36.0], egui::TextEdit::singleline(buf).hint_text(hint).password(secret).font(FontId::proportional(16.0)).vertical_align(Align::Center).margin(vec2(10.0, 4.0)));
+                let r = ui.add_sized([280.0, 38.0], egui::TextEdit::singleline(buf).hint_text(hint).password(secret).font(FontId::proportional(crate::theme::BODY_SIZE + 1.5)).vertical_align(Align::Center).margin(vec2(12.0, 4.0)));
+                glass::well(ui.painter(), r.rect, r.has_focus());
                 r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))
             };
             match panel {
@@ -1384,14 +1530,22 @@ impl Start {
                     Panel::Forgot => "Send reset email",
                     Panel::Account => "Sign out",
                 };
-                submit |= glass.pill(ui, main, None, busy.is_none()).clicked();
-                let others: &[(&str, Option<Panel>)] = match panel {
-                    Panel::SignIn => &[("Create account", Some(Panel::Register)), ("Forgot password", Some(Panel::Forgot)), ("Close", None)],
-                    Panel::Register | Panel::Forgot => &[("Back to sign in", Some(Panel::SignIn)), ("Close", None)],
-                    Panel::Account => &[("Close", None)],
+                use crate::icons::Icon as I;
+                use crate::theme as th;
+                let (icon, kind) = match panel {
+                    Panel::SignIn => ((I::Enter, th::MINT), glass::Kind::Primary),
+                    Panel::Register => ((I::NewPerson, th::MINT), glass::Kind::Primary),
+                    Panel::Forgot => ((I::Key, th::GOLD), glass::Kind::Primary),
+                    Panel::Account => ((I::DoorOut, th::CORAL), glass::Kind::Danger),
                 };
-                for (label, to) in others {
-                    if glass.pill(ui, label, None, true).clicked() {
+                submit |= glass.button(ui, main, Some(icon), kind, None, busy.is_none()).clicked();
+                let others: &[(&str, Option<Panel>, (I, Color32))] = match panel {
+                    Panel::SignIn => &[("Create account", Some(Panel::Register), (I::NewPerson, th::MINT)), ("Forgot password", Some(Panel::Forgot), (I::Key, th::GOLD)), ("Close", None, (I::Close, th::SLATE))],
+                    Panel::Register | Panel::Forgot => &[("Back to sign in", Some(Panel::SignIn), (I::Prev, th::TITLE)), ("Close", None, (I::Close, th::SLATE))],
+                    Panel::Account => &[("Close", None, (I::Close, th::SLATE))],
+                };
+                for (label, to, icon) in others {
+                    if glass.button(ui, label, Some(*icon), glass::Kind::Secondary, None, true).clicked() {
                         next = *to;
                     }
                 }
@@ -1433,24 +1587,26 @@ impl Start {
             (None, Some(said)) => ("Character removed".to_owned(), said.clone()),
             (None, None) => return,
         };
-        glass.title(ui.painter(), pos2(32.0, low), &title, 14.0);
+        panel_head(ui, glass, low, crate::icons::Icon::Trash, crate::theme::CORAL, &title);
         let (mut keep, mut remove) = (false, false);
-        at(ui, Rect::from_min_size(pos2(32.0, low + 32.0), vec2(640.0, 120.0)), Layout::top_down(Align::Min), |ui| {
-            ui.label(egui::RichText::new(body).size(14.0).color(TITLE));
+        at(ui, Rect::from_min_size(pos2(52.0, low + 30.0), vec2(760.0, 120.0)), Layout::top_down(Align::Min), |ui| {
+            ui.label(egui::RichText::new(body).size(crate::theme::BODY_SIZE + 1.0).color(TITLE));
             ui.add_space(16.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 16.0;
-                let r = glass.pill(ui, if confirming { "Keep" } else { "OK" }, Some(120.0), true);
+                let r = glass.button(ui, if confirming { "Keep" } else { "OK" }, Some((crate::icons::Icon::Check, crate::theme::MINT)), glass::Kind::Secondary, Some(132.0), true);
                 keep = self.item(ui, &r, base, 20.0);
                 if confirming {
-                    let r = glass.pill(ui, "Remove", Some(120.0), true);
+                    let r = glass.button(ui, "Remove", Some((crate::icons::Icon::Trash, crate::theme::CORAL)), glass::Kind::DangerSolid, Some(144.0), true);
                     remove = self.item(ui, &r, base + 1, 20.0);
                 }
             });
         });
         if keep {
             (self.removing, self.removed) = (None, None);
-        } else if let (true, Some(id)) = (remove, self.removing.take()) {
+        } else if let (true, Some(id)) = (remove, self.removing) {
+            // taken only on Remove: a take in the condition itself ran every frame and dropped the question at once
+            self.removing = None;
             // the list is read again for the save: another RE:DEX may have changed it
             let Some(mut store) = Store::try_load(&self.data) else {
                 self.error = Some("We couldn't open your characters just now. Close anything else using RE:DEX, then try again.".to_owned());
@@ -1561,9 +1717,14 @@ impl Start {
         }
         let (Some(mut gui), Some(mut glass), Some(window)) = (self.gui.take(), self.glass.take(), self.window.take()) else { return };
         let now = Instant::now();
-        glass.request_size(logical(&window), now);
+        // the layout is drawn for 1040 x 640 and scaled whole to the window (theme::ui_scale)
+        let [lw, lh] = logical(&window);
+        let zoom = crate::theme::ui_scale(lw as f32, lh as f32);
+        gui.ctx.set_zoom_factor(zoom);
+        glass.request_size([(lw as f32 / zoom) as u32, (lh as f32 / zoom) as u32], now);
         glass.settle(now);
         glass.animate(self.started.elapsed().as_secs_f64());
+        crate::ui_sound::set_enabled(self.settings.ui_sounds);
         let overlay: Overlay = gui.frame(&window, |ui| self.ui(ui, &glass));
         self.nav = Nav::default();
         if let Some(backend) = &mut self.backend {
@@ -1594,7 +1755,12 @@ impl ApplicationHandler for Start {
         let attributes = match std::env::var_os("XR_TEST_OFFSCREEN") {
             Some(_) => {
                 use winit::platform::windows::WindowAttributesExtWindows;
-                attributes.with_position(winit::dpi::PhysicalPosition::new(-20000, -20000)).with_active(false).with_skip_taskbar(true)
+                let attributes = attributes.with_position(winit::dpi::PhysicalPosition::new(-20000, -20000)).with_active(false).with_skip_taskbar(true);
+                // XR_TEST_SIZE=1920x1080: the window's size in pixels, for screenshots
+                match std::env::var("XR_TEST_SIZE").ok().and_then(|s| s.split_once('x').and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))) {
+                    Some((w, h)) => attributes.with_inner_size(winit::dpi::PhysicalSize::new(w, h)),
+                    None => attributes,
+                }
             }
             None => attributes,
         };

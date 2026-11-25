@@ -13,6 +13,7 @@ pub mod format;
 mod interpolation;
 pub mod lighting;
 pub mod pack;
+mod predict;
 pub mod raster;
 pub mod registers;
 pub mod renderer;
@@ -24,6 +25,7 @@ pub mod texture;
 
 use format::ColorFormat;
 pub use interpolation::Matches;
+pub use predict::Prediction;
 use registers::*;
 pub use backend::{layout, place, GpuScreen, Overlay, OverlayMesh, OverlayTexture, OverlayVertex, PresentError, Presenter, ScreenFilter, ScreenImage, ScreenLayout, ScreenOrientation, Shown, Stereo, StereoMode, Viewport};
 pub use renderer::{DrawCall, Renderer, RendererKind, SoftwareRenderer};
@@ -32,6 +34,8 @@ pub use device::SharedDevice;
 
 /// the most twins a surface gets, frame interpolation's K-1 pictures in between at K = 8 (a 30 fps title on 240 Hz)
 pub const MAX_TWINS: usize = 7;
+/// the twins the GPU has room for: the pictures in between and Responsive movement's extra one (see Gpu::set_extra_twin)
+pub const TWIN_SLOTS: usize = MAX_TWINS + 1;
 
 /// how the GPU reaches guest memory
 pub trait GpuMemory {
@@ -197,6 +201,17 @@ pub struct Gpu {
     endpoint: bool,
     /// the twins' t's when they go at the display's vblanks instead: twin k at first + k * step (see set_twin_times)
     times: Option<(f32, f32)>,
+    /// Responsive movement for the next picture's pictures in between (see predict), w/ its g turned back, none off
+    prediction: Option<(Prediction, studio::M4)>,
+    /// the player's draws as learned (see predict), the draws w/ the field camera's projection so far and those of this
+    /// frame drawn ahead
+    trainer: predict::Trainer,
+    field_draws: u64,
+    ahead_draws: u32,
+    /// one more twin at t = 1 after the K-1 in between (Responsive movement: the title's own picture drawn ahead), and
+    /// the K-1 asked for
+    extra: bool,
+    wanted: usize,
     /// the copy of the registers and shader units that walks each command list ahead of the real walk, see scout
     scout: Option<Box<Gpu>>,
     /// is this that copy
@@ -241,6 +256,12 @@ impl Gpu {
             steps: 1,
             endpoint: false,
             times: None,
+            prediction: None,
+            trainer: Default::default(),
+            field_draws: 0,
+            ahead_draws: 0,
+            extra: false,
+            wanted: 0,
             scout: None,
             scouting: false,
             ahead: std::collections::VecDeque::new(),
@@ -758,18 +779,50 @@ impl Gpu {
     /// draws `count` pictures in between (K-1, at most MAX_TWINS) from the next draw on, while the title keeps drawing a
     /// picture every other or third refresh, or stops (0); the GPU may draw fewer when its memory is short (see twins)
     pub fn set_twins(&mut self, count: usize) {
+        self.wanted = count;
+        // and the title's own drawn ahead after them (see set_extra_twin)
+        let all = count + (self.extra && count > 0) as usize;
         #[cfg(feature = "vulkan")]
         if let Some(hardware) = self.resources.hardware.as_mut() {
-            hardware.set_twins(if self.interpolation.is_some() { count } else { 0 });
+            hardware.set_twins(if self.interpolation.is_some() { all } else { 0 });
         }
         #[cfg(not(feature = "vulkan"))]
-        let _ = count;
+        let _ = all;
         self.steps = self.twins() + 1;
     }
 
-    /// how many pictures in between the GPU draws now, 0 none
+    /// how many pictures in between the GPU draws now, 0 none (the extra twin at t = 1 not counted, see extra_twin)
     pub fn twins(&self) -> usize {
+        self.resources.twins().min(self.wanted)
+    }
+
+    /// the twins draws go into: the pictures in between and the extra one
+    fn all_twins(&self) -> usize {
         self.resources.twins()
+    }
+
+    /// Responsive movement: with set_twins from the next frame on, one more twin after the pictures in between, at t = 1:
+    /// the title's own picture, drawn ahead where Responsive movement moves its draws (the window shows it in the own's
+    /// place, which is an update behind the pictures in between then)
+    /// Decided per picture at the refresh that draws it (the twins already set for it get one more or one fewer now),
+    /// so pictures not drawn ahead cost nothing extra; the VRAM guard may leave no room for it (see extra_twin)
+    pub fn set_extra_twin(&mut self, on: bool) {
+        if on == self.extra {
+            return;
+        }
+        self.extra = on;
+        let all = self.wanted + (on && self.wanted > 0) as usize;
+        #[cfg(feature = "vulkan")]
+        if let Some(hardware) = self.resources.hardware.as_mut() {
+            hardware.set_count(if self.interpolation.is_some() { all } else { 0 });
+        }
+        #[cfg(not(feature = "vulkan"))]
+        let _ = all;
+    }
+
+    /// which twin is the extra one at t = 1, when the GPU draws one (see set_extra_twin)
+    pub fn extra_twin(&self) -> Option<usize> {
+        (self.extra && self.wanted > 0 && self.resources.twins() > self.wanted).then_some(self.wanted)
     }
 
     /// the memory the pictures in between take on the GPU, what they may take, and the most of them there may be now
@@ -811,8 +864,17 @@ impl Gpu {
         self.times
     }
 
+    /// Responsive movement for the pictures in between of the pictures drawn from now on (see predict), or none
+    /// (frame interpolation as it is); one whose g can't be turned back is none
+    pub fn set_prediction(&mut self, prediction: Option<Prediction>) {
+        self.prediction = prediction.and_then(|p| studio::invert(&p.g).map(|gi| (p, gi)));
+    }
+
     /// where twin k (from 0) is between the picture b4 and the title's, see steps and set_twin_times
-    fn twin_t(&self, k: usize) -> f32 {
+    pub fn twin_t(&self, k: usize) -> f32 {
+        if self.extra_twin() == Some(k) {
+            return 1.0;
+        }
         match (self.times, self.endpoint) {
             (Some((first, step)), _) => first + k as f32 * step,
             (None, true) => (k + 1) as f32 / self.twins().max(1) as f32,
@@ -822,7 +884,9 @@ impl Gpu {
 
     /// the title's frame is done, its draws are the ones the next frame's match, plus how they matched the frame b4's
     pub fn frame_done(&mut self) -> Option<Matches> {
-        let matches = self.interpolation.as_mut().map(interpolation::Interpolation::frame_done);
+        let ahead = std::mem::take(&mut self.ahead_draws);
+        self.trainer.frame_done();
+        let matches = self.interpolation.as_mut().map(interpolation::Interpolation::frame_done).map(|matches| Matches { ahead, ..matches });
         if interpolation_trace() {
             log::info!("interp frame done {matches:?}");
         }
@@ -1198,7 +1262,7 @@ impl Gpu {
         let handed = self.ahead.pop_front().flatten();
         // frame interpolation draws it again in between, where it moved
         let geometry = self.internal[REG_GEOSTAGE_CONFIG] & 0x3 == 2;
-        let twins = self.resources.twins();
+        let twins = self.all_twins();
         let before = self.interpolation.as_ref().filter(|_| interpolation_trace()).map(interpolation::Interpolation::counts);
         let between = match self.interpolation.as_mut() {
             Some(interpolation) => interpolation.draw(&self.internal, &self.vertex_shader, geometry.then_some(&self.geometry_shader), twins > 0),
@@ -1223,6 +1287,18 @@ impl Gpu {
                 std::array::from_fn::<u32, 4, _>(|i| now[i] - before[i]),
             );
         }
+        // Responsive movement: a draw w/ the field camera's projection goes into the pictures in between moved ahead,
+        // also where frame interpolation saw it stand still
+        let predicted = self.predicted(memory, indexed, geometry, twins);
+        let between = match (between, predicted) {
+            (None, Some(_)) => {
+                if let Some(interpolation) = self.interpolation.as_mut() {
+                    interpolation.forced(&self.internal);
+                }
+                Some(Box::new(*self.vertex_shader.float_uniforms))
+            }
+            (between, _) => between,
+        };
         self.resources.set_pass(if between.is_some() { raster::Pass::Twinned } else { raster::Pass::Real });
         let studio = studio::on();
         if studio {
@@ -1246,6 +1322,12 @@ impl Gpu {
             let now = *self.vertex_shader.float_uniforms;
             for k in 0..twins {
                 interpolation::lerp(&from, &now, self.twin_t(k), &mut self.vertex_shader.float_uniforms);
+                if let (Some((at, player)), Some((prediction, _))) = (predicted, &self.prediction) {
+                    let moves = if player { &prediction.player } else { &prediction.world };
+                    if let Some(c) = moves.get(k) {
+                        predict::fold(&mut self.vertex_shader.float_uniforms[..], at, c);
+                    }
+                }
                 self.resources.set_pass(raster::Pass::Twin(k as u8));
                 raster::draw(
                     &self.internal,
@@ -1265,6 +1347,41 @@ impl Gpu {
         }
         self.resources.set_pass(raster::Pass::Real);
         self.vertices_drawn += vertices as u64;
+    }
+
+    /// where Responsive movement moves the draw in its pictures in between: the first of its projection's uniforms
+    /// and whether it's the player's (see predict); none when it doesn't
+    fn predicted<M: GpuMemory>(&mut self, memory: &mut M, indexed: bool, geometry: bool, twins: usize) -> Option<(usize, bool)> {
+        let (prediction, gi) = self.prediction.as_ref()?;
+        if geometry {
+            return None;
+        }
+        let placing = self.interpolation.as_mut()?.placing_of(&self.internal, &self.vertex_shader);
+        let at = prediction.projection_rows(&self.vertex_shader.float_uniforms[..], placing)?;
+        self.field_draws += 1;
+        let learning = self.trainer.learning(prediction);
+        let moves = twins > 0 && prediction.moves() && self.trainer.knows();
+        if !moves && !learning {
+            return None;
+        }
+        let clips = raster::sample_clips(&self.internal, &self.vertex_shader, &self.fixed_attributes, memory, &mut self.resources, indexed, predict::SAMPLES);
+        let points = predict::Prediction::world(gi, &clips);
+        let player = self.trainer.draw(prediction, interpolation::mesh(&self.internal), &points);
+        let transforms = if player { &prediction.player } else { &prediction.world };
+        let moved = moves && transforms.iter().take(twins).any(|c| *c != predict::IDENTITY);
+        self.ahead_draws += moved as u32;
+        moved.then_some((at, player))
+    }
+
+    /// does Responsive movement know the player's draws (see predict): nothing is drawn ahead till it does
+    pub fn knows_trainer(&self) -> bool {
+        self.trainer.knows()
+    }
+
+    /// the draws w/ the field camera's projection so far while Responsive movement was set (a host tells the refreshes
+    /// that drew the field by it)
+    pub fn field_draws(&self) -> u64 {
+        self.field_draws
     }
 
     /// draws the immediate mode vertices waiting, see flush_immediate
@@ -1547,6 +1664,38 @@ fn external_index(gsp_offset: u32) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Responsive movement's extra twin: one more after the pictures in between, at t = 1, not counted as one of them;
+    /// off (or no pictures in between) none, and the pictures in between as before
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn the_extra_twin_comes_after_the_pictures_in_between_at_t_1() {
+        let Ok(device) = SharedDevice::new() else { return };
+        let mut gpu = Gpu::new();
+        if gpu.enable_hardware_renderer(1, Some(std::sync::Arc::new(device)), None, None).is_err() || !gpu.set_interpolation(true) {
+            return;
+        }
+        gpu.set_twins(3);
+        assert_eq!((gpu.twins(), gpu.extra_twin(), gpu.steps()), (3, None, 4));
+        let before: Vec<f32> = (0..3).map(|k| gpu.twin_t(k)).collect();
+        gpu.set_extra_twin(true);
+        gpu.set_twins(3);
+        assert_eq!((gpu.twins(), gpu.extra_twin(), gpu.steps(), gpu.all_twins()), (3, Some(3), 4, 4));
+        assert_eq!((0..3).map(|k| gpu.twin_t(k)).collect::<Vec<_>>(), before, "the pictures in between keep their t");
+        assert_eq!(gpu.twin_t(3), 1.0);
+        gpu.set_twins(MAX_TWINS);
+        assert_eq!((gpu.twins(), gpu.extra_twin()), (MAX_TWINS, Some(MAX_TWINS)), "room for it at the most pictures in between");
+        gpu.set_twins(0);
+        assert_eq!((gpu.twins(), gpu.extra_twin()), (0, None), "no pictures in between, no extra one");
+        gpu.set_extra_twin(false);
+        gpu.set_twins(3);
+        assert_eq!((gpu.twins(), gpu.extra_twin(), gpu.all_twins()), (3, None, 3));
+        // decided per picture, at the refresh that draws, w/o set_twins
+        gpu.set_extra_twin(true);
+        assert_eq!((gpu.twins(), gpu.extra_twin(), gpu.all_twins(), gpu.twin_t(3)), (3, Some(3), 4, 1.0), "on for a picture drawn ahead");
+        gpu.set_extra_twin(false);
+        assert_eq!((gpu.twins(), gpu.extra_twin(), gpu.all_twins()), (3, None, 3), "off for one that isn't");
+    }
 
     /// guest memory as one flat block starting at addr zero
     #[derive(Clone)]

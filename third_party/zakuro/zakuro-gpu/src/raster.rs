@@ -1448,6 +1448,42 @@ pub(crate) fn studio_redraw<M: GpuMemory>(registers: &[u32], memory: &mut M, res
     rasterize(registers, memory, resources, Vertices::Shaded(&moved));
 }
 
+/// up to `count` of a draw's vertices, spread over it, thru its vertex shader on the CPU: their clip positions
+/// (Responsive movement tells the player's draws by where they are); none thru a geometry shader
+pub(crate) fn sample_clips<M: GpuMemory>(
+    registers: &[u32],
+    vertex_shader: &ShaderUnit,
+    fixed_attributes: &[Vec4; 16],
+    memory: &mut M,
+    resources: &mut Resources,
+    indexed: bool,
+    count: usize,
+) -> Vec<[f32; 4]> {
+    let vertex_count = registers[REG_VERTEX_COUNT] as usize;
+    if vertex_count == 0 || vertex_count > 0x1_0000 || registers[REG_GEOSTAGE_CONFIG] & 0x3 == 2 || count == 0 {
+        return Vec::new();
+    }
+    let mut scratch = resources.scratch.take().unwrap_or_default();
+    read_indices(registers, memory, &mut scratch, indexed);
+    scratch.plans.update(registers, fixed_attributes);
+    let short = registers[REG_INDEX_ARRAY] & 0x8000_0000 != 0;
+    let first = registers[REG_VERTEX_OFFSET];
+    let picks: Vec<u32> = (0..vertex_count)
+        .step_by((vertex_count / count).max(1))
+        .take(count)
+        .filter_map(|i| match (indexed, short) {
+            (false, _) => Some(first + i as u32),
+            (true, true) => scratch.bytes.get(2 * i..2 * i + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as u32),
+            (true, false) => scratch.bytes.get(i).map(|&b| b as u32),
+        })
+        .collect();
+    let mut inputs = Vec::new();
+    scratch.plans.current().fetch_all(memory, loc_register(registers, REG_ATTRIBUTE_BASE), &picks, &mut inputs);
+    resources.scratch = Some(scratch);
+    let (shaded, _) = process_vertices(registers, vertex_shader, vertex_shader, &inputs, None);
+    shaded.iter().map(|v| v.clip).collect()
+}
+
 /// what a draw does for frame interpolation, see crate::interpolation
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Pass {

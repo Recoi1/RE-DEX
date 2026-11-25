@@ -2,6 +2,7 @@
 pub mod field;
 pub mod heap;
 pub mod look;
+pub mod predict;
 pub mod puppet;
 pub mod wardrobe;
 

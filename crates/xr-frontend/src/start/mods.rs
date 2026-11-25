@@ -318,17 +318,26 @@ impl Mods {
 
     /// a flat pill button; true when pressed
     fn button(&self, ui: &mut Ui, glass: &Glass, rect: Rect, id: &str, word: &str, primary: bool) -> bool {
+        use crate::icons::Icon as I;
+        use crate::theme as th;
         let r = ui.interact(rect, ui.id().with(("mods-button", id)), Sense::click());
-        let hover = glass.hover_of(ui, &r);
+        let (hover, scale) = glass::press_scale(ui, &r, 1.04);
+        let (kind, icon, hue) = match id {
+            "install" => (glass::Kind::Primary, I::Import, Color32::WHITE),
+            "remove" => (glass::Kind::Danger, I::Trash, th::CORAL),
+            "page" => (glass::Kind::Secondary, I::Globe, th::AZURE),
+            _ => (if primary { glass::Kind::Primary } else { glass::Kind::Secondary }, I::Close, th::SLATE),
+        };
         if primary {
-            glass::glow(ui.painter(), rect, rect.height() / 2.0, BRAND_RED, 1.2 + 0.6 * hover);
-            glass.paint(ui.painter(), rect, rect.height() / 2.0, glass::Look { hover: 0.6 + 0.4 * hover, tint: 0.10 + 0.04 * hover, dot: true, ..Default::default() });
-            let g = ui.painter().layout_no_wrap(word.to_owned(), FontId::proportional(16.0), TITLE);
-            bold(ui, pos2(rect.center().x - g.size().x / 2.0, rect.center().y), word, 16.0, TITLE);
-        } else {
-            ui.painter().rect_filled(rect, rect.height() / 2.0, Color32::from_white_alpha((28.0 + 30.0 * hover) as u8));
-            text(ui, rect.center(), Align2::CENTER_CENTER, word, 14.0, TITLE);
+            glass::glow(ui.painter(), rect, rect.height() / 2.0, BRAND_RED, 1.0 + 0.6 * hover);
         }
+        glass.button_face(ui.painter(), rect, scale, hover, kind, true);
+        let font = th::heavy(ui.ctx(), th::LABEL);
+        let w = ui.painter().layout_no_wrap(word.to_owned(), font.clone(), TITLE).size().x + 24.0;
+        let x = rect.center().x - w / 2.0;
+        crate::icons::draw(ui.painter(), icon, pos2(x + 9.0, rect.center().y), 20.0 * scale, hue, -8.0);
+        let color = if kind == glass::Kind::Danger { th::CORAL } else { TITLE };
+        glass::shadowed(ui.painter(), pos2(x + 24.0, rect.center().y), Align2::LEFT_CENTER, word, font, color);
         r.clicked()
     }
 
@@ -340,7 +349,7 @@ impl Mods {
             self.reload();
         }
         let panel = Rect::from_min_max(pos2(32.0, 104.0), pos2(1008.0, 608.0));
-        glass.paint(ui.painter(), panel, 32.0, glass::Look { dot: true, ..Default::default() });
+        glass.paint(ui.painter(), panel, crate::theme::R_PANEL, glass::Look { dot: true, lift: 1.0, seed: 3, ..Default::default() });
         let busy = installer.busy();
         self.game_open = super::storage::game_running(&self.data);
         if nav.back && !self.typing && !busy {
@@ -360,30 +369,27 @@ impl Mods {
         let back = Rect::from_min_size(pos2(56.0, 124.0), vec2(40.0, 40.0));
         // while an install runs the screen stays: cancel it first
         let resp = ui.interact(back, ui.id().with("mods-back"), if busy { Sense::hover() } else { Sense::click() });
-        let hover = if busy { 0.0 } else { glass.hover_of(ui, &resp) };
-        ui.painter().circle_filled(back.center(), 20.0, Color32::from_white_alpha((28.0 + 30.0 * hover) as u8));
-        glass::draw_icon(ui.painter(), glass::Icon::Prev, back.center(), 8.0);
+        let (hover, scale) = if busy { (0.0, 1.0) } else { glass::press_scale(ui, &resp, 1.06) };
+        glass.button_face(ui.painter(), back, scale, hover, glass::Kind::Secondary, !busy);
+        crate::icons::draw(ui.painter(), crate::icons::Icon::Prev, back.center(), 18.0 * scale, TITLE, 0.0);
         if busy {
             ui.painter().circle_filled(back.center(), 21.0, Color32::from_rgba_unmultiplied(0x10, 0x16, 0x28, 150));
         }
         if resp.clicked() && !busy {
             return ModsAction::Close;
         }
-        glass.title(ui.painter(), pos2(112.0, 136.0), "Mods", 14.0);
+        crate::icons::draw(ui.painter(), crate::icons::Icon::Puzzle, pos2(122.0, 144.0), 22.0, crate::theme::AMBER, -8.0);
+        glass.title(ui.painter(), pos2(140.0, 136.0), "Mods", crate::theme::EYEBROW + 1.5);
         let count = match (self.loading, &self.error) {
             (true, _) => "Asking GameBanana…".to_owned(),
             (_, Some(_)) => "GameBanana can't be reached".to_owned(),
             _ if self.search.trim().is_empty() => format!("{} on GameBanana, most liked first", self.mods.len()),
             _ => format!("{} of {} match", rows.len(), self.mods.len()),
         };
-        text(ui, pos2(184.0, 144.0), Align2::LEFT_CENTER, &count, 13.0, CARD_BODY);
+        text(ui, pos2(206.0, 144.0), Align2::LEFT_CENTER, &count, crate::theme::CAPTION, CARD_BODY);
         let field = Rect::from_min_size(pos2(656.0, 124.0), vec2(320.0, 40.0));
-        ui.painter().rect_filled(field, 12.0, Color32::from_black_alpha(56));
-        ui.painter().add(Shape::mesh(glass::rim_mesh(field, 12.0, if self.typing { 1.0 } else { 0.0 })));
-        // a magnifier, in the icons' thin white line
-        let lens = pos2(field.min.x + 20.0, field.center().y - 2.0);
-        ui.painter().circle_stroke(lens, 5.5, egui::Stroke::new(1.5, CARD_BODY));
-        ui.painter().line_segment([lens + vec2(4.0, 4.0), lens + vec2(8.5, 8.5)], egui::Stroke::new(1.5, CARD_BODY));
+        glass::well(ui.painter(), field, self.typing);
+        crate::icons::draw(ui.painter(), crate::icons::Icon::Search, pos2(field.min.x + 21.0, field.center().y), 20.0, crate::theme::AZURE, -8.0);
         let edit = at(ui, Rect::from_min_max(field.min + vec2(40.0, 8.0), field.max - vec2(16.0, 8.0)), Layout::left_to_right(Align::Center), |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.search)
@@ -449,7 +455,11 @@ impl Mods {
     /// one mod in the list: its picture, name, who made it, and its badges
     fn row(&self, ui: &Ui, glass: &Glass, rect: Rect, resp: &egui::Response, m: &Mod, selected: bool) {
         let hover = glass.hover_of(ui, resp);
-        ui.painter().rect_filled(rect, 16.0, Color32::from_white_alpha(if selected { 26 } else { (10.0 + 12.0 * hover) as u8 }));
+        ui.painter().rect_filled(rect, 16.0, Color32::from_white_alpha(if selected { 24 } else { (8.0 + 12.0 * hover) as u8 }));
+        if selected {
+            ui.painter().rect_stroke(rect, 16.0, egui::Stroke::new(1.2, crate::theme::BRAND_HI.gamma_multiply(0.8)), egui::StrokeKind::Inside);
+            ui.painter().rect_filled(Rect::from_min_size(rect.min + vec2(0.0, 14.0), vec2(3.0, rect.height() - 28.0)), 2.0, crate::theme::BRAND_HI);
+        }
         if selected {
             ui.painter().add(Shape::mesh(glass::rim_mesh(rect, 16.0, 0.7)));
         }

@@ -1,0 +1,8 @@
+RE:DEX interface sounds: click.wav, open.wav, close.wav, confirm.wav, refuse.wav, toast.wav
+
+Made by tools/ui-sounds/make_ui_sounds.py from sine waves, filtered noise and envelopes; no recorded or third-party
+sound is in them.
+
+CC0 1.0 Universal (public domain dedication): to the extent possible under law, the RE:DEX authors have waived all
+copyright and related or neighboring rights to these sound files.
+https://creativecommons.org/publicdomain/zero/1.0/

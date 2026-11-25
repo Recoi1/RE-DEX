@@ -350,7 +350,7 @@ impl Creator {
     pub fn ui(&mut self, ui: &mut Ui, glass: &Glass, data: &Path, lib: &Library) -> CreatorAction {
         self.pump(data, lib);
         let panel = Rect::from_min_max(pos2(32.0, 104.0), pos2(1008.0, 608.0));
-        glass.paint(ui.painter(), panel, 32.0, glass::Look { dot: true, ..Default::default() });
+        glass.paint(ui.painter(), panel, crate::theme::R_PANEL, glass::Look { dot: true, lift: 1.0, seed: 4, ..Default::default() });
 
         // the keyboard moves like the d-pad unless the name field has it
         let mut pad = std::mem::take(&mut self.pad);
@@ -395,18 +395,25 @@ impl Creator {
         // the right column: the title, then a 56 px row each
         let (label_x, x) = (344.0, 472.0);
         let title = if self.editing.is_some() { "Edit look" } else { "New character" };
-        glass.title(ui.painter(), pos2(label_x, 136.0), title, 14.0);
+        let icon = if self.editing.is_some() { crate::icons::Icon::Shirt } else { crate::icons::Icon::NewPerson };
+        crate::icons::draw(ui.painter(), icon, pos2(label_x + 10.0, 144.0), 24.0, crate::theme::PINK, -8.0);
+        glass.title(ui.painter(), pos2(label_x + 30.0, 136.0), title, crate::theme::EYEBROW + 1.5);
         let cy = |row: usize| 188.0 + 56.0 * row as f32;
         let mut clicked_row = None;
         for row in NAME..FOOTER {
             if self.show_row && self.row == row {
                 let r = Rect::from_min_max(pos2(label_x - 16.0, cy(row) - 24.0), pos2(976.0, cy(row) + 24.0));
-                ui.painter().rect_filled(r, 24.0, Color32::from_white_alpha(14));
-                ui.painter().add(Shape::mesh(glass::rim_mesh(r, 24.0, 0.4)));
+                ui.painter().rect_filled(r, 16.0, Color32::from_white_alpha(16));
+                ui.painter().add(Shape::mesh(glass::rim_mesh(r, 16.0, 0.4)));
+                ui.painter().rect_filled(Rect::from_min_size(r.min + vec2(0.0, 12.0), vec2(3.0, r.height() - 24.0)), 2.0, crate::theme::BRAND_HI);
             }
+            use crate::icons::Icon as I;
             let label = ["Name", "Gender", "Skin", "Hair style", "Hair colour", "Eyes"][row];
-            let tone = if self.open(row) { CARD_BODY } else { dim(CARD_BODY) };
-            text(ui, pos2(label_x, cy(row)), Align2::LEFT_CENTER, label, 13.0, tone);
+            let (icon, hue) = [(I::Pen, crate::theme::GOLD), (I::Person, crate::theme::AZURE), (I::Drop, crate::theme::AMBER), (I::Comb, crate::theme::VIOLET), (I::Palette, crate::theme::PINK), (I::Eye, crate::theme::TEAL)][row];
+            let open = self.open(row);
+            let tone = if open { CARD_BODY } else { dim(CARD_BODY) };
+            crate::icons::draw_alpha(ui.painter(), icon, pos2(label_x + 9.0, cy(row)), 19.0, hue, -8.0, if open { 1.0 } else { 0.45 });
+            ui.painter().text(pos2(label_x + 26.0, cy(row)), Align2::LEFT_CENTER, label, crate::theme::heavy(ui.ctx(), crate::theme::CAPTION + 1.0), tone);
         }
 
         // name
@@ -414,8 +421,7 @@ impl Creator {
         if self.editing.is_some() {
             bold(ui, pos2(x, cy(NAME)), &self.name, 16.0, TITLE);
         } else {
-            ui.painter().rect_filled(field, 12.0, Color32::from_black_alpha(56));
-            ui.painter().add(Shape::mesh(glass::rim_mesh(field, 12.0, if self.typing { 1.0 } else { 0.0 })));
+            glass::well(ui.painter(), field, self.typing);
             let edit = at(ui, field.shrink2(vec2(16.0, 8.0)), Layout::left_to_right(Align::Center), |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.name)
@@ -475,9 +481,9 @@ impl Creator {
         for (i, (icon, dx, d)) in [(Icon::Prev, 0.0, -1), (Icon::Next, 112.0, 1)].into_iter().enumerate() {
             let r = Rect::from_min_size(pos2(x + dx, cy(STYLE) - 16.0), vec2(32.0, 32.0));
             let resp = ui.interact(r, ui.id().with(("style", i)), Sense::click());
-            let hover = glass.hover_of(ui, &resp);
-            ui.painter().circle_filled(r.center(), 16.0, Color32::from_white_alpha((28.0 + 30.0 * hover) as u8));
-            glass::draw_icon(ui.painter(), icon, r.center(), 7.0);
+            let (hover, scale) = glass::press_scale(ui, &resp, 1.06);
+            glass.button_face(ui.painter(), r, scale, hover, glass::Kind::Secondary, true);
+            glass::draw_icon(ui.painter(), icon, r.center(), 6.5 * scale);
             if resp.clicked() {
                 self.step(STYLE, d);
                 clicked_row = Some(STYLE);
@@ -497,29 +503,30 @@ impl Creator {
         });
         let cancel = Rect::from_min_size(pos2(712.0, fy - 20.0), vec2(104.0, 40.0));
         let resp = ui.interact(cancel, ui.id().with("cancel"), Sense::click());
-        let hover = glass.hover_of(ui, &resp);
-        ui.painter().rect_filled(cancel, 20.0, Color32::from_white_alpha((28.0 + 30.0 * hover) as u8));
-        text(ui, cancel.center(), Align2::CENTER_CENTER, "Cancel", 14.0, TITLE);
+        let (hover, scale) = glass::press_scale(ui, &resp, 1.04);
+        glass.button_face(ui.painter(), cancel, scale, hover, glass::Kind::Secondary, true);
+        crate::icons::draw(ui.painter(), crate::icons::Icon::Close, cancel.center() - vec2(30.0, 0.0), 16.0 * scale, crate::theme::SLATE, 0.0);
+        glass::shadowed(ui.painter(), cancel.center() + vec2(8.0, 0.0), Align2::CENTER_CENTER, "Cancel", crate::theme::heavy(ui.ctx(), crate::theme::LABEL), TITLE);
         if resp.clicked() {
             return CreatorAction::Cancel;
         }
         let save = Rect::from_min_size(pos2(832.0, fy - 24.0), vec2(144.0, 48.0));
         let ok = self.can_save();
         let resp = ui.interact(save, ui.id().with("save"), if ok { Sense::click() } else { Sense::hover() });
-        let hover = if ok { glass.hover_of(ui, &resp) } else { 0.0 };
+        let (hover, scale) = if ok { glass::press_scale(ui, &resp, 1.04) } else { (0.0, 1.0) };
         if ok {
-            glass::glow(ui.painter(), save, 24.0, BRAND_RED, 1.4 + 0.6 * hover);
+            glass::glow(ui.painter(), save, 24.0, BRAND_RED, 1.2 + 0.6 * hover);
         }
-        glass.paint(ui.painter(), save, 24.0, glass::Look { hover: 0.6 + 0.4 * hover, tint: 0.10 + 0.04 * hover, dot: true, ..Default::default() });
-        if !ok {
-            ui.painter().rect_filled(save.expand(1.0), 25.0, Color32::from_rgba_unmultiplied(0x10, 0x16, 0x28, 166));
-        }
+        glass.button_face(ui.painter(), save, scale, hover, if ok { glass::Kind::Primary } else { glass::Kind::Secondary }, ok);
         // still readable while it waits for a name
         let (word, tone) = (if self.editing.is_some() { "Save" } else { "Create" }, if ok { TITLE } else { dim(CARD_BODY) });
-        let g = ui.painter().layout_no_wrap(word.to_owned(), FontId::proportional(16.0), tone);
-        bold(ui, pos2(save.center().x - g.size().x / 2.0, save.center().y), word, 16.0, tone);
+        let font = crate::theme::heavy(ui.ctx(), crate::theme::H2);
+        let g = ui.painter().layout_no_wrap(word.to_owned(), font.clone(), tone);
+        let x = save.center().x - (g.size().x + 26.0) / 2.0;
+        crate::icons::draw_alpha(ui.painter(), crate::icons::Icon::Check, pos2(x + 9.0, save.center().y), 20.0 * scale, Color32::WHITE, -8.0, if ok { 1.0 } else { 0.5 });
+        glass::shadowed(ui.painter(), pos2(x + 26.0, save.center().y), Align2::LEFT_CENTER, word, font, tone);
         if self.show_row && self.row == FOOTER {
-            ui.painter().add(Shape::mesh(glass::rim_mesh(save.expand(4.0), 28.0, 1.0)));
+            glass::focus_ring(ui.painter(), save, save.height() / 2.0, ui.input(|i| i.time));
         }
         if let Some(r) = clicked_row {
             (self.row, self.show_row) = (r, false);
@@ -536,14 +543,10 @@ impl Creator {
     /// a pill that is one of a set: brighter with a rim when it is the one picked; true when clicked
     fn choice(&self, ui: &mut Ui, glass: &Glass, r: Rect, id: (&str, usize), s: &str, on: bool, open: bool) -> bool {
         let resp = ui.interact(r, ui.id().with(id), if open { Sense::click() } else { Sense::hover() });
-        let hover = if open { glass.hover_of(ui, &resp) } else { 0.0 };
-        let fill = if on { 72.0 } else { 20.0 + 30.0 * hover };
-        let k = if open || on { 1.0 } else { 0.45 };
-        ui.painter().rect_filled(r, 20.0, Color32::from_white_alpha((fill * k) as u8));
-        if on {
-            ui.painter().add(Shape::mesh(glass::rim_mesh(r, 20.0, if open { 1.0 } else { 0.0 })));
-        }
-        text(ui, r.center(), Align2::CENTER_CENTER, s, 14.0, if open || on { TITLE } else { dim(TITLE) });
+        let (hover, scale) = if open { glass::press_scale(ui, &resp, 1.04) } else { (0.0, 1.0) };
+        let kind = if on { glass::Kind::Tint(crate::theme::BRAND) } else { glass::Kind::Secondary };
+        glass.button_face(ui.painter(), r, scale, hover, kind, open || on);
+        glass::shadowed(ui.painter(), r.center(), Align2::CENTER_CENTER, s, crate::theme::heavy(ui.ctx(), crate::theme::LABEL), if open || on { TITLE } else { dim(TITLE) });
         resp.clicked()
     }
 
@@ -559,7 +562,7 @@ impl Creator {
             // locked, the one worn keeps its colour and the rest fade
             let k = if open || on == Some(i) { 1.0 } else { 0.35 };
             if on == Some(i) {
-                ui.painter().circle_stroke(centre, 20.0, Stroke::new(2.0, Color32::from_white_alpha((235.0 * k) as u8)));
+                ui.painter().circle_stroke(centre, 20.5, Stroke::new(2.5, crate::theme::BRAND_HI.gamma_multiply(k)));
             } else if hover > 0.0 {
                 ui.painter().circle_stroke(centre, 20.0, Stroke::new(1.0, Color32::from_white_alpha((90.0 * hover) as u8)));
             }
@@ -900,10 +903,9 @@ pub fn preview_stage(ui: &mut Ui, glass: &Glass, stage: Rect, picture: Option<Pi
     for (i, &(icon, dx, d)) in turns.iter().enumerate() {
         let r = Rect::from_center_size(pos2(stage.center().x + dx, arrows_y), vec2(40.0, 40.0));
         let resp = ui.interact(r, ui.id().with(("turn", i)), Sense::click());
-        let hover = glass.hover_of(ui, &resp);
-        ui.painter().circle_filled(r.center(), 20.0, Color32::from_white_alpha((28.0 + 30.0 * hover) as u8));
-        ui.painter().add(Shape::mesh(glass::rim_mesh(r, 20.0, hover)));
-        glass::draw_icon(ui.painter(), icon, r.center(), 8.0);
+        let (hover, scale) = glass::press_scale(ui, &resp, 1.06);
+        glass.button_face(ui.painter(), r, scale, hover, glass::Kind::Secondary, true);
+        glass::draw_icon(ui.painter(), icon, r.center(), 7.5 * scale);
         if resp.clicked() {
             source.turn(d);
         }

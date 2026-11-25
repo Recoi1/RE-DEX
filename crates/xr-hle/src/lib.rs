@@ -176,6 +176,9 @@ pub struct Motion {
     pub gap: u64,
     pub steps: usize,
     pub times: Option<(f32, f32)>,
+    /// Responsive movement drew draws of it ahead: the GPU's extra twin at t = 1 (this index, after the pictures in
+    /// between) is its own picture drawn ahead, which goes in its own's place (the own is an update behind)
+    pub ahead: Option<usize>,
 }
 
 impl Motion {
@@ -281,6 +284,9 @@ pub struct System {
     showing: [Option<zakuro_gpu::ScreenRef>; 3],
     /// frame interpolation's refresh count
     pacing: Pacing,
+    /// Responsive movement (the setting): the title's reader of its field draws the player and camera ahead in the
+    /// pictures in between (render side only, see zakuro_gpu::Prediction)
+    pub responsive: bool,
     pub cadence: Cadence,
     /// the dynamic module loader's state
     pub cro: cro::CroManager,
@@ -399,6 +405,7 @@ impl System {
             lcd_force_black: false,
             showing: [None, None, None],
             pacing: Pacing::default(),
+            responsive: false,
             cadence: Cadence::default(),
             cro: cro::CroManager::default(),
             camera: None,
@@ -871,6 +878,7 @@ impl System {
         pacing.last = top;
         // the frame just drawn has its twins at the steps (and times) set when it began
         let steps = self.gpu.steps();
+        let extra = self.gpu.extra_twin();
         let times = self.gpu.twin_times();
         let matches = self.gpu.frame_done();
         let with = [self.screen_ref(zakuro_common::Screen::Top, false), self.screen_ref(zakuro_common::Screen::Bottom, false), self.screen_ref(zakuro_common::Screen::Top, true)];
@@ -885,7 +893,7 @@ impl System {
             self.cadence.held += self.cadence.on as u64;
         }
         let smooth = matched && !cut;
-        pacing.between = smooth.then_some(Motion { picture: pacing.refreshes, gap, steps, times });
+        pacing.between = smooth.then_some(Motion { picture: pacing.refreshes, gap, steps, times, ahead: extra.filter(|_| matches.is_some_and(|matches| matches.ahead > 0)) });
         pacing.with = with;
         pacing.shown += smooth as u64;
         // the next frame gets pictures in between too while the title sticks to every other or third refresh, at the
@@ -896,6 +904,8 @@ impl System {
             None if paced => steps_for(pacing.hz, gap) - 1,
             None => 0,
         };
+        // (Responsive movement's extra twin, the own picture drawn ahead, stays as its reader last decided it for a
+        // picture: see Gpu::set_extra_twin)
         self.gpu.set_twins(twins);
         // fewer for the GPU's memory: evenly
         let vblank = vblank.filter(|_| self.gpu.twins() == twins);
@@ -1485,7 +1495,7 @@ mod tests {
         assert_eq!(vblank_times(59.83 / 200.0, 3, 0.0), None, "20 fps at 200 Hz: ten");
         assert_eq!(vblank_times(2.0, 2, 0.0), None);
         assert_eq!(vblank_times(0.0, 2, 0.0), None);
-        let even = Motion { picture: 0, gap: 2, steps: 4, times: None };
+        let even = Motion { picture: 0, gap: 2, steps: 4, times: None, ahead: None };
         assert_eq!((even.t(0), even.t(2)), (0.25, 0.75));
         let at = Motion { times: Some((0.1, 0.15)), ..even };
         assert!((at.t(2) - 0.4).abs() < 1e-6);

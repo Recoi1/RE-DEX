@@ -50,7 +50,7 @@ const UPRIGHT_SPIRV: &[u8] = include_bytes!("../../shaders/upright.comp.spv");
 /// upright.comp built w/ TO_IMAGE, for a presenter sharing the device
 const UPRIGHT_IMAGE_SPIRV: &[u8] = include_bytes!("../../shaders/upright_image.comp.spv");
 
-pub(crate) use crate::MAX_TWINS;
+pub(crate) use crate::TWIN_SLOTS as MAX_TWINS;
 
 const COLOR_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
 const DEPTH_FORMAT: vk::Format = vk::Format::D24_UNORM_S8_UINT;
@@ -2916,6 +2916,12 @@ impl Hardware {
         self.frames += 1;
         self.free_twins();
         self.raise_twins();
+        self.apply_twins(count);
+    }
+
+    /// another count for the frame about to be drawn, w/o set_twins' once-a-frame VRAM guard work (Responsive
+    /// movement's extra twin, decided at the refresh that draws)
+    pub(crate) fn set_count(&mut self, count: usize) {
         self.apply_twins(count);
     }
 

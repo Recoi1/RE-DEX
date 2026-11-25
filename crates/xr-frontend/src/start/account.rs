@@ -371,8 +371,8 @@ impl Session {
         }
     }
 
-    /// Sets what a sign-in would, without a server (the start screen's tests).
-    #[cfg(test)]
+    /// Sets what a sign-in would, without a server (the start screen's tests and screenshots).
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(super) fn assume(&mut self, me: Option<Me>, unreachable: Option<String>) {
         (self.kept, self.me, self.unreachable) = (me.is_some(), me, unreachable);
     }

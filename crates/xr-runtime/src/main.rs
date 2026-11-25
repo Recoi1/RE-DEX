@@ -25,6 +25,7 @@
 // no console window of its own (a terminal it was run from still gets its output, see main)
 #![windows_subsystem = "windows"]
 mod abi;
+mod ahead;
 mod bridge;
 mod character;
 mod clock;

@@ -72,6 +72,8 @@ impl Inbetweens {
             crate::log::log("XR_INBETWEENS: frame interpolation is off (no GPU showing the screens?)");
         }
         s.set_motion_rate(self.hz);
+        // XR_RESPONSIVE=1: Responsive movement too (ahead.rs), as the window's setting turns it on
+        s.responsive = std::env::var_os("XR_RESPONSIVE").is_some_and(|v| v == "1");
         crate::log::log(&format!("XR_INBETWEENS: pictures in between for {} Hz into {}", self.hz, self.dir.display()));
     }
 
@@ -104,8 +106,9 @@ impl Inbetweens {
             crate::log::log(&format!("XR_INBETWEENS: frame {n}'s picture"));
         }
         // a picture shown w/o pictures in between: its own alone (K = 1)
-        let motion = s.motion().unwrap_or(xr_hle::Motion { picture: 0, gap: 0, steps: 1, times: None });
-        let pictures: Vec<Option<xr_hle::Screen>> = (0..motion.steps - 1).map(Some).chain([None]).map(|k| s.upright_screen(Screen::Top, k)).collect();
+        let motion = s.motion().unwrap_or(xr_hle::Motion { picture: 0, gap: 0, steps: 1, times: None, ahead: None });
+        // drawn ahead (Responsive movement), the window shows the own picture drawn ahead in the own's place: so do these
+        let pictures: Vec<Option<xr_hle::Screen>> = (0..motion.steps - 1).map(Some).chain([motion.ahead]).map(|k| s.upright_screen(Screen::Top, k)).collect();
         // the bottom screen as the window shows it w/ each: its own picture in between where it has one, else its own
         let own: Vec<Option<usize>> = (0..motion.steps - 1).map(|k| s.gpu_between(Screen::Bottom, false, k).map(|_| k)).collect();
         let bottoms: Vec<Option<xr_hle::Screen>> = own.into_iter().chain([None]).map(|k| s.upright_screen(Screen::Bottom, k)).collect();

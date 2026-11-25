@@ -622,6 +622,9 @@ pub struct Settings {
     /// the file's Smooth motion choice, only while reading or writing it (see from_text)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub smooth_motion: Option<SmoothMotion>,
+    /// Responsive movement, w/ Smooth motion on: the trainer and the field camera drawn ahead from the input in the
+    /// pictures in between (render side only); off they're Smooth motion's, bit for bit. Experimental: off by default
+    pub responsive_movement: bool,
     /// window size, times the console's
     pub scale: u32,
     /// where the window was and its size, the frame's top left and the inside's width and height in pixels, for next time
@@ -697,6 +700,8 @@ pub struct Settings {
     pub discord_status: bool,
     /// the area (the region, later the place) in that status
     pub discord_location: bool,
+    /// the interface's own sounds (clicks, panels opening and closing, toasts)
+    pub ui_sounds: bool,
 }
 
 impl Default for Settings {
@@ -710,6 +715,7 @@ impl Default for Settings {
             texture_packs: true,
             frame_interpolation: SmoothMotion::Off,
             smooth_motion: None,
+            responsive_movement: false,
             scale: 2,
             window: None,
             layout: Screens::Stacked,
@@ -749,6 +755,7 @@ impl Default for Settings {
             account_world: String::new(),
             discord_status: true,
             discord_location: true,
+            ui_sounds: true,
         }
     }
 }

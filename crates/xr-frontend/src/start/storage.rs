@@ -466,7 +466,7 @@ impl Start {
             self.focus_ring(ui, rect, item);
             return;
         }
-        let hit = self.flat_pill(ui, glass, rect, 103, label);
+        let hit = self.icon_pill(ui, glass, rect, 103, label, Some((crate::icons::Icon::Storage, crate::theme::AMBER)));
         if hit | self.focus_ring(ui, rect, item) {
             if exe(&self.data).is_file() {
                 self.get_storage();
@@ -485,8 +485,8 @@ impl Start {
                 0 => (format!("Checking PKVault {VERSION}"), None),
                 n => (format!("Downloading PKVault {VERSION} from GitHub: {} of {} MB", n / 1_000_000, SIZE / 1_000_000), Some(n as f32 / SIZE as f32)),
             };
-            glass.title(ui.painter(), pos2(32.0, low), "Opening Pokémon Storage", 14.0);
-            at(ui, Rect::from_min_size(pos2(32.0, low + 32.0), vec2(560.0, 120.0)), Layout::top_down(Align::Min), |ui| {
+            super::panel_head(ui, glass, low, crate::icons::Icon::Storage, crate::theme::AMBER, "Opening Pokémon Storage");
+            at(ui, Rect::from_min_size(pos2(52.0, low + 30.0), vec2(560.0, 120.0)), Layout::top_down(Align::Min), |ui| {
                 ui.label(egui::RichText::new(line).size(16.0).color(TITLE));
                 ui.add_space(8.0);
                 glass.progress(ui, fraction, true);
@@ -495,9 +495,9 @@ impl Start {
             });
             return;
         }
-        glass.title(ui.painter(), pos2(32.0, low), "Pokémon Storage", 14.0);
+        super::panel_head(ui, glass, low, crate::icons::Icon::Storage, crate::theme::AMBER, "Pokémon Storage");
         let (mut go, mut later, mut repo) = (false, false, false);
-        at(ui, Rect::from_min_size(pos2(32.0, low + 32.0), vec2(720.0, 140.0)), Layout::top_down(Align::Min), |ui| {
+        at(ui, Rect::from_min_size(pos2(52.0, low + 30.0), vec2(760.0, 140.0)), Layout::top_down(Align::Min), |ui| {
             let body = format!(
                 "Pokémon Storage is PKVault, a separate GPLv3 program by its authors, downloaded from its official releases \
                  ({}\u{a0}MB, once). It shows every character's boxes and a Pokédex of them all. Your saves are backed up \
@@ -508,11 +508,12 @@ impl Start {
             ui.add_space(16.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 16.0;
-                let r = glass.pill(ui, "Download and open", Some(184.0), true);
+                use crate::icons::Icon as I;
+                let r = glass.button(ui, "Download and open", Some((I::Import, crate::theme::TEAL)), super::glass::Kind::Primary, None, true);
                 go = self.item(ui, &r, base, 20.0);
-                let r = glass.pill(ui, "Not now", Some(120.0), true);
+                let r = glass.button(ui, "Not now", Some((I::Close, crate::theme::SLATE)), super::glass::Kind::Secondary, None, true);
                 later = self.item(ui, &r, base + 1, 20.0);
-                let r = glass.pill(ui, "PKVault on GitHub", Some(184.0), true);
+                let r = glass.button(ui, "PKVault on GitHub", Some((I::Globe, crate::theme::AZURE)), super::glass::Kind::Secondary, None, true);
                 repo = self.item(ui, &r, base + 2, 20.0);
             });
         });

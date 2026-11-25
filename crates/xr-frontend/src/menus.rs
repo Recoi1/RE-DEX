@@ -144,13 +144,13 @@ pub(crate) fn palette(dark: bool) -> Palette {
     if dark {
         // the icon's near-black, lifted a little
         Palette {
-            window: Color32::from_rgb(0x17, 0x1A, 0x1E),
-            group: Color32::from_rgb(0x1F, 0x23, 0x28),
-            line: Color32::from_rgb(0x34, 0x39, 0x41),
-            text: Color32::from_rgb(0xE8, 0xEA, 0xEC),
-            weak: Color32::from_rgb(0x9A, 0xA1, 0xA9),
-            control: Color32::from_rgb(0x2B, 0x30, 0x37),
-            control_hover: Color32::from_rgb(0x36, 0x3C, 0x45),
+            window: Color32::from_rgb(0x12, 0x16, 0x26),
+            group: Color32::from_rgb(0x1A, 0x1F, 0x32),
+            line: Color32::from_rgb(0x34, 0x3B, 0x54),
+            text: Color32::from_rgb(0xF0, 0xF2, 0xF8),
+            weak: Color32::from_rgb(0xA3, 0xAC, 0xC2),
+            control: Color32::from_rgb(0x24, 0x2A, 0x40),
+            control_hover: Color32::from_rgb(0x30, 0x37, 0x52),
         }
     } else {
         // the icon's light greys
@@ -172,11 +172,13 @@ fn is_dark(ui: &egui::Ui) -> bool {
 
 /// the look: dark or light like Windows (or as chosen), RE:DEX's red on what's selected, roomy, rounded
 pub fn style(ctx: &egui::Context, dark: bool, motion: bool) {
+    crate::theme::install_fonts(ctx);
     let colors = palette(dark);
     let mut visuals = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
     visuals.window_fill = colors.window;
     visuals.panel_fill = colors.window;
-    visuals.extreme_bg_color = if dark { Color32::from_rgb(0x12, 0x14, 0x17) } else { Color32::WHITE };
+    visuals.extreme_bg_color = if dark { Color32::from_rgb(0x0A, 0x0D, 0x1A) } else { Color32::WHITE };
+    visuals.text_edit_bg_color = dark.then_some(Color32::from_rgb(0x0A, 0x0D, 0x1A));
     visuals.faint_bg_color = colors.group;
     visuals.window_stroke = Stroke::new(1.0, colors.line);
     visuals.window_corner_radius = CornerRadius::same(12);
@@ -207,9 +209,10 @@ pub fn style(ctx: &egui::Context, dark: bool, motion: bool) {
     ctx.set_theme(theme);
     ctx.all_styles_mut(|style| {
         use egui::{FontId, TextStyle};
-        style.text_styles.insert(TextStyle::Body, FontId::proportional(14.0));
-        style.text_styles.insert(TextStyle::Button, FontId::proportional(14.0));
-        style.text_styles.insert(TextStyle::Small, FontId::proportional(12.0));
+        // Montserrat runs wider than egui's own face: a point smaller keeps the same measure
+        style.text_styles.insert(TextStyle::Body, FontId::proportional(13.0));
+        style.text_styles.insert(TextStyle::Button, FontId::proportional(13.0));
+        style.text_styles.insert(TextStyle::Small, FontId::proportional(11.5));
         style.text_styles.insert(TextStyle::Heading, FontId::proportional(19.0));
         style.spacing.item_spacing = Vec2::new(8.0, 7.0);
         style.spacing.button_padding = Vec2::new(12.0, 5.0);
@@ -261,6 +264,7 @@ impl Menus {
         let kind = |text: &str| text.split(':').next().unwrap_or_default().to_owned();
         self.toasts.retain(|toast| kind(&toast.text) != kind(&text));
         self.toasts.push(Toast { text, born: Instant::now(), id: self.next_toast, pulse });
+        crate::ui_sound::play(crate::ui_sound::Sound::Toast);
         self.next_toast += 1;
         if self.toasts.len() > 4 {
             self.toasts.remove(0);
@@ -303,15 +307,19 @@ impl Menus {
         let paused = ctx.animate_bool_with_time(Id::new("paused"), status.paused && !self.configure_open, self.time(QUICK));
         if paused > 0.0 {
             vignette(&painter, screen, paused);
-            let label = RichText::new("Paused").size(30.0).strong().color(Color32::WHITE.gamma_multiply(paused));
+            let label = RichText::new("Paused").font(crate::theme::heavy(ctx, 28.0)).color(Color32::WHITE.gamma_multiply(paused));
             let hint = RichText::new("Esc to resume").size(14.0).color(Color32::from_white_alpha((200.0 * paused) as u8));
             egui::Area::new(Id::new("paused label")).anchor(egui::Align2::CENTER_CENTER, Vec2::new(0.0, (1.0 - paused) * 8.0)).interactable(false).show(ctx, |ui| {
-                egui::Frame::new().fill(Color32::from_black_alpha((150.0 * paused) as u8)).corner_radius(16).inner_margin(egui::Margin::symmetric(28, 12)).show(ui, |ui| {
-                    ui.vertical_centered(|ui| {
+                let slot = ui.painter().add(egui::Shape::Noop);
+                let r = egui::Frame::new().corner_radius(16).inner_margin(egui::Margin { left: 64, right: 30, top: 14, bottom: 14 }).show(ui, |ui| {
+                    ui.vertical(|ui| {
                         ui.label(label);
                         ui.label(hint);
                     });
                 });
+                let rect = r.response.rect;
+                crate::start::glass::paint_behind(ui.painter(), slot, |p| crate::start::glass::smoke(p, rect, 22.0, 3));
+                crate::icons::draw_alpha(ui.painter(), crate::icons::Icon::Pause, rect.left_center() + Vec2::new(32.0, 0.0), 34.0, crate::theme::TITLE, -8.0, paused);
             });
         }
 
@@ -347,8 +355,9 @@ impl Menus {
             let text = format!("{:.0} FPS  \u{b7}  {speed}", self.rates.0);
             let galley = painter.layout_no_wrap(text, egui::FontId::monospace(13.0), Color32::WHITE.gamma_multiply(shown));
             let rect = Rect::from_min_size(Pos2::new(screen.left() + 10.0, screen.top() + 10.0), galley.size() + Vec2::new(34.0, 12.0));
-            painter.rect_filled(rect, rect.height() / 2.0, Color32::from_black_alpha((175.0 * shown) as u8));
-            painter.circle_filled(Pos2::new(rect.left() + 13.0, rect.center().y), 3.5, ACCENT.gamma_multiply(shown));
+            painter.rect_filled(rect, rect.height() / 2.0, crate::theme::SMOKE.gamma_multiply(shown));
+            painter.rect_stroke(rect, rect.height() / 2.0, Stroke::new(1.0, Color32::from_white_alpha((60.0 * shown) as u8)), egui::StrokeKind::Inside);
+            painter.circle_filled(Pos2::new(rect.left() + 13.0, rect.center().y), 3.5, crate::theme::MINT.gamma_multiply(shown));
             painter.galley(Pos2::new(rect.left() + 24.0, rect.top() + 6.0), galley, Color32::WHITE);
         }
 
@@ -381,16 +390,22 @@ impl Menus {
             let (come, go) = if self.motion { (ease(age / QUICK), ease((age - (TOAST_LIFE - QUICK)) / QUICK)) } else { (1.0, 0.0) };
             let shown = come * (1.0 - go);
             let font = if toast.pulse && self.motion && age < 0.3 { 15.0 + 2.5 * (age / 0.3 * std::f32::consts::PI).sin() } else { 15.0 };
-            let galley = painter.layout_no_wrap(toast.text.clone(), egui::FontId::proportional(font), Color32::WHITE.gamma_multiply(shown));
+            let galley = painter.layout_no_wrap(toast.text.clone(), crate::theme::heavy(ctx, font - 1.0), Color32::WHITE.gamma_multiply(shown));
             let size = galley.size() + Vec2::new(36.0, 16.0);
             // the others make room smoothly as one comes or goes
             let top = ctx.animate_value_with_time(Id::new(("toast y", toast.id)), bottom - size.y, self.time(0.15));
             bottom -= size.y + 8.0;
             let slide = (1.0 - come + go) * 48.0;
+            let size = size + Vec2::new(26.0, 6.0);
             let rect = Rect::from_min_size(Pos2::new(screen.right() - 12.0 - size.x + slide, top), size);
-            painter.rect_filled(rect, 10.0, Color32::from_rgba_unmultiplied(0x17, 0x1A, 0x1E, (230.0 * shown) as u8));
-            painter.rect_filled(Rect::from_min_size(rect.min + Vec2::new(0.0, 8.0), Vec2::new(3.0, size.y - 16.0)), 2.0, ACCENT.gamma_multiply(shown));
-            painter.galley(rect.min + Vec2::new(18.0, 8.0), galley, Color32::WHITE);
+            if shown > 0.98 || !self.motion {
+                crate::start::glass::smoke(&painter, rect, size.y / 2.0, toast.id as u32);
+            } else {
+                painter.rect_filled(rect, size.y / 2.0, crate::theme::SMOKE.gamma_multiply(shown));
+            }
+            let (icon, hue) = toast_icon(&toast.text);
+            crate::icons::draw_alpha(&painter, icon, rect.left_center() + Vec2::new(22.0, 0.0), 22.0, hue, -8.0, shown);
+            painter.galley(rect.min + Vec2::new(42.0, 11.0), galley, Color32::WHITE);
         }
         !self.toasts.is_empty()
     }
@@ -422,10 +437,14 @@ impl Menus {
         let scale = 0.95 + 0.05 * t;
         ctx.set_transform_layer(layer, egui::emath::TSTransform::new(screen.center().to_vec2() * (1.0 - scale), scale));
         let mut keep = true;
-        let frame = egui::Frame::window(&ctx.global_style()).multiply_with_opacity(t);
+        let dark = ctx.global_style().visuals.dark_mode;
+        // dark: smoked glass with its own header (the gear on its corner, Close as a round glass button)
+        let frame = if dark { egui::Frame::NONE.inner_margin(egui::Margin::same(20)) } else { egui::Frame::window(&ctx.global_style()).multiply_with_opacity(t) };
+        let mut close_hit = false;
         egui::Window::new("Configure")
             .id(Id::new("configure"))
             .open(&mut keep)
+            .title_bar(!dark)
             .frame(frame)
             .collapsible(false)
             .resizable(false)
@@ -434,7 +453,16 @@ impl Menus {
             .fixed_size([width, 0.0])
             .max_height(room)
             .show(ctx, |ui| {
+                if dark {
+                    // what is behind dims while Configure is up
+                    let screen = ui.ctx().content_rect();
+                    ui.painter().with_clip_rect(screen).rect_filled(screen, 0.0, Color32::from_black_alpha((120.0 * t) as u8));
+                }
+                let slot = dark.then(|| ui.painter().add(egui::Shape::Noop));
                 ui.multiply_opacity(t);
+                if dark {
+                    close_hit = header(ui, "Configure");
+                }
                 if self.tabs(ui) {
                     self.rebinding = None;
                     self.rebinding_pad = None;
@@ -467,22 +495,36 @@ impl Menus {
                 ui.separator();
                 if restart {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("\u{25cf} Some changes apply after a restart.").color(NOTE));
-                        if button(ui, "Restart now", true).on_hover_text("Starts the game again. Unsaved progress is lost.").clicked() {
-                            actions.push(Action::Restart);
-                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if button(ui, "Restart now", true).on_hover_text("Starts the game again. Unsaved progress is lost.").clicked() {
+                                actions.push(Action::Restart);
+                            }
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.add(egui::Label::new(RichText::new("\u{25cf} Some changes apply after a restart.").color(NOTE)).wrap());
+                            });
+                        });
                     });
                 }
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Changes apply and are saved as you make them.").weak().small());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if button(ui, "Close", false).clicked() {
                             self.configure_open = false;
                         }
+                        // the note takes what Close leaves, wrapping on a narrow window
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(egui::Label::new(RichText::new("Changes apply and are saved as you make them.").weak().small()).wrap());
+                        });
                     });
                 });
+                if let Some(slot) = slot {
+                    // the glass under all of it, the gear inside its corner like the other panels' icons
+                    let rect = ui.min_rect().expand(20.0);
+                    crate::start::glass::paint_behind(ui.painter(), slot, |p| crate::start::glass::smoke(p, rect, crate::theme::R_PANEL, 11));
+                    crate::icons::draw(ui.painter(), crate::icons::Icon::Gear, rect.min + Vec2::new(36.0, 37.0), 32.0, crate::theme::BRAND, -10.0);
+                }
             });
-        self.configure_open &= keep;
+        self.configure_open &= keep && !close_hit;
+        crate::ui_sound::edge(ctx, Id::new("configure sound"), self.configure_open);
         if !self.configure_open {
             self.rebinding = None;
             self.rebinding_pad = None;
@@ -528,6 +570,7 @@ impl Menus {
         let colors = palette(is_dark(ui));
         let height = 34.0;
         let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height + 6.0), Sense::hover());
+        let lit_slot = ui.painter().add(egui::Shape::Noop);
         let width = (bar.width() / TABS.len() as f32).min(130.0);
         let mut chosen = Rect::NOTHING;
         for (i, (tab, name)) in TABS.iter().enumerate() {
@@ -539,13 +582,23 @@ impl Menus {
                 self.focused = true;
             }
             let hover = ui.ctx().animate_bool_with_time(response.id, response.hovered(), self.time(0.12));
-            if hover > 0.0 {
+            if hover > 0.0 && !is_dark(ui) {
                 ui.painter().rect_filled(rect.shrink2(Vec2::new(3.0, 2.0)), 7.0, colors.control.gamma_multiply(hover));
             }
             let selected = self.tab == *tab;
             let color = if selected { colors.text } else { colors.weak.lerp_to_gamma(colors.text, hover) };
-            let font = egui::FontId::proportional(15.0);
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, *name, font, color);
+            if is_dark(ui) {
+                let font = crate::theme::heavy(ui.ctx(), 14.0);
+                let w = ui.painter().layout_no_wrap(name.to_string(), font.clone(), color).size().x + 26.0;
+                let x = rect.center().x - w / 2.0;
+                let icon = [crate::icons::Icon::Sliders, crate::icons::Icon::Monitor, crate::icons::Icon::Volume, crate::icons::Icon::Gamepad][i];
+                let hue = [crate::theme::SLATE, crate::theme::AZURE, crate::theme::MINT, crate::theme::VIOLET][i];
+                crate::icons::draw(ui.painter(), icon, Pos2::new(x + 9.0, rect.center().y), 19.0 + hover, hue, -8.0);
+                crate::start::glass::shadowed(ui.painter(), Pos2::new(x + 26.0, rect.center().y), egui::Align2::LEFT_CENTER, name, font, color);
+            } else {
+                let font = egui::FontId::proportional(15.0);
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, *name, font, color);
+            }
             if response.clicked() && !selected {
                 self.tab = *tab;
                 self.tab_since = Instant::now();
@@ -557,6 +610,17 @@ impl Menus {
             if response.has_focus() {
                 ui.painter().rect_stroke(rect.shrink(2.0), 7.0, Stroke::new(1.5, ACCENT), egui::StrokeKind::Inside);
             }
+        }
+        if is_dark(ui) {
+            // a lit glass segment glides under the chosen tab (painted under the labels)
+            let x = ui.ctx().animate_value_with_time(Id::new("tab lit"), chosen.left(), self.time(0.15));
+            let lit = Rect::from_min_size(Pos2::new(x + 3.0, bar.top() + 2.0), Vec2::new(chosen.width() - 6.0, height - 4.0));
+            let painter = ui.painter().clone();
+            crate::start::glass::paint_behind(&painter, lit_slot, |p| {
+                p.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width(), height)), height / 2.0, Color32::from_rgba_premultiplied(4, 6, 14, 90));
+                crate::start::glass::face(p, lit, 1.0, 0.0, crate::start::glass::Kind::Tint(ACCENT), true);
+            });
+            return changed;
         }
         // the underline glides over
         let left = ui.ctx().animate_value_with_time(Id::new("tab line left"), chosen.left() + 18.0, self.time(QUICK));
@@ -760,6 +824,22 @@ fn vignette(painter: &egui::Painter, screen: Rect, t: f32) {
 
 /// a button w/ hover and press easing in, the accent filled when primary, a focus ring w/ the keyboard on it
 pub(crate) fn button(ui: &mut egui::Ui, text: &str, primary: bool) -> egui::Response {
+    if is_dark(ui) {
+        // glass: a lip, the face (red for the one main action), the label on its shadow
+        use crate::start::glass;
+        let font = crate::theme::heavy(ui.ctx(), 13.5);
+        let w = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE).size().x;
+        let (rect, response) = ui.allocate_exact_size(Vec2::new((w + 30.0).max(84.0), 32.0), Sense::click());
+        let enabled = ui.is_enabled();
+        let (hover, scale) = if enabled { glass::press_scale(ui, &response, 1.04) } else { (0.0, 1.0) };
+        glass::face(ui.painter(), rect, scale, hover, if primary { glass::Kind::Primary } else { glass::Kind::Secondary }, enabled);
+        let color = if enabled { crate::theme::TITLE } else { crate::theme::MUTED };
+        glass::shadowed(ui.painter(), rect.center(), egui::Align2::CENTER_CENTER, text, font, color);
+        if response.has_focus() {
+            glass::focus_ring(ui.painter(), rect, 12.0, ui.input(|i| i.time));
+        }
+        return response;
+    }
     let colors = palette(is_dark(ui));
     let galley = ui.painter().layout_no_wrap(text.to_owned(), egui::FontId::proportional(14.0), colors.text);
     let size = Vec2::new((galley.size().x + 28.0).max(84.0), 30.0);
@@ -849,6 +929,49 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     response
 }
 
+/// a glass window's header: its title in heavy type clear of the icon on the corner, Close as a round glass button on
+/// the right; true when Close was pressed
+fn header(ui: &mut egui::Ui, title: &str) -> bool {
+    use crate::start::glass;
+    let mut hit = false;
+    ui.horizontal(|ui| {
+        ui.add_space(40.0);
+        ui.label(RichText::new(title).font(crate::theme::heavy(ui.ctx(), crate::theme::H1 + 2.0)).color(crate::theme::TITLE));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(34.0, 34.0), Sense::click());
+            let (hover, scale) = glass::press_scale(ui, &response, 1.06);
+            glass::face(ui.painter(), rect, scale, hover, glass::Kind::Secondary, true);
+            crate::icons::draw(ui.painter(), crate::icons::Icon::Close, rect.center(), 16.0 * scale, crate::theme::SLATE, 0.0);
+            hit = response.clicked();
+        });
+    });
+    ui.add_space(6.0);
+    hit
+}
+
+/// a toast's icon, by what it says
+fn toast_icon(text: &str) -> (crate::icons::Icon, Color32) {
+    use crate::icons::Icon as I;
+    use crate::theme as th;
+    let t = text.to_lowercase();
+    let has = |w: &[&str]| w.iter().any(|w| t.contains(w));
+    if has(&["copied"]) {
+        (I::Copy, th::SLATE)
+    } else if has(&["whisper", "chat", "says"]) {
+        (I::Chat, th::VIOLET)
+    } else if has(&["lobby", "joined", "invite"]) {
+        (I::Flag, th::GOLD)
+    } else if has(&["couldn't", "can't", "failed", "lost", "offline", "?", "ignoring", "blocked", "no "]) {
+        (I::Warning, th::AMBER)
+    } else if has(&["saved", "online", "connected", "done", "installed"]) {
+        (I::Check, th::MINT)
+    } else if has(&["speed", "fast"]) {
+        (I::Bolt, th::AMBER)
+    } else {
+        (I::Info, th::AZURE)
+    }
+}
+
 /// do settings differ from booted in what only takes effect when the game starts
 pub fn waits_for_restart(settings: &Settings, booted: &Settings) -> bool {
     settings.renderer != booted.renderer
@@ -862,9 +985,35 @@ pub fn waits_for_restart(settings: &Settings, booted: &Settings) -> bool {
 fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     let colors = palette(is_dark(ui));
     ui.add_space(4.0);
-    egui::Frame::new().fill(colors.group).stroke(Stroke::new(1.0, colors.line)).corner_radius(10).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+    let dark = is_dark(ui);
+    let (fill, line) = if dark { (Color32::from_white_alpha(9), Color32::from_white_alpha(26)) } else { (colors.group, colors.line) };
+    egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, line)).corner_radius(14).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new(title).strong().size(15.0).color(colors.text));
+        if dark {
+            use crate::icons::Icon as I;
+            use crate::theme as th;
+            let (icon, hue) = match title {
+                "Keyboard" => (I::Keyboard, th::SLATE),
+                "Controller" => (I::Gamepad, th::VIOLET),
+                "Emulation" => (I::Play, th::BRAND_HI),
+                "Interface" => (I::Info, th::AZURE),
+                "Hotkeys" => (I::Key, th::GOLD),
+                "Renderer" => (I::Bolt, th::AMBER),
+                "Enhancements" => (I::Sparkle, th::GOLD),
+                "Layout" => (I::Copy, th::AZURE),
+                "Stereoscopy" => (I::Eye, th::TEAL),
+                "Output" => (I::Volume, th::MINT),
+                "Microphone" => (I::Mic, th::PINK),
+                _ => (I::Info, th::SLATE),
+            };
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::new(20.0, 20.0), Sense::hover());
+                crate::icons::draw(ui.painter(), icon, r.center(), 20.0, hue, -8.0);
+                ui.label(RichText::new(title).font(crate::theme::heavy(ui.ctx(), 14.5)).color(colors.text));
+            });
+        } else {
+            ui.label(RichText::new(title).strong().size(15.0).color(colors.text));
+        }
         ui.add_space(2.0);
         add(ui);
     });
@@ -908,7 +1057,7 @@ fn general(ui: &mut egui::Ui, settings: &mut Settings) {
                 toggle(ui, &mut settings.limit_speed).on_hover_text("Off runs the game as fast as the computer can (Unlocked), with no sound, like holding Tab.");
                 if settings.limit_speed {
                     // the switch before it takes room from the slider, so the value box stays whole
-                    ui.spacing_mut().slider_width = (ui.spacing().slider_width - 50.0).max(50.0);
+                    ui.spacing_mut().slider_width = (ui.spacing().slider_width - 62.0).max(40.0);
                     ui.add(egui::Slider::new(&mut settings.speed_limit, SPEED_MIN..=SPEED_MAX).step_by(10.0).suffix("%"))
                         .on_hover_text("The game's speed against the console's. Below 100% the sound is stretched to match; above it the sound is off, as with fast forward.");
                 } else {
@@ -945,7 +1094,9 @@ fn general(ui: &mut egui::Ui, settings: &mut Settings) {
         });
     });
     group(ui, "Hotkeys", |ui| {
-        egui::Grid::new("hotkeys").num_columns(2).spacing([16.0, 5.0]).min_col_width(label_width(ui.available_width())).show(ui, |ui| {
+        // both columns wrap on a narrow window (Montserrat runs wide), so the grid never runs past the group
+        let half = ((ui.available_width() - 16.0) / 2.0).max(80.0);
+        egui::Grid::new("hotkeys").num_columns(2).spacing([16.0, 5.0]).min_col_width(label_width(ui.available_width()).min(half)).max_col_width(half.max(label_width(ui.available_width()))).show(ui, |ui| {
             for (key, what) in [
                 ("Esc / F1", "Pause and resume"),
                 ("Tab (hold)", "Fast forward"),
@@ -958,8 +1109,8 @@ fn general(ui: &mut egui::Ui, settings: &mut Settings) {
                 ("M (hold)", "Blow into the microphone"),
                 ("Home (controller)", "Configure"),
             ] {
-                ui.label(RichText::new(key).monospace());
-                ui.label(RichText::new(what).weak());
+                ui.add(egui::Label::new(RichText::new(key).monospace()).wrap());
+                ui.add(egui::Label::new(RichText::new(what).weak()).wrap());
                 ui.end_row();
             }
         });
@@ -1034,6 +1185,17 @@ fn graphics(ui: &mut egui::Ui, settings: &mut Settings, booted: &Settings) {
             .response
             .on_disabled_hover_text("Needs the GPU 3D and Vulkan, restart after choosing them.");
             ui.end_row();
+            ui.label("Responsive movement (experimental)");
+            ui.add_enabled_ui(can && settings.frame_interpolation != SmoothMotion::Off, |ui| {
+                toggle(ui, &mut settings.responsive_movement).on_hover_text(
+                    "With Smooth motion: your trainer and the camera are drawn a little ahead from your d-pad, so walking, running and the bike start, turn and stop without Smooth motion's delay. \
+                     Only the pictures in between change; the game itself is the same either way. \
+                     Experimental: it works on the d-pad with nobody right next to you, and costs the GPU a picture more while it does.",
+                )
+            })
+            .response
+            .on_disabled_hover_text("Needs Smooth motion on.");
+            ui.end_row();
         });
     });
 
@@ -1092,6 +1254,9 @@ fn audio(ui: &mut egui::Ui, settings: &mut Settings) {
             ui.end_row();
             ui.label("Mute");
             toggle(ui, &mut settings.mute);
+            ui.end_row();
+            ui.label("Interface sounds");
+            toggle(ui, &mut settings.ui_sounds).on_hover_text("Clicks, and chimes as panels open and close. Off keeps the menus silent.");
             ui.end_row();
         });
     });

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use egui::{Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sense, Vec2};
 use xr_net::friends::{Friend, FriendMsg, Limiter};
 
-use super::{card, focus_ring, hint, menus, row, short, whisper_text, Menus, Nav, Online, Request, View, ACCENT, QUICK, WHISPER_CHARS, WHISPER_MAX, WHISPER_WINDOW};
+use super::{card_with, focus_ring, hint, menus, row, short, whisper_text, Menus, Nav, Online, Request, View, ACCENT, QUICK, WHISPER_CHARS, WHISPER_MAX, WHISPER_WINDOW};
 
 /// Friends' presence is asked again this often while the Friends tab is open.
 pub const FRIENDS_AGAIN: Duration = Duration::from_secs(10);
@@ -444,10 +444,12 @@ impl Online {
         let colors = menus::palette(ui.visuals().dark_mode);
         let mut clicked = None;
         ui.horizontal(|ui| {
+            // clear of the panel's icon on the corner
+            ui.add_space(30.0);
             let unread = self.friends_unread();
             for (friends, text, count) in [(false, "Players nearby", nearby), (true, "Friends", unread)] {
                 let on = self.fr.tab_friends == friends;
-                let r = ui.add(egui::Label::new(RichText::new(text).strong().size(if on { 17.0 } else { 15.0 }).color(if on { colors.text } else { colors.weak })).sense(Sense::click()));
+                let r = ui.add(egui::Label::new(RichText::new(text).font(crate::theme::heavy(ui.ctx(), if on { 16.0 } else { 14.5 })).color(if on { colors.text } else { colors.weak })).sense(Sense::click()));
                 if on {
                     let line = Rect::from_min_size(Pos2::new(r.rect.left(), r.rect.bottom() + 1.0), Vec2::new(r.rect.width(), 2.0));
                     ui.painter().rect_filled(line, 1.0, ACCENT);
@@ -510,7 +512,7 @@ impl Online {
             .interactable(self.fr.menu_open)
             .show(ctx, |ui| {
                 ui.multiply_opacity(t);
-                card(ui, 230.0, |ui| {
+                card_with(ui, 230.0, Some((crate::icons::Icon::Friends, crate::theme::VIOLET)), |ui| {
                     ui.add(egui::Label::new(RichText::new(&f.name).strong().size(16.0)).truncate());
                     let status = if f.in_redex { f.status.clone().unwrap_or_else(|| "In RE:DEX".into()) } else { "Not running RE:DEX".into() };
                     ui.label(RichText::new(short(&status, 36)).small().weak());
@@ -556,8 +558,9 @@ impl Online {
             .show(ctx, |ui| {
                 let colors = menus::palette(ui.visuals().dark_mode);
                 ui.multiply_opacity(t);
-                card(ui, 340.0, |ui| {
+                card_with(ui, 340.0, Some((crate::icons::Icon::Chat, crate::theme::VIOLET)), |ui| {
                     ui.horizontal(|ui| {
+                        ui.add_space(30.0);
                         ui.label(RichText::new("Chat").strong().size(17.0));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if menus::button(ui, "Close", false).clicked() {
@@ -638,8 +641,11 @@ impl Online {
             .interactable(up)
             .show(ctx, |ui| {
                 ui.multiply_opacity(t);
-                card(ui, 330.0, |ui| {
-                    ui.label(RichText::new("Invite").small().weak());
+                card_with(ui, 330.0, Some((crate::icons::Icon::Flag, crate::theme::GOLD)), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_space(30.0);
+                        ui.label(RichText::new("Invite").small().weak());
+                    });
                     ui.add(egui::Label::new(RichText::new(format!("{name} invites you to {world}")).strong().size(16.0)).wrap());
                     ui.label(RichText::new("You keep your game where it is; joining brings you into their world.").small().weak());
                     ui.add_space(6.0);

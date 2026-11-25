@@ -28,9 +28,12 @@ const JUMP_PART: f32 = 0.25;
 
 /// does a component a texture's coords may read step from one round value to another (64ths),
 /// like a sprite's offset into its sheet does, instead of moving like a matrix does
+/// or from one texel's edge to another's inside a sheet up to 1024 wide (X's message box: a run of letters gets other
+/// letters, their places in the font's sheet in 256ths, and moving them in between drew halves of other letters)
 fn steps(before: f32, now: f32) -> bool {
     let round = |value: f32| (value * 64.0).fract() == 0.0;
-    round(before) && round(now)
+    let texel = |value: f32| value.abs() <= 1.0 && (value * 1024.0).fract() == 0.0;
+    (round(before) && round(now)) || (texel(before) && texel(now))
 }
 
 /// how many draws of the frame b4 drawn the same way a draw's match gets looked for among, around its own place among them
@@ -43,12 +46,14 @@ const RESTLESS: u8 = 4;
 /// the draws of a frame drawn the same way (see key) in the order they came,
 /// how far each one's uniforms moved since the frame b4 (zero for one it didn't have),
 /// how many frames on a jump still counts as one more of its jumps (see RESTLESS),
+/// for how many frames running it stood still (what places it didn't change, saturating),
 /// and which of them a draw of the next frame took for its own
 #[derive(Default)]
 struct Drawn {
     uniforms: Vec<Uniforms>,
     moves: Vec<Uniforms>,
     restless: Vec<u8>,
+    still: Vec<u8>,
     taken: Vec<bool>,
 }
 
@@ -124,6 +129,8 @@ pub struct Matches {
     pub jumped: u32,
     pub jumping: u32,
     pub split: u32,
+    /// draws Responsive movement moved in the pictures in between (see predict; the GPU fills it in)
+    pub ahead: u32,
 }
 
 impl Matches {
@@ -150,6 +157,7 @@ impl Interpolation {
         drawn.uniforms.push(*vertex.float_uniforms);
         drawn.moves.push([[0.0; 4]; FLOAT_UNIFORMS]);
         drawn.restless.push(0);
+        drawn.still.push(0);
         let place = drawn.uniforms.len() - 1;
         if !between {
             return None;
@@ -169,8 +177,8 @@ impl Interpolation {
         // (one more instance of a kind the frame b4 drew, grass coming into view, is no pass astray)
         let found = nearest(drawn, place, &now.uniforms[place], placing | shared)?;
         drawn.taken[found] = true;
-        let (before, moved_before, restless) = (&drawn.uniforms[found], &drawn.moves[found], drawn.restless[found]);
-        let (now, moved_now, still_restless) = (&now.uniforms[place], &mut now.moves[place], &mut now.restless[place]);
+        let (before, moved_before, restless, stood) = (&drawn.uniforms[found], &drawn.moves[found], drawn.restless[found], drawn.still[found]);
+        let (now, moved_now, still_restless, still) = (&now.uniforms[place], &mut now.moves[place], &mut now.restless[place], &mut now.still[place]);
         *still_restless = restless.saturating_sub(1);
         for ((moved, now), before) in moved_now.iter_mut().zip(now).zip(before) {
             *moved = std::array::from_fn(|i| now[i] - before[i]);
@@ -182,6 +190,7 @@ impl Interpolation {
         let moves = |uniform: usize, before: f32, now: f32| placed(uniform) && before != now && !(shared(uniform) && steps(before, now));
         let changes = |uniform: usize, before: &Vec4, now: &Vec4| (0..4).any(|i| moves(uniform, before[i], now[i]));
         if !before.iter().zip(now.iter()).enumerate().any(|(uniform, (before, now))| changes(uniform, before, now)) {
+            *still = stood.saturating_add(1);
             return None;
         }
         let mut between = self.spare.take().unwrap_or_else(|| Box::new([[0.0; 4]; FLOAT_UNIFORMS]));
@@ -193,10 +202,14 @@ impl Interpolation {
             !(change <= JUMP || change <= JUMP_PART * before.abs().max(now.abs()))
         };
         let mut lerped = false;
+        // does it show another picture of its sheet (what the coords read stepped or jumped), and does a component
+        // only placing it move further than a jump's leeway
+        let (mut pictured, mut far) = (false, false);
         let uniforms = between.iter_mut().zip(before.iter()).zip(now.iter()).zip(moved_before.iter());
         for (uniform, (((out, before), now), moved_before)) in uniforms.enumerate() {
             let moving: [bool; 4] = std::array::from_fn(|i| moves(uniform, before[i], now[i]));
             let jumping: [bool; 4] = std::array::from_fn(|i| moving[i] && jumps(before[i], now[i], moved_before[i]));
+            pictured |= shared(uniform) && (0..4).any(|i| placed(uniform) && before[i] != now[i] && (steps(before[i], now[i]) || jumping[i]));
             if jumping.contains(&true) {
                 // one the coords may read too is as the frame has it, whatever it is,
                 // one that only places the vertices says the draw is another than the one b4
@@ -207,11 +220,18 @@ impl Interpolation {
                 *out = *now;
                 continue;
             }
+            far |= !shared(uniform) && (0..4).any(|i| moving[i] && (now[i] - before[i]).abs() > JUMP);
             *out = std::array::from_fn(|i| if moving[i] { before[i] } else { now[i] });
             lerped |= moving.contains(&true);
         }
+        // a sprite that stood still two frames or more and now goes further than a jump's leeway as it shows another
+        // picture is another sprite in its place among the draws (X's message box: a run of letters gets the next
+        // line's letters, its place a line further, and drawn in between the letters floated between the lines); one
+        // that moves every other frame, or creeps off, keeps its pictures in between
+        jumped |= lerped && pictured && far && stood >= 2;
         if !jumped && !lerped {
-            // what moved jumped, and is as the frame has it
+            // what moved jumped, and is as the frame has it (what the coords read: it stood still)
+            *still = stood.saturating_add(1);
             self.spare = Some(between);
             return None;
         }
@@ -229,6 +249,22 @@ impl Interpolation {
         self.moved += 1;
         *self.meshes.entry(model).or_default() |= LERPED;
         Some(between)
+    }
+
+    /// the uniforms the draw's program places its vertices w/ (see placing), for Responsive movement
+    pub(crate) fn placing_of(&mut self, registers: &[u32], vertex: &ShaderUnit) -> u128 {
+        let (outputs, coordinates) = crate::raster::placing_outputs(registers);
+        let (placing, shared) = *self
+            .placing
+            .entry((vertex.fingerprint(), vertex.entry_point, outputs, coordinates))
+            .or_insert_with(|| vertex.uniforms_feeding(outputs, coordinates));
+        placing | shared
+    }
+
+    /// a draw that didn't move, drawn in between all the same bc Responsive movement moves it: it counts as moved
+    pub(crate) fn forced(&mut self, registers: &[u32]) {
+        self.moved += 1;
+        *self.meshes.entry((mesh(registers), registers[REG_COLOR_BUFFER_ADDRESS])).or_default() |= LERPED;
     }
 
     /// a draw of `model` drawn as is while it's new (the frame b4 drew nothing the way it's drawn) or jumped (see
@@ -264,7 +300,7 @@ impl Interpolation {
         }
         let split = by_mesh.values().filter(|(lerped, as_is)| as_is.iter().any(|b| lerped.iter().any(|l| l != b))).count() as u32;
         self.meshes.clear();
-        let matches = Matches { draws: self.draws, matched: self.matched, moved: self.moved, jumped: self.jumped, jumping: self.jumping, split };
+        let matches = Matches { draws: self.draws, matched: self.matched, moved: self.moved, jumped: self.jumped, jumping: self.jumping, split, ahead: 0 };
         let mut older = std::mem::replace(&mut self.before, std::mem::take(&mut self.now));
         for drawn in self.before.values_mut() {
             drawn.taken.clear();
@@ -276,6 +312,7 @@ impl Interpolation {
             drawn.uniforms.clear();
             drawn.moves.clear();
             drawn.restless.clear();
+            drawn.still.clear();
             kept
         });
         self.now = older;
@@ -383,7 +420,7 @@ mod tests {
         assert!(interpolation.draw(&registers(3), &unit(4.0), None, true).is_none());
         assert!(interpolation.draw(&registers(6), &unit(1.0), None, true).is_none());
         let first = interpolation.frame_done();
-        assert_eq!(first, Matches { draws: 3, matched: 0, moved: 0, jumped: 0, jumping: 0, split: 0 });
+        assert_eq!(first, Matches { draws: 3, matched: 0, moved: 0, jumped: 0, jumping: 0, split: 0, ahead: 0 });
         assert!(!first.smooth());
 
         let between = interpolation.draw(&registers(3), &unit(0.5), None, true).expect("moved");
@@ -398,7 +435,7 @@ mod tests {
         assert!(interpolation.draw(&registers(6), &unit(1.0), None, true).is_none(), "stayed");
         assert!(interpolation.draw(&registers(9), &unit(1.0), None, true).is_none(), "new");
         let second = interpolation.frame_done();
-        assert_eq!(second, Matches { draws: 4, matched: 3, moved: 2, jumped: 0, jumping: 0, split: 0 });
+        assert_eq!(second, Matches { draws: 4, matched: 3, moved: 2, jumped: 0, jumping: 0, split: 0, ahead: 0 });
         assert!(second.smooth());
     }
 
@@ -475,7 +512,7 @@ mod tests {
         };
         frame(0.0, 0.0);
         frame(5.0, 0.1);
-        assert_eq!(frame(-5.0, 0.2), Matches { draws: 2, matched: 2, moved: 1, jumped: 0, jumping: 1, split: 0 });
+        assert_eq!(frame(-5.0, 0.2), Matches { draws: 2, matched: 2, moved: 1, jumped: 0, jumping: 1, split: 0, ahead: 0 });
         let matches = frame(5.0, 0.3);
         assert!(matches.smooth() && matches.jumping == 1);
         assert_eq!(frame(-5.0, 9.0).jumped, 1, "the model jumped after moving");
@@ -509,7 +546,7 @@ mod tests {
         assert!((at(&left, &unit(-3.6), 4, 8)[0][3] + 3.65).abs() < 1e-6);
         assert!((at(&left, &unit(-3.6), 7, 8)[0][3] + 3.6125).abs() < 1e-6);
         interpolation.give_back(left);
-        assert_eq!(interpolation.frame_done(), Matches { draws: 2, matched: 2, moved: 2, jumped: 0, jumping: 0, split: 0 });
+        assert_eq!(interpolation.frame_done(), Matches { draws: 2, matched: 2, moved: 2, jumped: 0, jumping: 0, split: 0, ahead: 0 });
     }
 
     /// a draw whose uniforms jump, like a matrix does when the camera cuts or a flag kept in a float flips,
@@ -524,7 +561,7 @@ mod tests {
         interpolation.give_back(between);
         assert!(interpolation.draw(&registers(4), &unit(1.0), None, true).is_none(), "a flag flipped");
         let matches = interpolation.frame_done();
-        assert_eq!(matches, Matches { draws: 2, matched: 2, moved: 1, jumped: 1, jumping: 0, split: 0 });
+        assert_eq!(matches, Matches { draws: 2, matched: 2, moved: 1, jumped: 1, jumping: 0, split: 0, ahead: 0 });
         assert!(!matches.smooth());
         interpolation.draw(&registers(3), &unit(200.0), None, true);
         assert_eq!(interpolation.frame_done().jumped, 1, "five sixths of its distance");
@@ -550,7 +587,7 @@ mod tests {
         let between = interpolation.draw(&into(1), &unit(0.1), None, true).expect("moved");
         interpolation.give_back(between);
         let matches = interpolation.frame_done();
-        assert_eq!(matches, Matches { draws: 2, matched: 1, moved: 1, jumped: 0, jumping: 0, split: 1 });
+        assert_eq!(matches, Matches { draws: 2, matched: 1, moved: 1, jumped: 0, jumping: 0, split: 1, ahead: 0 });
         assert!(!matches.smooth());
         // both passes there: both move, smooth; then the outline pass jumps while the screen pass moves (its history
         // differs, after a cut): not smooth
@@ -604,6 +641,74 @@ mod tests {
         assert_eq!((matches.jumped, matches.split), (1, 0), "{matches:?}");
     }
 
+    /// a sprite that starts moving as it shows another picture of its sheet is another one in its place, drawn as is;
+    /// one already moving that shows its next picture moves on
+    #[test]
+    fn a_sprite_starting_to_move_with_another_picture_is_another_sprite() {
+        // o0.x = c0 . v0, o0.y = c[a0.x + 20] . v0, o2 = c[a0.x + 20]: c0 its place, c20 its picture too
+        let mut program = ShaderUnit::new();
+        program.program[0] = (0x02 << 26) | (0x20 << 12);
+        program.program[1] = (0x02 << 26) | (1 << 19) | ((0x20 + 20) << 12) | 1;
+        program.program[2] = (0x13 << 26) | (0x02 << 21) | (1 << 19) | ((0x20 + 20) << 12);
+        program.program[3] = 0x22 << 26;
+        program.descriptors[0] = 0x8 | (0b00_01_10_11 << 5) | (0b00_01_10_11 << 14);
+        program.descriptors[1] = 0x4 | (0b00_01_10_11 << 5) | (0b00_01_10_11 << 14);
+        program.prepare();
+        let mut registers = registers(3);
+        registers[REG_SHADER_OUTPUT_TOTAL] = 3;
+        registers[REG_SHADER_OUTPUT_MAP] = 0x0302_0100;
+        registers[REG_SHADER_OUTPUT_MAP + 2] = 0x1F1F_0D0C;
+        let at = |x: f32, picture: f32| {
+            let mut unit = program.clone();
+            unit.float_uniforms[0] = [1.0, 0.0, 0.0, x];
+            unit.float_uniforms[20] = [picture, 0.0, 0.0, 0.0];
+            unit
+        };
+        let run = |frames: &[(f32, f32)]| {
+            let mut interpolation = Interpolation::default();
+            let mut last = (None, Matches::default());
+            for &(x, picture) in frames {
+                let between = interpolation.draw(&registers, &at(x, picture), None, true);
+                let moved = between.is_some();
+                if let Some(between) = between {
+                    interpolation.give_back(between);
+                }
+                last = (Some(moved), interpolation.frame_done());
+            }
+            last
+        };
+        // a line 19 down from 87.5 is less than a quarter of its distance, no jump by that alone
+        let (moved, matches) = run(&[(87.5, 0.25), (87.5, 0.25), (87.5, 0.25), (68.5, 0.5)]);
+        assert_eq!((moved, matches.jumped), (Some(false), 1), "a standing run of letters gets the next line's");
+        assert_eq!(run(&[(87.3, 0.25), (87.4, 0.25), (87.5, 0.5)]).0, Some(true), "a walking sprite's next picture");
+        assert_eq!(run(&[(87.5, 0.25), (87.5, 0.25), (87.5, 0.25), (87.6, 0.25)]).0, Some(true), "starting to move w/ the same picture");
+        assert_eq!(run(&[(87.5, 0.25), (87.5, 0.25), (87.5, 0.25), (87.6, 0.5)]).0, Some(true), "creeping off w/ another picture");
+        assert_eq!(run(&[(87.5, 0.25), (87.5, 0.25), (86.0, 0.5)]).0, Some(true), "moving after one frame still");
+        // a sprite animating its picture every frame that moves every other frame (15 Hz) keeps its pictures in
+        // between on each move
+        let mut interpolation = Interpolation::default();
+        let mut moves = Vec::new();
+        for (i, x) in [87.0, 87.0, 88.0, 88.0, 89.0, 89.0, 90.0].into_iter().enumerate() {
+            let picture = [0.25, 0.5][i % 2];
+            let between = interpolation.draw(&registers, &at(x, picture), None, true);
+            moves.push(between.is_some());
+            if let Some(between) = between {
+                interpolation.give_back(between);
+            }
+            interpolation.frame_done();
+        }
+        assert_eq!(moves, [false, false, true, false, true, false, true], "every move drawn in between");
+    }
+
+    /// a letter's place in a font sheet 256 texels high steps, a place on the screen or a matrix's moves
+    #[test]
+    fn texel_edges_inside_a_sheet_step() {
+        assert!(steps(0.69921875, 0.89453125), "from one letter's row to another's, 256ths");
+        assert!(steps(0.25, 0.5) && steps(87.5, 68.5), "64ths, as before");
+        assert!(!steps(0.3, 0.4) && !steps(0.11, 0.1171875), "values in between texels move");
+        assert!(!steps(1.0009765625, 1.5), "past the sheet, only 64ths step");
+    }
+
     /// a draw thru a geometry shader gets drawn as is and never matches one w/o it
     #[test]
     fn geometry_shaders_are_drawn_as_they_are() {
@@ -613,7 +718,7 @@ mod tests {
         interpolation.frame_done();
         assert!(interpolation.draw(&registers(3), &unit(0.2), None, true).is_none(), "no geometry stage");
         assert!(interpolation.draw(&registers(3), &unit(0.2), Some(&geometry), true).is_none());
-        assert_eq!(interpolation.frame_done(), Matches { draws: 2, matched: 1, moved: 0, jumped: 0, jumping: 0, split: 0 });
+        assert_eq!(interpolation.frame_done(), Matches { draws: 2, matched: 1, moved: 0, jumped: 0, jumping: 0, split: 0, ahead: 0 });
     }
 
     /// only the uniforms that place the vertices move in between,
