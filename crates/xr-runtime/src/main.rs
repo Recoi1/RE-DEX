@@ -37,6 +37,7 @@ mod hostprof;
 mod inbetweens;
 mod interp;
 mod intro;
+mod lobby;
 mod log;
 mod mem;
 mod preview;
@@ -175,6 +176,7 @@ const USAGE: &str = "usage: redex                      the start screen
              [--headless [--screens-every N] [--deterministic] [--realtime] [--script FILE [--record-expects]]]
              [--make-preview boy|girl --out PATH] [--preview STATE] [+connect steam:ID]
              [--account-server URL --world tls:HOST:PORT]   (signs in with the session the start screen kept)
+             [--lobby ROOM-CODE]   (joins the lobby that room code names, found through Steam)
   Without --world, --p2p (Steam worlds; the settings' world if any) or --account-server the game plays offline.
   Dev and test options (--headless, --script, --press, --deterministic, --make-preview, XR_STATE_*, XR_EXPLORE*,
   XR_FAKE_*, XR_MP_*, XR_SET_FASHION, XR_RAILPOS) keep the game offline, and so do mods that change the game.";
@@ -198,6 +200,8 @@ fn run() -> Result<(), String> {
     #[cfg_attr(not(feature = "mp-tests"), allow(unused_mut))]
     let (mut world, mut name, mut dev_id, mut offline) = (None::<String>, None::<String>, false, false);
     let (mut character, mut p2p) = (None::<u64>, false);
+    // --lobby CODE: join the lobby a room code names (the start screen's Join), once Steam found it
+    let mut lobby_code = None::<String>;
     // an account of the account backend (central worlds): the session the start screen kept, or (mp-tests) --login
     let mut account_server = None::<String>;
     #[cfg_attr(not(feature = "mp-tests"), allow(unused_mut))]
@@ -258,6 +262,7 @@ fn run() -> Result<(), String> {
             Some("--offline") => offline = true,
             // Steam worlds with this PC's characters (P2P): the settings' world at boot if they name one
             Some("--p2p") => p2p = true,
+            Some("--lobby") => lobby_code = Some(redex_proto::room::parse(&value()?.to_string_lossy())?),
             Some("--account-server") => account_server = Some(value()?.to_string_lossy().into_owned()),
             #[cfg(feature = "mp-tests")]
             Some("--login") => login = Some(value()?.to_string_lossy().into_owned()),
@@ -335,7 +340,9 @@ fn run() -> Result<(), String> {
     }
     // a window with --p2p joins the world server its settings name when --world does not say; no mode at all is offline
     let settings = (!headless).then(xr_frontend::Settings::load);
-    let (world, offline) = boot_world(world, p2p, offline, account_server.is_some(), settings.as_ref().map(|s| s.world_address.as_str()));
+    // --lobby is P2P, joining that lobby rather than the settings' world
+    let settings_world = settings.as_ref().map(|s| s.world_address.as_str()).filter(|_| lobby_code.is_none());
+    let (world, offline) = boot_world(world, p2p || lobby_code.is_some(), offline, account_server.is_some(), settings_world);
     let mut notice = None;
     // --account-server: the session the start screen kept on this PC (DPAPI), checked with the service; with --login
     // (mp-tests builds only) a password login instead. No session, a dead one or no answer plays offline and says why
@@ -417,9 +424,11 @@ fn run() -> Result<(), String> {
     let (data_dir, user_dir) = (data.to_path_buf(), user.clone());
     let played = move |title: u64| played.as_ref().and_then(|(c, online)| character::Played::new(c, &data_dir, &user_dir, title, *online));
     std::panic::set_hook(Box::new(|p| {
-        // the world client's thread is not the game: it ends (the game sees it offline and plays on)
-        if std::thread::current().name() == Some("redex-net") {
-            return log::log(&format!("world: the net thread panicked, staying offline: {p}"));
+        // the world client's thread (redex-net) and a hosted lobby's server threads (redex-accept, redex-conn,
+        // redex-steam, redex-lobby-start) are not the game: the thread unwinds into its own guards (the client goes
+        // offline, the server drops that connection) and the game plays on
+        if let Some(name) = std::thread::current().name().filter(|n| survives_panic(n)) {
+            return log::log(&format!("{name}: panicked, the game plays on: {p}"));
         }
         log::stop(101, &format!("panic: {p}"))
     }));
@@ -498,6 +507,8 @@ Playing offline."));
     };
     let name = name.or(settings.map(|s| s.world_name).filter(|n| !n.is_empty()));
     let world_shown = world.clone();
+    // the boot's world is a P2P one: its host's answers never reach this PC's characters (headless runs track it here)
+    let mut p2p_net = world.as_deref().is_some_and(|w| p2p_world(w, false));
     // what keeps this run out of worlds (Joiner::start refuses while any is on, unless built with mp-tests)
     let script = script_file.is_some();
     let flags = [("--headless", headless), ("--script", script), ("--press", !presses.is_empty() && !script), ("--deterministic", deterministic && !script), ("--make-preview", make_preview.is_some()), ("--room", link.is_some())];
@@ -542,7 +553,10 @@ Playing offline."));
                 let friends = None;
                 let (friend_list, ignored, world_names) = (Vec::new(), None, Default::default());
                 let (listed, friend_failed) = (None, Vec::new());
-                Ok(Windowed { m, n: 0, presses, net, joiner, world, pending: None, query: None, presence: None, notes: refused.into_iter().collect(), discord, played, friends, friend_list, ignored, world_names, listed, friend_failed })
+                let mut notes: Vec<String> = refused.into_iter().collect();
+                // --lobby: the room code is looked up now, joined once found (online())
+                let finding = lobby_code.and_then(|code| find_code(&mut joiner, &code).map_err(|why| notes.push(format!("Lobby {}: {why}", redex_proto::room::shown(&code)))).ok());
+                Ok(Windowed { m, n: 0, presses, net, joiner, world, pending: None, query: None, presence: None, notes, discord, played, friends, friend_list, ignored, world_names, listed, friend_failed, lobby: lobby::Lobby::default(), finding, lobby_worlds: Default::default() })
             })
         };
         if xr_frontend::run(window, config, boot)? {
@@ -590,6 +604,13 @@ Playing offline."));
     let split = |v: String| -> Option<(u64, String)> { let (at, rest) = v.split_once(':')?; Some((at.parse().ok()?, rest.to_string())) };
     let mut mp_whisper = std::env::var("XR_MP_WHISPER").ok().and_then(split);
     let mut mp_report = std::env::var("XR_MP_REPORT").ok().and_then(split);
+    // XR_MP_HOST=FRAME:MAX:ACCESS[:NAME] (tests; friends, code or public): at that script frame, the overlay's Host lobby;
+    // XR_MP_KICK=FRAME: from then on, once someone is in the lobby, the host removes the one with the lowest session (once)
+    let mut mp_host = std::env::var("XR_MP_HOST").ok().and_then(split);
+    let mut mp_kick = std::env::var("XR_MP_KICK").ok().and_then(|v| v.trim().parse::<u64>().ok());
+    let mut lobby = lobby::Lobby::default();
+    // --lobby: the room code looked up now, joined once found
+    let mut finding = lobby_code.and_then(|code| find_code(&mut joiner, &code).inspect_err(|why| log::log(&format!("lobby: room code {code}: {why}"))).ok());
     // XR_STATE_SAVE_AT=FRAME:PATH writes a save state to PATH between frames once the script clock reaches FRAME (a run
     // stops if a thread is where none can be saved); XR_STATE_LOAD=PATH starts from one before the first frame, the
     // frame count and the script clock going on from its frame (exec.rs Machine::save_state)
@@ -861,7 +882,7 @@ Playing offline."));
             net_frame(&mut m, c);
         }
         if let Some(c) = &mut net {
-            keep_accounts(c, data, joiner.account.is_some());
+            keep_accounts(c, data, joiner.account.is_some() || p2p_net);
             while let Some(w) = c.whispers.pop_front() {
                 log::log(&format!("whisper from session {} ({}): {}", w.from_session, w.name, w.text));
             }
@@ -892,12 +913,63 @@ Playing offline."));
                         log::log(&format!("friends: invite from {from} to {world:?} ({connect})"));
                         let modded = m.system().game_modded.clone();
                         match joiner.start(&connect, m.title_id, modded.as_deref()) {
-                            Ok(c) => net = Some(c),
+                            Ok(c) => (net, p2p_net) = (Some(c), p2p_world(&connect, false)),
                             Err(e) => log::log(&format!("world: cannot join {connect}: {e}")),
                         }
                     }
                     FriendMsg::Decline => log::log(&format!("friends: {from} declined")),
                 }
+            }
+        }
+        if let Some((_, arg)) = mp_host.take_if(|(at, _)| t >= *at) {
+            let mut p = arg.splitn(3, ':');
+            let max = p.next().and_then(|v| v.parse().ok()).unwrap_or(4);
+            let access = match p.next() {
+                Some("public") => xr_frontend::online::Access::Public,
+                Some("code") => xr_frontend::online::Access::Code,
+                _ => xr_frontend::online::Access::Friends,
+            };
+            let s = xr_frontend::online::LobbySettings { name: p.next().unwrap_or_default().to_owned(), max, access };
+            if let Err(why) = host_lobby(&mut lobby, &mut joiner, &mut m, net.is_some(), &s) {
+                log::log(&format!("lobby: not hosting: {why}"));
+            }
+        }
+        if let Some(Ok((address, _))) = lobby_news(&mut lobby) {
+            let modded = m.system().game_modded.clone();
+            match joiner.start(&address, m.title_id, modded.as_deref()) {
+                Ok(c) => (net, p2p_net) = (Some(c), true),
+                Err(e) => {
+                    log::log(&format!("world: cannot join {address}: {e}"));
+                    lobby.close();
+                    log::log("lobby: closed (the host's own game could not join it)");
+                }
+            }
+        }
+        let first = lobby.view().and_then(|v| v.members.first().cloned());
+        if let (Some((session, name)), Some(_)) = (&first, mp_kick.take_if(|at| first.is_some() && t >= *at)) {
+            log::log(&format!("lobby: remove session {session} ({name}): {}", if lobby.kick(*session) { "removed" } else { "not in the lobby" }));
+        }
+        if let Some(r) = finding.as_ref().and_then(|f| lobby::answered(&f.1)) {
+            let (code, _) = finding.take().unwrap();
+            match r {
+                Ok(addr) => {
+                    log::log(&format!("lobby: room code {code} is {addr}"));
+                    let modded = m.system().game_modded.clone();
+                    match joiner.start(&addr, m.title_id, modded.as_deref()) {
+                        Ok(c) => (net, p2p_net) = (Some(c), true),
+                        Err(e) => log::log(&format!("world: cannot join {addr}: {e}")),
+                    }
+                }
+                Err(why) => log::log(&format!("lobby: room code {code}: {why}")),
+            }
+        }
+        // refused for good (removed from a lobby, the lobby closed, a ban): out of that world, offline
+        if let Some(why) = net.as_ref().filter(|n| n.stopped).map(|n| n.refused.clone().unwrap_or_else(|| "the connection ended".into())) {
+            log::log(&format!("world: left the world: {why}; playing offline"));
+            net = None;
+            clear_puppets(&mut m);
+            if lobby.close() {
+                log::log("lobby: closed (the host's own game left it)");
             }
         }
         if let Some((bytes, _)) = set_fashion.take_if(|(b, at)| t >= *at && matches!(b.len(), 16 | 17)) {
@@ -1024,6 +1096,9 @@ Playing offline."));
             save_screens(&mut m, &logs, &tag);
         }
         // XR_THREADS=1: at the end, what every live guest thread waits on (an event that never fires shows up here)
+        if last && lobby.close() {
+            log::log("lobby: closed (the game is ending)");
+        }
         if last && std::env::var_os("XR_THREADS").is_some() {
             let s = m.system();
             for id in 0..s.kernel.threads.len() {
@@ -1056,6 +1131,10 @@ Playing offline."));
         }
         if outcome == FrameOutcome::Exited && next < checkpoints.len() {
             log::stop(4, &format!("the game exited before checkpoint {}", checkpoints[next].name));
+        }
+        // the run ends without dropping the renderer: its pipelines and translated programs are kept for the next one
+        if outcome == FrameOutcome::Exited || (outcome == FrameOutcome::Completed && done) {
+            m.system().gpu.save_caches();
         }
         match outcome {
             FrameOutcome::Exited => log::stop(0, "the game exited"),
@@ -1583,6 +1662,25 @@ mod tests {
 
     /// Dev and test inputs keep a run out of worlds (unless built with mp-tests): the flags that are on, and the XR_
     /// variables that drive or change the game, whatever their case; read-only diagnostics (XR_LOG, XR_MEMDUMP) don't.
+    /// A lobby (whatever its address) and every steam: world are P2P: their answers never reach this PC's characters.
+    #[test]
+    fn lobby_and_steam_worlds_never_merge_characters() {
+        assert!(super::p2p_world("steam:90297831083063301", false));
+        assert!(super::p2p_world("127.0.0.1:7777", true), "a dev lobby");
+        assert!(!super::p2p_world("127.0.0.1:7777", false), "a test server on this PC (mp-tests)");
+    }
+
+    /// The world client's and a hosted lobby's server threads end on a panic; any other thread's panic ends the game.
+    #[test]
+    fn server_and_client_threads_survive_a_panic() {
+        for t in ["redex-net", "redex-accept", "redex-conn", "redex-steam", "redex-lobby-start"] {
+            assert!(super::survives_panic(t), "{t}");
+        }
+        for t in ["main loop", "emulation", "discord", "redexconn"] {
+            assert!(!super::survives_panic(t), "{t}");
+        }
+    }
+
     #[test]
     fn dev_inputs_keep_a_run_offline() {
         let vars = ["PATH", "XR_DATA", "XR_STATE_LOAD", "xr_fake_row", "XR_LOG", "XR_MEMDUMP", "XR_MP_WHISPER", "XR_SET_FASHION", "XR_EXPLORE_GOAL", "XR_RAILPOS", "XR_FAKE_PEERS", "XR_STATE_SAVE_AT"];
@@ -1808,6 +1906,12 @@ struct Windowed {
     friend_failed: Vec<(u64, Option<String>, String)>,
     /// worlds' names from Steam's server list, by address: what an invite names
     world_names: std::collections::HashMap<String, String>,
+    /// the lobby this game hosts ("Host lobby"), if it does
+    lobby: lobby::Lobby,
+    /// a room code being looked up (Join, --lobby): the code, and Steam's answer to come
+    finding: Option<(String, xr_net::steam::Answer<String>)>,
+    /// worlds that are lobbies (hosted here, or found by a room code): P2P worlds whatever their address (`p2p_world`)
+    lobby_worlds: std::collections::HashSet<String>,
 }
 
 /// How long a world being joined may take to log us in before it is given up (the old world kept).
@@ -1866,10 +1970,11 @@ fn put_character(c: Option<redex_proto::Character>, net: Option<&xr_net::Client>
 
 /// The account's character lists the world sent, into characters.json: the newest `changed` wins (`merge_remote`, which
 /// drops bad looks), saved only when that changed something. While characters.json can't be read (nor kept aside) the
-/// lists wait, and the file is left alone. An official-account login (`account`) keeps nothing: its characters are the
-/// account's (the start screen shows them), never this PC's.
-fn keep_accounts(net: &mut xr_net::Client, data: &std::path::Path, account: bool) {
-    if account {
+/// lists wait, and the file is left alone. `discard`: nothing is kept. An official-account login keeps nothing (its
+/// characters are the account's, the start screen shows them, never this PC's), and neither does a lobby or any other
+/// P2P (Steam) world: a player's host never changes the joiner's own characters (`p2p_world`).
+fn keep_accounts(net: &mut xr_net::Client, data: &std::path::Path, discard: bool) {
+    if discard {
         net.accounts.clear();
     }
     if net.accounts.is_empty() {
@@ -1884,6 +1989,12 @@ fn keep_accounts(net: &mut xr_net::Client, data: &std::path::Path, account: bool
             Err(e) => log::log(&format!("characters: the account's copies were not kept: {e}")),
         }
     }
+}
+
+/// A world whose host is another player (a lobby, joined by code or hosted, or any `steam:` world): its answers never
+/// reach this PC's characters.json or saves.
+fn p2p_world(addr: &str, lobby: bool) -> bool {
+    lobby || steam_world(addr)
 }
 
 /// The XR_ variables of tests and dev tools that drive or change the game (by prefix): save states, the outfit
@@ -1958,6 +2069,10 @@ impl Joiner {
     /// Every join comes here (the boot's world, the server browser, Steam's "Join game"), so this is where a run that
     /// may not join (`refusal`) is refused.
     fn start(&mut self, addr: &str, title: u64, modded: Option<&str>) -> Result<xr_net::Client, String> {
+        // Steam worlds and lobbies take this PC's characters only: an online character stays on the official world
+        if let (Some(why), true) = (lobby::local_only(self.account.is_some()), steam_world(addr)) {
+            return Err(why.into());
+        }
         if let Some(r) = refusal(&self.dev, modded, || self.dump_changed()) {
             return Err(r);
         }
@@ -2023,7 +2138,18 @@ impl xr_frontend::Game for Windowed {
         }
         if let Some(c) = &mut self.net {
             net_frame(&mut self.m, c);
-            keep_accounts(c, &self.joiner.data, self.joiner.account.is_some());
+            let p2p = self.world.as_deref().is_some_and(|w| p2p_world(w, self.lobby_worlds.contains(w)));
+            keep_accounts(c, &self.joiner.data, self.joiner.account.is_some() || p2p);
+        }
+        // refused for good (a lobby's host removed us or closed it, a ban): out of that world, offline
+        if let Some(why) = self.net.as_ref().filter(|n| n.stopped).map(|n| n.refused.clone().unwrap_or_else(|| "the connection ended".into())) {
+            log::log(&format!("world: left {}: {why}; playing offline", self.world.as_deref().unwrap_or("the world")));
+            let own = self.lobby.address().is_some() && self.lobby.address() == self.world.as_deref();
+            self.leave(format!("Left the world: {}", capitalized(&why)));
+            if own && self.lobby.close() {
+                log::log("lobby: closed (the host's own game left it)");
+                self.notes.push("Your lobby closed: your game was no longer in it".into());
+            }
         }
         self.settle_join();
         self.n += 1;
@@ -2047,12 +2173,24 @@ impl xr_frontend::Game for Windowed {
             }
         }
         self.presence();
+        self.lobby_frame();
+        for secret in self.discord.as_ref().map(discord::Handle::take_joins).unwrap_or_default() {
+            // Discord's Join on a friend's profile: the same join as an invite (steam:<server id> only)
+            if steam_world(&secret) {
+                log::log(&format!("world: Discord asks to join {secret}"));
+                self.join(&secret);
+            } else {
+                log::log(&format!("world: a Discord join for {secret:?} was ignored (only steam:<server id>)"));
+            }
+        }
         if let Some(d) = &self.discord {
-            d.set_mode(if self.net.as_ref().is_some_and(|n| n.online) { discord::Mode::Official } else { discord::Mode::Offline });
+            d.set_lobby(self.discord_lobby());
+            d.set_mode(discord_mode(self.net.as_ref().is_some_and(|n| n.online), self.world.as_deref(), self.lobby.hosting()));
         }
         let typed = self.joiner.steam.as_ref().and_then(|s| s.take_typed()).flatten();
         let joining = self.pending.as_ref().map(|p| p.0.clone());
-        let mut view = View { world: self.world.clone(), notes: std::mem::take(&mut self.notes), joining, typed, ..View::default() };
+        let lobby_blocked = lobby_blocked(&self.joiner, &mut self.m);
+        let mut view = View { world: self.world.clone(), notes: std::mem::take(&mut self.notes), joining, typed, lobby: self.lobby.view(), lobby_blocked, ..View::default() };
         if let Some((q, logged)) = &mut self.query {
             let (found, done) = q.results();
             if done && !*logged {
@@ -2191,11 +2329,87 @@ impl xr_frontend::Game for Windowed {
                 }
                 self.ignored = Some(ids);
             }
+            Request::HostLobby(s) => {
+                let in_world = self.world.is_some() || self.pending.is_some();
+                if let Err(why) = host_lobby(&mut self.lobby, &mut self.joiner, &mut self.m, in_world, &s) {
+                    log::log(&format!("lobby: not hosting: {why}"));
+                    self.notes.push(format!("Cannot host a lobby: {why}"));
+                }
+            }
+            Request::Kick { session, name } => {
+                let done = self.lobby.kick(session);
+                log::log(&format!("lobby: remove session {session} ({name}): {}", if done { "removed" } else { "not in the lobby" }));
+                self.notes.push(if done { format!("{name} was removed from your lobby") } else { format!("{name} is no longer in your lobby") });
+            }
+            Request::CloseLobby => {
+                // our own game leaves first, so it is not told its own lobby closed
+                if self.lobby.address().is_some_and(|a| self.world.as_deref() == Some(a)) {
+                    self.leave(String::new());
+                }
+                if self.lobby.close() {
+                    log::log("lobby: closed by the host");
+                    self.notes.push("Your lobby is closed: everyone in it was told. Playing offline".into());
+                }
+            }
+            Request::JoinCode(code) => match find_code(&mut self.joiner, &code) {
+                Ok(f) => self.finding = Some(f),
+                Err(why) => self.notes.push(format!("Lobby {}: {why}", redex_proto::room::shown(&code))),
+            },
+            Request::Leave => {
+                log::log(&format!("world: left {} (the player chose to)", self.world.as_deref().unwrap_or("no world")));
+                self.leave("You left the world: playing offline".into());
+            }
         }
     }
 }
 
 impl Windowed {
+    /// Out of the world we are in (and any being joined): its client says Bye, its puppets go; offline from now on.
+    /// `note` for the player (none when empty).
+    fn leave(&mut self, note: String) {
+        (self.net, self.world, self.pending) = (None, None, None);
+        clear_puppets(&mut self.m);
+        if !note.is_empty() {
+            self.notes.push(note);
+        }
+    }
+
+    /// The lobby's news (an opened lobby is joined by its own game, the player staying where they are) and a room code's
+    /// answer (joined when found).
+    fn lobby_frame(&mut self) {
+        let name = self.lobby.view().map(|v| v.settings.name);
+        match lobby_news(&mut self.lobby) {
+            Some(Ok((address, code))) => {
+                self.world_names.insert(address.clone(), name.unwrap_or_default());
+                self.lobby_worlds.insert(address.clone());
+                self.notes.push(format!("Your lobby is open. Room code: {}", redex_proto::room::shown(&code)));
+                self.join(&address);
+            }
+            Some(Err(why)) => self.notes.push(format!("The lobby did not start: {why}")),
+            None => {}
+        }
+        if let Some(r) = self.finding.as_ref().and_then(|f| lobby::answered(&f.1)) {
+            let (code, _) = self.finding.take().unwrap();
+            match r {
+                Ok(addr) => {
+                    log::log(&format!("lobby: room code {code} is {addr}"));
+                    self.lobby_worlds.insert(addr.clone());
+                    self.join(&addr);
+                }
+                Err(why) => {
+                    log::log(&format!("lobby: room code {code}: {why}"));
+                    self.notes.push(format!("Lobby {}: {why}", redex_proto::room::shown(&code)));
+                }
+            }
+        }
+    }
+
+    /// What Discord's Join button gets: the open lobby's world, when friends may come in by it (not a code-only lobby).
+    fn discord_lobby(&self) -> Option<discord::Lobby> {
+        let v = self.lobby.view().filter(|v| v.open && v.settings.access != xr_frontend::online::Access::Code)?;
+        let secret = self.lobby.address().filter(|a| steam_world(a))?.to_owned();
+        Some(discord::Lobby { secret, party: v.code, size: v.members.len() as u32 + 1, max: u32::from(v.settings.max) })
+    }
     /// The Steam friends link, once Steam is up and the Ignore list was read (a fake one is there from the start).
     fn link_friends(&mut self) {
         use xr_net::friends::FriendsLink;
@@ -2246,6 +2460,10 @@ impl Windowed {
     /// Starts joining `addr`; the world we are in stays until the new one logs us in (`settle_join`).
     fn join(&mut self, addr: &str) {
         let addr = addr.trim();
+        if self.lobby.hosting() && self.lobby.address() != Some(addr) {
+            self.notes.push("You are hosting a lobby: close it first to join another world".into());
+            return;
+        }
         if self.world.as_deref() == Some(addr) && self.net.is_some() || self.pending.as_ref().is_some_and(|p| p.0 == addr) {
             self.notes.push("Already in that world".into());
             return;
@@ -2256,6 +2474,11 @@ impl Windowed {
             Ok(net) => self.pending = Some((addr.to_owned(), net, std::time::Instant::now())),
             Err(e) => {
                 log::log(&format!("world: cannot join {addr}: {e}"));
+                if self.lobby.address() == Some(addr) && self.lobby.close() {
+                    log::log("lobby: closed (the host's own game could not join it)");
+                    self.notes.push(format!("Your lobby closed: your game could not join it ({e})"));
+                    return;
+                }
                 self.notes.push(format!("Cannot join {addr}: {e}"));
             }
         }
@@ -2278,6 +2501,12 @@ impl Windowed {
             let (addr, net, _) = self.pending.take().unwrap();
             let refused = net.refused.clone();
             log::log(&format!("world: {addr} did not log us in ({}); staying where we were", refused.as_deref().unwrap_or("no answer")));
+            // our own lobby that our own game cannot get into: nobody would host it, so it closes
+            if self.lobby.address() == Some(addr.as_str()) && self.lobby.close() {
+                log::log("lobby: closed (the host's own game could not join it)");
+                self.notes.push(format!("Your lobby closed: your game could not join it ({})", refused.as_deref().unwrap_or("no answer")));
+                return;
+            }
             self.notes.push(refused.map_or("Couldn't reach that world".into(), |r| format!("Cannot join: {}", capitalized(&r))));
         }
     }
@@ -2302,6 +2531,93 @@ impl Windowed {
             log::log(&format!("world: Steam presence {:?}, connect {:?}", wanted.0, wanted.1));
         }
     }
+}
+
+/// A panic on this thread ends the thread, not the game: the world client's and the lobby server's threads.
+fn survives_panic(thread: &str) -> bool {
+    thread.starts_with("redex-")
+}
+
+/// The Discord status's mode: a lobby or a Steam world is P2P, a TLS world the official one.
+fn discord_mode(online: bool, world: Option<&str>, hosting: bool) -> discord::Mode {
+    match world {
+        _ if hosting => discord::Mode::P2p,
+        Some(w) if online && w.starts_with("tls:") => discord::Mode::Official,
+        Some(_) if online => discord::Mode::P2p,
+        _ => discord::Mode::Offline,
+    }
+}
+
+/// The puppets of a world we left go now (no world client is left to say so).
+fn clear_puppets(m: &mut exec::Machine) {
+    let map = player(m).map(|(p, _)| p.map);
+    if let (Some(map), Some(mut lock)) = (map, hooks::try_puppets()) {
+        if let Some(pp) = lock.as_mut() {
+            pp.want(map, Vec::new());
+        }
+    }
+}
+
+/// Why this game may not host or join a lobby now: an online character (lobbies take this PC's characters only), or
+/// what keeps it out of every world (test options, a mod that changes the game).
+fn lobby_blocked(joiner: &Joiner, m: &mut exec::Machine) -> Option<String> {
+    let modded = m.system().game_modded.clone();
+    lobby::local_only(joiner.account.is_some()).map(str::to_owned).or_else(|| refusal(&joiner.dev, modded.as_deref(), || false))
+}
+
+/// Who hosts: a dev id on TCP (mp-tests), else Steam.
+fn lobby_how(joiner: &mut Joiner) -> Result<lobby::How, String> {
+    #[cfg(feature = "mp-tests")]
+    if joiner.dev_id {
+        let id = xr_net::id::load_or_create(&joiner.id_dir).map_err(|e| format!("player id: {e}"))?;
+        return Ok(lobby::How::Dev { id, rooms: lobby::fake_rooms() });
+    }
+    joiner.steam().cloned().map(lobby::How::Steam).ok_or_else(|| format!("{} to host a lobby", xr_net::steam::START_STEAM))
+}
+
+/// "Host lobby" (the overlay's, and XR_MP_HOST's in a headless test): the same lockdown as any world first (shown in
+/// the panel before hosting), then the server starts; `lobby_news` says when it is up.
+fn host_lobby(lobby: &mut lobby::Lobby, joiner: &mut Joiner, m: &mut exec::Machine, in_world: bool, s: &xr_frontend::online::LobbySettings) -> Result<(), String> {
+    if in_world {
+        return Err("leave the world you are in first: a lobby starts from offline play".into());
+    }
+    if let Some(why) = lobby_blocked(joiner, m) {
+        return Err(why);
+    }
+    if joiner.dump_changed() {
+        return Err("this game file was changed since it was added; online is off".into());
+    }
+    let fallback = joiner.name.clone().unwrap_or_else(|| trainer_name(&joiner.user, m.title_id));
+    let s = lobby::checked(s, &fallback);
+    let how = lobby_how(joiner)?;
+    log::log(&format!("lobby: starting {:?}, {} players, {:?}", s.name, s.max, s.access));
+    lobby.host(s, how, joiner.data.join("lobby-world"))
+}
+
+/// The lobby's news: Ok(address, code) when it opened (logged), Err(why) when it did not start.
+fn lobby_news(lobby: &mut lobby::Lobby) -> Option<Result<(String, String), String>> {
+    match lobby.poll()? {
+        lobby::Event::Opened { address, code } => {
+            log::log(&format!("lobby: hosting on {address}, room code {code}"));
+            Some(Ok((address, code)))
+        }
+        lobby::Event::Failed(why) => {
+            log::log(&format!("lobby: did not start: {why}"));
+            Some(Err(why))
+        }
+    }
+}
+
+/// Looks a room code up (the start screen's Join, the Lobby panel's): through Steam, or the fake rooms in mp-tests.
+fn find_code(joiner: &mut Joiner, code: &str) -> Result<(String, xr_net::steam::Answer<String>), String> {
+    if let Some(why) = lobby::local_only(joiner.account.is_some()) {
+        return Err(why.into());
+    }
+    let fake = lobby::fake_rooms();
+    let steam = if fake.is_none() { joiner.steam().cloned() } else { None };
+    let found = lobby::find(code, steam.as_ref(), fake.as_deref())?;
+    log::log(&format!("lobby: looking up room code {}", found.0));
+    Ok(found)
 }
 
 /// What presence to send now: `wanted` when it differs from what was last sent and Steam is up to take it, recorded as

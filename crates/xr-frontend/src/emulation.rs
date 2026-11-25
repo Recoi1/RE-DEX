@@ -41,6 +41,8 @@ pub(crate) struct Controls {
 pub(crate) struct Live {
     /// Smooth motion: the monitor rate its pictures in between are made for (60 or the monitor's, up to 240), 0 off
     pub smooth_hz: u32,
+    /// the monitor's vblank, Smooth motion's pictures in between go at its vblanks where they fit
+    pub vblank: Duration,
     pub slider_3d: f32,
     pub microphone: MicrophoneSource,
     /// 0 to 1, 0 muted
@@ -92,10 +94,13 @@ pub(crate) struct Pictures {
     /// the first set w/ them was made, and how long the game took to the picture (its refreshes at the speed it ran):
     /// the window shows each as its time comes (crate::pick); `since` tells one picture's pictures in between from the next
     pub between: Vec<Between>,
+    /// they're at the display's vblanks (xr_hle::vblank_times), not evenly
+    pub at_vblanks: bool,
     pub since: Instant,
     pub span: Duration,
-    /// the time in refreshes so far (guest code, GPU recording)
+    /// the time in refreshes so far (guest code, GPU recording), and when this set's refresh started
     pub game: Duration,
+    pub began: Instant,
     /// what the game's keyboard asks for, while the game waits on it
     pub keyboard: Option<keyboard::Request>,
     /// the keyboard answers the game took so far: a set made b4 the window's last answer got there still asks
@@ -218,14 +223,21 @@ fn run<G: Game>(start: Start<G>, link: &Link, requests: &Receiver<Request>, even
         game_time: Duration::ZERO,
         answers: 0,
         events: events.clone(),
+        began: Instant::now(),
         motion: None,
-        steps_cap: MOST_STEPS,
+        load_guard: LoadGuard::new(),
         pace_cap: MOST_STEPS,
         rate: 0,
-        load: (Duration::ZERO, 0),
+        at_vblanks: false,
+        one: false,
+        sound: true,
+        load: (Duration::ZERO, 0, Duration::ZERO),
     };
     runner.apply(start.live);
     let ended = runner.play(link, requests, start.frames);
+    // the console is never dropped (the executor keeps it): the pipelines and translated programs made since the
+    // compiler threads last kept them would be lost
+    runner.game.system().gpu.save_caches();
     let _ = events.send(Event::Ended(ended));
 }
 
@@ -241,15 +253,21 @@ struct Runner<G> {
     /// keyboard answers taken
     answers: u64,
     events: Sender<Event>,
+    /// when the last refresh started
+    began: Instant,
     /// the picture w/ pictures in between last published, and when its first set was
     motion: Option<(u64, Instant)>,
-    /// Smooth motion's load guard: the most steps (K at 30 fps) the game keeps its pace with (see guard_steps), and
-    /// the refreshes' time and count since it last looked
-    steps_cap: usize,
-    load: (Duration, u32),
+    /// Smooth motion's load guard (see LoadGuard), and the refreshes' time and count since it last looked
+    load_guard: LoadGuard,
+    load: (Duration, u32, Duration),
     /// the window's pace guard's K at most, and the rate the game was last asked for (see follow_rate)
     pace_cap: usize,
     rate: u32,
+    /// the pictures in between go at the display's vblanks (both guards leave room for them, see at_vblanks)
+    at_vblanks: bool,
+    /// the GPU takes one batch at a time (as last asked, see follow_rate), and the game's sound plays (not fast forward)
+    one: bool,
+    sound: bool,
 }
 
 /// K at most (seven pictures in between at 30 fps)
@@ -266,6 +284,74 @@ fn guard_steps(steps: usize, average: Duration, frame: Duration) -> usize {
     } else {
         steps
     }
+}
+
+/// Smooth motion's load guard, once a second of refreshes: the most steps (K at 30 fps) the game keeps its pace with
+/// (`steps`, see guard_steps), and whether the GPU may take one batch at a time (see one_in_flight). That wait comes
+/// first: a second over 90% of a console frame while it's on turns it off for a while (HOLD, doubling w/ each trip,
+/// back to HOLD after a minute on w/o one) and leaves K; only a second still over 90% w/o it takes K down. W/o the
+/// wait the game's time drops back, so turning it off and K down together and both up again a second later flapped
+/// every second on a GPU slower than this one
+struct LoadGuard {
+    steps: usize,
+    /// how long the next trip turns the wait off, and till when the last did
+    hold: Duration,
+    off_until: Option<Instant>,
+}
+
+/// how long the load guard first turns the one batch at a time off for, at most, and how long it stays on b4 the hold
+/// is back to the first
+const HOLD: Duration = Duration::from_secs(4);
+const MOST_HOLD: Duration = Duration::from_secs(64);
+const HOLD_FORGOTTEN: Duration = Duration::from_secs(60);
+
+impl LoadGuard {
+    fn new() -> LoadGuard {
+        LoadGuard { steps: MOST_STEPS, hold: HOLD, off_until: None }
+    }
+
+    /// may the GPU take one batch at a time (the load guard's side of it): K at its `top` and the wait not turned off
+    fn waits(&self, now: Instant, top: usize) -> bool {
+        self.steps >= top && self.off_until.is_none_or(|until| now >= until)
+    }
+
+    /// a second whose refreshes took `average` each and `longest` at most, of a console `frame`, w/ K at most `top`;
+    /// `waited`: the GPU took one batch at a time in it (as it ran, not as planned from now on). A second w/ a
+    /// refresh of two frames or more (a load, a battle's start) doesn't count, it isn't the wait's or K's
+    fn second(&mut self, average: Duration, longest: Duration, frame: Duration, top: usize, now: Instant, waited: bool) {
+        if self.off_until.is_some_and(|until| now >= until + HOLD_FORGOTTEN) {
+            (self.hold, self.off_until) = (HOLD, None);
+        }
+        if longest >= frame * 2 {
+            return;
+        }
+        if waited && self.waits(now, top) && average * 10 > frame * 9 {
+            self.off_until = Some(now + self.hold);
+            self.hold = (self.hold * 2).min(MOST_HOLD);
+            return;
+        }
+        self.steps = guard_steps(self.steps, average, frame).min(top);
+    }
+}
+
+/// do the pictures in between go at the display's vblanks: Smooth motion for a monitor over 60 Hz, w/ K allowed one
+/// more than the rate's (a picture's vblanks are 6 or 7 at 200 Hz: up to seven in between, see xr_hle::vblank_times)
+fn at_vblanks(hz: u32, steps: usize) -> bool {
+    hz > 60 && steps > xr_hle::steps_for(hz, 2)
+}
+
+/// does the GPU take one batch at a time while it draws pictures in between: for a monitor over 60 Hz (the picture
+/// goes up again between refreshes, and a present queued behind the renderer's batches misses its vblank), unless the
+/// load guard took K (`steps`) down, the game's refreshes are what's slow then and the CPU and GPU had better overlap
+/// and not while no sound plays (fast forward: the CPU and GPU side by side)
+fn one_in_flight(hz: u32, steps: usize, sound: bool) -> bool {
+    sound && hz > 60 && steps >= top_steps(hz)
+}
+
+/// the most steps the load guard allows at a monitor rate: one over the rate's K, the pictures in between at the
+/// display's vblanks take one more at times (at_vblanks)
+fn top_steps(hz: u32) -> usize {
+    (xr_hle::steps_for(hz, 2) + 1).min(MOST_STEPS)
 }
 
 /// the monitor rate the pictures in between are made for: the setting's (hz), w/ at most `steps` at 30 fps
@@ -312,12 +398,22 @@ impl<G: Game> Runner<G> {
             }
             if playing {
                 let began = Instant::now();
+                self.began = began;
                 // the window's keys are stale while a menu of its bar is open (see menubar::modal)
                 self.game.system().set_input(if crate::menubar::modal() { InputState::default() } else { controls.input });
+                let vblank = self.motion_vblank(limit);
+                self.game.system().set_motion_vblank(vblank);
                 let outcome = self.game.run_frame();
+                // XR_SLOW_GPU_MS=N (test builds): N ms more a refresh while the GPU takes one batch at a time, the wait a
+                // GPU slower than this one would add, for the load guard's checks
+                #[cfg(feature = "test-hooks")]
+                if let Some(ms) = std::env::var("XR_SLOW_GPU_MS").ok().and_then(|ms| ms.parse::<u64>().ok()).filter(|_| self.one) {
+                    std::thread::sleep(Duration::from_millis(ms));
+                }
                 self.frame += 1;
                 self.game_time += began.elapsed();
-                self.load = (self.load.0 + began.elapsed(), self.load.1 + 1);
+                self.load = (self.load.0 + began.elapsed(), self.load.1 + 1, self.load.2.max(began.elapsed()));
+                self.sound = plays_sound(limit);
                 if self.load.1 >= 60 {
                     self.guard(limit);
                 }
@@ -378,7 +474,7 @@ impl<G: Game> Runner<G> {
         let mut between = Vec::new();
         for k in 0..motion.map_or(0, |motion| motion.steps - 1) {
             let Some(top) = system.gpu_between(Screen::Top, false, k) else { continue };
-            let t = (k + 1) as f32 / motion.map_or(1, |motion| motion.steps) as f32;
+            let t = motion.map_or(1.0, |motion| motion.t(k));
             let right = if stereo { system.gpu_between(Screen::Top, true, k) } else { None };
             between.push(Between { t, top, bottom: system.gpu_between(Screen::Bottom, false, k), right });
         }
@@ -394,9 +490,11 @@ impl<G: Game> Runner<G> {
             bottom,
             right,
             between,
+            at_vblanks: motion.is_some_and(|motion| motion.times.is_some()),
             since,
             span: interval * motion.map_or(1, |motion| motion.gap as u32),
             game: self.game_time,
+            began: self.began,
             keyboard: system.keyboard_request().cloned(),
             answers: self.answers,
             cadence: system.cadence.clone(),
@@ -429,26 +527,52 @@ impl<G: Game> Runner<G> {
     /// the load guard, once a second of refreshes at the console's pace or slower: fewer pictures in between while the
     /// refreshes take too long, more again once they're quick (see guard_steps)
     fn guard(&mut self, limit: Option<u32>) {
-        let (time, count) = std::mem::take(&mut self.load);
+        let (time, count, longest) = std::mem::take(&mut self.load);
         let hz = self.live.map_or(0, |live| live.smooth_hz);
         if hz <= 60 || !plays_sound(limit) {
+            // fast forward: the CPU and GPU side by side (follow_rate turns the wait on again)
+            self.one = false;
+            self.game.system().gpu.set_one_in_flight(false);
             return;
         }
-        self.steps_cap = guard_steps(self.steps_cap, time / count.max(1), frame_time(limit)).min(xr_hle::steps_for(hz, 2));
-        self.follow_rate(&format!("the refreshes take {:.1} ms on average", (time / count.max(1)).as_secs_f64() * 1000.0));
+        let average = time / count.max(1);
+        self.load_guard.second(average, longest, frame_time(limit), top_steps(hz), Instant::now(), self.one);
+        self.follow_rate(&format!("the refreshes take {:.1} ms on average", average.as_secs_f64() * 1000.0));
     }
 
     /// asks the game for pictures in between at the rate the setting allows and both guards (the load's, the window's
     /// pace) leave, where that changed
     fn follow_rate(&mut self, why: &str) {
         let hz = self.live.map_or(0, |live| live.smooth_hz);
-        let rate = motion_rate(hz, self.steps_cap.min(self.pace_cap));
-        if hz == 0 || rate == self.rate {
+        let cap = self.load_guard.steps.min(self.pace_cap);
+        let (rate, vblanks) = (motion_rate(hz, cap), at_vblanks(hz, cap));
+        let one = one_in_flight(hz, self.load_guard.steps, self.sound) && self.load_guard.waits(Instant::now(), top_steps(hz));
+        if one != self.one && hz > 60 {
+            log::info!("frame interpolation: the GPU takes {} from now on ({why})", if one { "one batch at a time" } else { "batches as they come" });
+        }
+        self.one = one;
+        self.game.system().gpu.set_one_in_flight(one);
+        if hz == 0 || (rate, vblanks) == (self.rate, self.at_vblanks) {
             return;
         }
-        log::info!("frame interpolation for {hz} Hz: {} pictures in between at 30 fps from now on ({why})", xr_hle::steps_for(rate, 2) - 1);
-        self.rate = rate;
+        match vblanks {
+            true => log::info!("frame interpolation for {hz} Hz: a picture in between each vblank from now on ({why})"),
+            false => log::info!("frame interpolation for {hz} Hz: {} pictures in between at 30 fps from now on ({why})", xr_hle::steps_for(rate, 2) - 1),
+        }
+        (self.rate, self.at_vblanks) = (rate, vblanks);
         self.game.system().set_motion_rate(rate);
+    }
+
+    /// the display's vblank in refreshes at the speed the game runs, while the pictures in between go at its vblanks
+    /// (at the console's speed or slower), else 0
+    fn motion_vblank(&self, limit: Option<u32>) -> f64 {
+        match self.live.filter(|_| self.at_vblanks && plays_sound(limit)) {
+            // a hair long: the pictures come a little slower than the display shows them, so now and then the window
+            // shows the game's own picture while the next one comes instead of falling behind
+            // shortcut: the monitor's rate as winit gives it; measure the vblank if a monitor's proves off by more
+            Some(live) => live.vblank.as_secs_f64() * 1.001 / frame_time(limit).as_secs_f64(),
+            None => 0.0,
+        }
     }
 
     /// makes the running game and its sound follow the settings, where they changed
@@ -521,6 +645,15 @@ pub(crate) fn next_of<T>(queue: &mut VecDeque<T>, shown: u64, frame: impl Fn(&T)
     queue.front().is_some_and(|first| frame(first) != shown)
 }
 
+/// the oldest set after the one shown (frame `shown`), the ones up to it dropped: a window behind the game whose
+/// pictures got drawn over goes on w/ the next, not the newest (crate::App::present), which skipped a whole picture
+pub(crate) fn next_after<T: Clone>(queue: &mut VecDeque<T>, shown: u64, frame: impl Fn(&T) -> u64) -> Option<T> {
+    while queue.front().is_some_and(|first| frame(first) <= shown) {
+        queue.pop_front();
+    }
+    if queue.len() > 1 { queue.pop_front() } else { queue.front().cloned() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,8 +689,72 @@ mod tests {
             assert_eq!(xr_hle::steps_for(motion_rate(240, steps), 2), steps);
         }
         assert_eq!(motion_rate(200, 8), 200, "never past the setting's");
+        assert!(at_vblanks(200, 8) && !at_vblanks(200, 7), "200 Hz: a picture each vblank needs up to seven in between");
+        assert!(at_vblanks(144, 6) && !at_vblanks(144, 5));
+        assert!(!at_vblanks(240, 8) && !at_vblanks(60, 8), "240 Hz would need eight; 60 shows each refresh once");
+        assert!(one_in_flight(200, 8, true) && one_in_flight(240, 8, true), "one batch at a time while the load guard leaves K be");
+        assert!(!one_in_flight(200, 7, true) && !one_in_flight(200, 2, true), "the load guard took K down: the GPU runs behind as usual");
+        assert!(!one_in_flight(60, 8, true), "60 fps");
+        assert!(!one_in_flight(200, 8, false), "fast forward (no sound): never, even when a Pace request asks for the rate");
     }
 
+    /// a GPU slower than this one: the refreshes take past 90% of a frame only while the GPU takes one batch at a time.
+    /// The load guard turns that wait off first, for longer each time, and leaves K, instead of flapping every second;
+    /// K comes down only while the refreshes are still slow w/o it, and a minute w/o a trip brings the hold back to 4 s
+    #[test]
+    fn the_load_guard_turns_the_wait_off_first() {
+        let (frame, ms, start) = (crate::FRAME_TIME, Duration::from_millis, Instant::now());
+        let at = |second: u64| start + Duration::from_secs(second);
+        // each second runs w/ the wait as the second b4 left it (follow_rate after the guard)
+        let mut guard = LoadGuard::new();
+        let (mut one, mut waited) = (true, Vec::new());
+        for second in 0..120 {
+            let average = if one { ms(16) } else { ms(6) };
+            guard.second(average, average, frame, 8, at(second), one);
+            assert_eq!(guard.steps, 8, "K stays");
+            if one {
+                waited.push(second);
+            }
+            one = guard.waits(at(second), 8);
+        }
+        assert_eq!(waited, [0, 5, 14, 31, 64], "the wait back for a second after holds of 4, 8, 16 and 32 s");
+        // slow w/o the wait too: K comes down from the second after
+        let mut guard = LoadGuard::new();
+        guard.second(ms(16), ms(16), frame, 8, at(0), true);
+        (1..3).for_each(|second| guard.second(ms(16), ms(16), frame, 8, at(second), false));
+        assert_eq!(guard.steps, 6);
+        // a trip, then a minute on and fine: the next trip holds 4 s again
+        let mut guard = LoadGuard::new();
+        guard.second(ms(16), ms(16), frame, 8, at(0), true);
+        (4..=64).for_each(|second| guard.second(ms(6), ms(6), frame, 8, at(second), true));
+        guard.second(ms(16), ms(16), frame, 8, at(65), true);
+        assert!(!guard.waits(at(68), 8) && guard.waits(at(69), 8), "held 4 s");
+    }
+
+    /// the second the hold ran out in still ran w/o the wait: slow then is the game's, K comes down, the hold doesn't
+    /// double (the guard planned the wait back on, it wasn't yet)
+    #[test]
+    fn the_load_guard_trips_on_the_wait_it_ran_with() {
+        let (frame, ms, start) = (crate::FRAME_TIME, Duration::from_millis, Instant::now());
+        let at = |second: u64| start + Duration::from_secs(second);
+        let mut guard = LoadGuard::new();
+        guard.second(ms(16), ms(16), frame, 8, at(0), true);
+        assert!(guard.waits(at(4), 8), "planned back on");
+        guard.second(ms(16), ms(16), frame, 8, at(4), false);
+        assert_eq!((guard.steps, guard.hold), (7, HOLD * 2), "K down, the hold as it was");
+    }
+
+    /// a second w/ a load in it (a battle's start, a refresh of 370 ms at 8x) averages past 90% w/ the GPU fast enough:
+    /// it counts neither for the wait nor for K
+    #[test]
+    fn a_load_trips_nothing() {
+        let (frame, ms, now) = (crate::FRAME_TIME, Duration::from_millis, Instant::now());
+        let mut guard = LoadGuard::new();
+        guard.second(ms(17), ms(370), frame, 8, now, true);
+        assert!(guard.waits(now, 8) && guard.steps == 8);
+        guard.second(ms(17), ms(20), frame, 8, now, true);
+        assert!(!guard.waits(now, 8), "a refresh a bit long counts");
+    }
     /// each refresh's set gets shown in turn, even two made within one vblank; a game standing still adds none
     #[test]
     fn sets_wait_their_turn() {
@@ -580,5 +777,11 @@ mod tests {
             queue_up(&mut queue, (frame, 0), id);
         }
         assert_eq!(queue, VecDeque::from([(7, 0), (8, 0)]), "a window held up (a menu open) finds the newest two");
+        // the game two pictures ahead drew over the one showing (6): the window goes on w/ the next (7), then 8, never
+        // back
+        assert_eq!(next_after(&mut queue, 6, id), Some((7, 0)));
+        assert_eq!(queue, VecDeque::from([(8, 0)]));
+        assert!(next_of(&mut queue, 7, id) && queue.front() == Some(&(8, 0)), "then the one after it");
+        assert_eq!(next_after(&mut queue, 8, id), None, "nothing older left to show");
     }
 }

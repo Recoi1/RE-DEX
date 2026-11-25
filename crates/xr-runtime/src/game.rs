@@ -11,6 +11,15 @@ pub fn hooks_hash(hooks: &[u32]) -> u64 {
     xr_hle::cro::code_hash(&hooks.iter().flat_map(|a| a.to_le_bytes()).collect::<Vec<u8>>())
 }
 
+/// Does a DLL with this hook list hash run with this redex? The DLL calls hook k for the k-th line of its hooks.txt and
+/// the runtime fills slot k for HOOKED[k], so its list must be HOOKED or a start of it: none at all (a DLL that hooks
+/// nothing), or at least the first `hooks::REQUIRED` (the multiplayer hooks; with only some of them online players would
+/// silently go missing). Hooks after those are speed-ups a DLL built before them just never calls.
+pub fn hook_list_accepted(hash: u64) -> bool {
+    let hooked = &crate::hooks::HOOKED;
+    (crate::hooks::REQUIRED..=hooked.len()).chain([0]).any(|k| hash == hooks_hash(&hooked[..k]))
+}
+
 /// The CRO modules compiled into xgame.dll: `xr_place_module`, `xr_unplace_module`, and each module's index and
 /// code hash by its name.
 pub struct Modules {
@@ -60,13 +69,12 @@ impl Game {
                 hex(&sha)
             ));
         }
-        // the DLL calls hook k for the k-th function of its hooks.txt, and the runtime fills slot k for HOOKED[k]: the
-        // lists must be the same (a DLL that hooks nothing calls no slot)
-        let ours = hooks_hash(&crate::hooks::HOOKED);
-        if info.hooks_hash != ours && info.hooks_hash != hooks_hash(&[]) {
+        if !hook_list_accepted(info.hooks_hash) {
+            let ours = hooks_hash(&crate::hooks::HOOKED);
             return Err(format!(
                 "this game build ({build}) was made with another hook list (hooks.txt, hash {:016X}) than this redex fills ({} hooks, \
-                 hash {ours:016X}); use the build made with this redex, or {rebuild} and this redex's functions/{build}/hooks.txt",
+                 hash {ours:016X}), or with only part of the hooks online play needs; use the build made with this redex, or \
+                 {rebuild} and this redex's functions/{build}/hooks.txt",
                 info.hooks_hash,
                 crate::hooks::HOOKED.len()
             ));
@@ -126,5 +134,18 @@ __declspec(dllexport) XrFn xr_lookup(uint32_t a) { return 0; }"#;
         let rt = XrRuntime { abi_version: XR_ABI_VERSION, mem: std::ptr::null_mut(), svc: None, interp: None, preempt: None, hooks: std::ptr::null_mut() };
         let e = Game::open(&dir.join("xgame.dll"), &rt).err().expect("must fail");
         assert!(e.ends_with(&format!("xgame.dll: ABI version 99, expected {XR_ABI_VERSION}; rebuild it with xr-recomp for this redex")), "{e}");
+    }
+
+    /// a DLL's hook list runs when it is none, all of HOOKED, or a start of it holding at least the multiplayer hooks;
+    /// a start missing some of those, another list or another order is refused
+    #[test]
+    fn hook_lists_accepted_are_none_or_the_multiplayer_ones_and_more() {
+        use crate::hooks::{HOOKED, REQUIRED};
+        for k in 0..=HOOKED.len() {
+            assert_eq!(hook_list_accepted(hooks_hash(&HOOKED[..k])), k == 0 || k >= REQUIRED, "the first {k} hooks");
+        }
+        assert_eq!(REQUIRED, 4, "TICK, SAVE, CREATE and LOAD: the puppets need all four");
+        assert!(!hook_list_accepted(hooks_hash(&[HOOKED[1], HOOKED[0], HOOKED[2], HOOKED[3]])));
+        assert!(!hook_list_accepted(hooks_hash(&[HOOKED.as_slice(), &[0x0010_0000]].concat())));
     }
 }

@@ -365,6 +365,10 @@ pub enum PresentError {
     Backend(String),
     #[error("the swapchain is out of date and was recreated")]
     OutOfDate,
+    /// a picture it was given got drawn over by a later one (the game ran two pictures ahead of the window): nothing
+    /// was presented, the newest pictures go up instead
+    #[error("a picture was drawn over by a later one")]
+    Stale,
 }
 
 pub trait Presenter {

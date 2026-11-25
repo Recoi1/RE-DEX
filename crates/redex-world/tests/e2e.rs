@@ -112,6 +112,201 @@ fn two_clients_end_to_end() {
     srv.stop();
 }
 
+/// An in-game lobby (the dev path: TCP, dev ids): the host and two players log in; the host sees both as members and
+/// removes one, who is told why, is gone from the others and is turned away when it comes back; a third past the
+/// lobby's size is refused as full; closing tells everyone left that the host closed it.
+#[test]
+fn a_lobby_kicks_keeps_out_and_closes() {
+    use redex_proto::refuse;
+    use redex_world::lobby::{CLOSED, Door, Host, REMOVED, dev_key};
+    let dir = std::env::temp_dir().join(format!("redex-lobby-e2e-{}", std::process::id()));
+    let host = Host::dev(3, std::sync::Arc::new(Door::new(dev_key(1), false)), dev_key(1), dir.clone()).unwrap();
+    let addr: SocketAddr = host.address().parse().unwrap();
+    let (mut h, mut a, mut b) = (Client::connect(addr), Client::connect(addr), Client::connect(addr));
+    h.hello(1, "Host");
+    let sa = a.hello(2, "Ash");
+    let sb = b.hello(3, "Brock");
+    assert_eq!(host.members().iter().map(|m| (m.0, m.1.as_str(), m.2)).collect::<Vec<_>>(), [(sa, "Ash", 0), (sb, "Brock", 0)], "the host is not its own member");
+    for (c, map) in [(&mut h, 10), (&mut a, 10), (&mut b, 10)] {
+        c.send(Msg::MapEnter { game: GEN_X, map });
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    while h.next(Duration::from_millis(100)).is_some() {}
+    let mut full = Client::connect(addr);
+    full.send(Msg::Hello { version: VERSION, auth: Auth::DevId(9), name: "late".into(), game: GEN_X, title: TITLE_X, appearance: vec![] });
+    assert!(matches!(full.next(W), Some(Msg::Refuse { code: refuse::FULL, .. })), "a 4th in a lobby of 3");
+
+    assert!(!host.kick(9999) && !host.kick(1), "no such session; the host's own is session 1 here and never kicked");
+    assert!(host.kick(sb));
+    let told = std::iter::from_fn(|| b.next(W)).find(|m| matches!(m, Msg::Refuse { .. }));
+    assert_eq!(told, Some(Msg::Refuse { code: refuse::CLOSED, reason: REMOVED.into() }));
+    assert!(std::iter::from_fn(|| h.next(W)).any(|m| m == Msg::PeerGone { session: sb }), "the host sees B go");
+    assert_eq!(host.members().len(), 1);
+    // back again: turned away at the door
+    let mut again = Client::connect(addr);
+    again.send(Msg::Hello { version: VERSION, auth: Auth::DevId(3), name: "Brock".into(), game: GEN_X, title: TITLE_X, appearance: vec![] });
+    assert_eq!(again.next(W), Some(Msg::Refuse { code: refuse::CLOSED, reason: REMOVED.into() }));
+
+    host.close();
+    for c in [&mut a, &mut h] {
+        let told = std::iter::from_fn(|| c.next(W)).find(|m| matches!(m, Msg::Refuse { .. }));
+        assert_eq!(told, Some(Msg::Refuse { code: refuse::CLOSED, reason: CLOSED.into() }));
+    }
+    // the server stays up half a second after its last connection closed (its last frames go out), then stops
+    let until = Instant::now() + Duration::from_secs(3);
+    while TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
+        assert!(Instant::now() < until, "the lobby never stopped listening");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Links whose peer is named by the test, as Steam names a P2P peer by its account (`steam:<id>`): over TCP on one PC
+/// every client would be the same peer, 127.0.0.1.
+struct Named {
+    inner: TcpTransport,
+    next: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    taken: std::sync::mpsc::Sender<()>,
+}
+
+impl redex_world::transport::Transport for Named {
+    fn accept(&self, wait: Duration) -> std::io::Result<Option<Box<dyn redex_world::transport::Link>>> {
+        let Some(link) = self.inner.accept(wait)? else { return Ok(None) };
+        let peer = self.next.lock().unwrap().pop_front().unwrap_or_else(|| "?".into());
+        let _ = self.taken.send(());
+        // "steam:<n>": known before Hello as dev id n (as Steam knows a P2P peer's account)
+        let account = peer.strip_prefix("steam:").and_then(|n| n.parse::<u128>().ok()).map(redex_world::lobby::dev_key);
+        Ok(Some(Box::new(Peered(link, peer, account))))
+    }
+}
+
+struct Peered(Box<dyn redex_world::transport::Link>, String, Option<u128>);
+
+impl redex_world::transport::Link for Peered {
+    fn recv(&mut self, wait: Duration) -> std::io::Result<redex_world::transport::Recv> {
+        self.0.recv(wait)
+    }
+    fn send(&mut self, m: &Msg) -> std::io::Result<()> {
+        self.0.send(m)
+    }
+    fn peer(&self) -> String {
+        self.1.clone()
+    }
+    fn set_live(&mut self) {
+        self.0.set_live()
+    }
+    fn account(&self) -> Option<u128> {
+        self.2
+    }
+}
+
+/// One stranger cannot keep a lobby full: it gets two connections however many it opens, they are dropped soon if they
+/// never log in, and a friends-only door turns its login away; the friends come in up to the lobby's size, and the host
+/// always does, last as well.
+#[test]
+fn a_stranger_cannot_crowd_out_the_host_or_friends() {
+    use redex_proto::refuse;
+    use redex_world::lobby::{Door, Host, dev_key};
+    use std::sync::{Arc, Mutex, mpsc};
+    let dir = std::env::temp_dir().join(format!("redex-lobby-crowd-{}", std::process::id()));
+    let t = TcpTransport::bind("127.0.0.1:0").unwrap();
+    let addr = t.local_addr().unwrap();
+    let (names, (tx, rx)) = (Arc::new(Mutex::new(std::collections::VecDeque::new())), mpsc::channel());
+    let door = Arc::new(Door::new(dev_key(1), true));
+    door.set_friends([2, 3, 4, 5].map(dev_key));
+    let host = Host::on(Named { inner: t, next: names.clone(), taken: tx }, addr.to_string(), 4, door, dev_key(1), dir.clone());
+    let as_peer = |peer: &str| {
+        names.lock().unwrap().push_back(peer.into());
+        let c = Client::connect(addr);
+        rx.recv_timeout(W).expect("accepted");
+        c
+    };
+    let refused = |c: &mut Client, wait: Duration| match c.next(wait) {
+        Some(Msg::Refuse { code, .. }) => Some(code),
+        _ => None,
+    };
+    // eight connections from one account that never say Hello: two are kept, the rest refused at once
+    // a peer whose account is not known before Hello (as over TCP): the connection caps are what stop it
+    let mut stranger: Vec<Client> = (0..8).map(|_| as_peer("peer:666")).collect();
+    let opened = Instant::now();
+    let full = stranger.iter_mut().skip(2).filter_map(|c| refused(c, Duration::from_millis(500))).filter(|&c| c == refuse::FULL).count();
+    assert_eq!(full, 6, "one account holds two connections at most");
+    // its login: not a friend
+    stranger[0].send(Msg::Hello { version: VERSION, auth: Auth::DevId(66), name: "x".into(), game: GEN_X, title: TITLE_X, appearance: vec![] });
+    assert_eq!(refused(&mut stranger[0], W), Some(refuse::AUTH));
+    // friends come in while the stranger holds those two
+    let _friends: Vec<Client> = [2, 3, 4]
+        .map(|id| {
+            let mut c = as_peer(&format!("steam:{id}"));
+            c.hello(id, "friend");
+            c
+        })
+        .into();
+    // the lobby (4 with the host) is full for a fourth friend; the host's seat is kept
+    let mut late = as_peer("steam:5");
+    late.send(Msg::Hello { version: VERSION, auth: Auth::DevId(5), name: "late".into(), game: GEN_X, title: TITLE_X, appearance: vec![] });
+    assert_eq!(refused(&mut late, W), Some(refuse::FULL), "a fifth player in a lobby of 4");
+    let mut me = as_peer("steam:1");
+    me.hello(1, "Host");
+    assert_eq!(host.members().len(), 3);
+    // its silent connection is dropped soon: by 2.5 s it was refused (the lobby's wait for Hello is 2 s, a server's 5)
+    std::thread::sleep(Duration::from_millis(2500).saturating_sub(opened.elapsed()));
+    assert_eq!(refused(&mut stranger[1], Duration::from_millis(200)), Some(refuse::TIMEOUT), "still waiting after 2.5 s");
+    host.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Two free accounts that keep opening connections and never log in hold every handshake slot of an open lobby, but:
+/// under friends only they are turned away at once (a lasting refusal, before they take a slot), so a friend still
+/// comes in; and the host's own account always comes in, in an unlisted lobby too, where strangers are let try.
+#[test]
+fn two_strangers_cannot_hold_the_handshake_slots() {
+    use redex_proto::refuse;
+    use redex_world::lobby::{Door, Host, dev_key};
+    use std::sync::{Arc, Mutex, mpsc};
+    for friends_only in [true, false] {
+        let dir = std::env::temp_dir().join(format!("redex-lobby-slots-{friends_only}-{}", std::process::id()));
+        let t = TcpTransport::bind("127.0.0.1:0").unwrap();
+        let addr = t.local_addr().unwrap();
+        let (names, (tx, rx)) = (Arc::new(Mutex::new(std::collections::VecDeque::new())), mpsc::channel());
+        let door = Arc::new(Door::new(dev_key(1), friends_only));
+        door.set_friends([2].map(dev_key));
+        let host = Host::on(Named { inner: t, next: names.clone(), taken: tx }, addr.to_string(), 4, door, dev_key(1), dir.clone());
+        let as_peer = |peer: &str| {
+            names.lock().unwrap().push_back(peer.into());
+            let c = Client::connect(addr);
+            rx.recv_timeout(W).expect("accepted");
+            c
+        };
+        let refused = |c: &mut Client, wait: Duration| match c.next(wait) {
+            Some(Msg::Refuse { code, .. }) => Some(code),
+            _ => None,
+        };
+        // two accounts, two silent connections each: all four handshake slots
+        let mut held: Vec<Client> = [66, 66, 67, 67].map(|n| as_peer(&format!("steam:{n}"))).into();
+        let codes: Vec<Option<u8>> = held.iter_mut().map(|c| refused(c, Duration::from_millis(300))).collect();
+        if friends_only {
+            assert_eq!(codes, [Some(refuse::AUTH); 4], "strangers turned away before they take a slot");
+            let mut friend = as_peer("steam:2");
+            friend.hello(2, "Friend");
+        } else {
+            assert_eq!(codes, [None; 4], "an unlisted lobby lets them try");
+            let mut late = as_peer("steam:68");
+            assert_eq!(refused(&mut late, Duration::from_millis(500)), Some(refuse::FULL), "no slot left for a third stranger");
+        }
+        // the host's own account, past every slot
+        let mut me = as_peer("steam:1");
+        me.hello(1, "Host");
+        // but still two connections at most (a reconnect loop in the host's own game is a bug, not a reason for more):
+        // its game plus one silent connection, then refused
+        let _second = as_peer("steam:1");
+        let mut third = as_peer("steam:1");
+        assert_eq!(refused(&mut third, Duration::from_millis(500)), Some(refuse::FULL), "a third connection of the host's account");
+        host.close();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 #[test]
 fn version_mismatch_is_refused_clearly() {
     let (srv, addr) = start(Config::default());

@@ -41,7 +41,7 @@ redex-world --dev [--bind ADDR:PORT]          (an mp-tests build only)
   the allow list, disconnects a player within 30 s. A list that can't be read refuses everyone (a missing `bans.txt`
   bans nobody). A refused player gets `AUTH` with the reason ("You're not on
   this world's list; ask its host", "you are banned from this world"), shown to them as "Cannot join: ...". Spacewar accounts are free, so a
-  SteamID ban is weak: the allow list is the real gate until moderation exists.
+  SteamID ban is weak: the allow list is the real gate until M8.
 - `--dev` (an `mp-tests` build only): TCP on `127.0.0.1:7777` (or `--bind`, localhost only). Dev ids and Steam logins. The server starts an
   anonymous Steam game server to check tickets; that needs `steamclient64.dll`, `tier0_s64.dll` and
   `vstdlib_s64.dll` from the Steam client or SteamCMD next to it. If Steam's game server cannot start, a dev server
@@ -134,10 +134,10 @@ Between two PCs: run `redex-world --p2p` on one, and both players join with `--w
 be opened. Not over plain TCP: a Steam ticket sent over TCP is not bound to the server (see "The server"), so a TCP
 server takes logins on localhost only.
 
-## The dev launchers (local scripts, not in this repository)
+## The launchers (`D:\Roms-Recomps\PokemonX\play-online`)
 
 Since the MP lockdown these are dev launchers: `--dev` and `--dev-id` need `mp-tests` builds of `redex-world` and
-`redex`, and the P2P server needs `--allow FILE`. They were not changed with it.
+`redex`, and the P2P server needs `--allow FILE`. They were not changed with it (the folder is the user's).
 
 | Launcher | What it starts |
 |---|---|
@@ -168,7 +168,8 @@ A character (made in the start screen's creator: a name and a look, `<data>/char
 - The server keeps at most 8 per account in `<--data dir>/accounts/<key>.bin` (the key is the Steam id or the dev id) and
   answers each put and each login with the account's list (`Characters`). For each id the newer `changed` wins (a tie
   keeps the PC's own). The game merges the list into `characters.json`, so a character made on X shows on Y after Y
-  logs in, and a newer copy replaces an older one at the next start.
+  logs in, and a newer copy replaces an older one at the next start. Only from a world on this PC (a test server):
+  lists from a lobby or a `steam:` world, whose host is another player, are ignored (see Lobbies).
 - The server checks every put: at most 16 per 10 s per session, id not 0, `changed` at most a day ahead, the look
   through `Appearance::from_bytes`, the name as `--name`'s. A broken account file is kept aside
   (`.bin.bad-<ms>`), never saved over; the same holds for `characters.json` (`characters.json.bad-<ms>`), which is
@@ -311,6 +312,79 @@ Steam like the world connection.
   `tests/exec.rs` `a_fake_friends_chat_arrives_and_is_answered` and `invite_join_hits_lockdown`, and the frontend's
   `online::tests` for the tab, chat, prompt and Ignore. `friends_screenshots` (ignored; `XR_UI_SHOTS=DIR`) renders the
   panels to PNG.
+
+## Lobbies: host from the running game, room codes
+
+A lobby is a world the player's own game runs. No restart and no server program: **Players list > Host or join a
+lobby…** starts a `redex-world` server inside the game's process (`redex_world::lobby::Host`, a Steam game server on
+Steam's relays, as `redex-world --p2p` runs), and the game then joins it itself. The player stays where they are.
+
+- **Settings**: a name (empty: "<name>'s lobby", 32 characters, cleaned like a player name), 2 to 8 players with the
+  host, and who may come in: **Friends only** (the default: the server's door lets in the host's Steam friends only,
+  read again every 30 s), **Unlisted (anyone with the code)**, or **Public** (also listed in Browse servers, as a
+  `--p2p` server is; Windows may ask to let RE:DEX through its firewall, for the query port). Defaults: friends only,
+  4 players. **Unlisted is not private**: codes can be read by anyone listing app-480 lobbies, and the door lets in
+  anyone who comes; only Friends only keeps strangers out.
+- **Limits**: the player cap is checked at login, after the door, and the host's seat is always kept (a full lobby
+  says "this lobby is full"). Besides the players, at most 4 connections may be in the handshake, at most 2 per Steam
+  account (a reconnecting client holds two for a moment), and one that has not said Hello in 2 s is dropped: one
+  stranger opening connections cannot keep the lobby full. Over Steam a connection's account is known before Hello, so
+  the host's own account always comes in past the lobby's totals (it keeps the two-per-account cap), and under Friends only a non-friend or removed account is
+  refused for good at once, before it takes a slot. A full friends-only lobby still tells a stranger it is for the
+  host's friends (a lasting refusal), not that it is full. A lobby writes no reports file and starts with no players'
+  character lists (`<data>/lobby-world`).
+- **Before hosting** the panel says what holds in every world: no fast forward (100% speed at most), no dev or test
+  tools, no mods that change the game. Hosting goes through the same checks as joining (`refusal`, the game file's
+  hash), and is refused while the game is in another world.
+- **Local characters only.** A lobby, like every Steam world, takes the characters on this PC: a game playing an
+  account's online character cannot host, join by code or accept an invite to a Steam world ("Lobbies use characters
+  on this PC…"). Nothing from a lobby reaches the account backend, and a lobby's host never changes the joiner's
+  characters: the character lists a lobby or any `steam:` world sends are ignored, so characters.json and the saves are
+  never written from there.
+- **The room code**: six characters, `K7M-Q2X`, from `23456789ABCDEFGHJKMNPQRSTVWXYZ` (no 0/O, 1/I/L, U), the last a
+  check character (Luhn mod 30): a wrong character or two swapped neighbours is caught before anything is asked
+  (`redex_proto::room`). Case, spaces and the dash do not matter. The code is published as a public Steam lobby (app
+  480) whose data holds `redex` (the protocol), `code`, `world` (`steam:<server id>`) and `name`; Join asks Steam's lobby
+  list for that code (`xr_net::steam::find_room`). No RE:DEX server is involved, so codes work while the official
+  server is down. Only a lobby with its host alone in it counts (a member count of 1, or 0, which Steam may report for a lobby the searcher is not in; strangers joining the Steam lobby to fill it, or to
+  take it over when the host leaves, are ignored), and a code that names two different worlds (someone copied it) is
+  refused: "That code is ambiguous: ask your friend to host again for a new code". The code is a way to find the world,
+  not a key: under friends only a stranger who has it is still turned away at the door ("this lobby is for the host's
+  Steam friends only"). Left as is: once a lobby has closed, anyone can publish its old code for their own world, so
+  a friend typing a stale code can land in a stranger's world.
+- **The host's panel** opens on Copy (never on a player) and shows the code (Copy puts it on the clipboard), who is in,
+  **Remove** for each, pressed twice (the player is told "the host removed you from this lobby", leaves the world, and is
+  kept out until the lobby closes; another Steam account could still come in unless the lobby is Friends only) and
+  **Close lobby**: new logins are told it closed, everyone in it is told "the host closed the lobby", and the server
+  waits up to a second for every connection to pass that on (Steam connections close with linger, so the refusal is
+  sent, not dropped), then keeps the server up half a second more off the game's thread so those lingering frames go
+  out. Quitting the game closes it the same way, the half second spent before the game exits. If the host's own game cannot join or is refused by
+  its lobby, the lobby closes and says why.
+- **One game server per process**: Steam shuts down whichever game server is up when the last handle to one goes, so
+  a new lobby waits until the previous one's server is fully gone ("your last lobby is still closing; try again in a
+  moment").
+- **A panic** on one of the server's threads (`redex-accept`, `redex-conn`, `redex-steam`, `redex-lobby-start`) ends
+  that thread, as on the dedicated server; the host's game plays on.
+- **Joining**: the Lobby panel's "Join with a room code", the start screen's World field (a room code there joins that
+  lobby with Play with friends (P2P): `redex --lobby CODE`, P2P without the settings' world; the code is not saved), an invite from the Friends tab (Invite to my world
+  works for the lobby: the host is in it), Steam's "Join game", or Discord's Join. Every join goes through
+  `Joiner::start`, so every check applies.
+- **Leaving**: "Leave this world" in the Lobby panel. A world that refuses a player for good (removed, the lobby closed, a
+  ban) is left at once: "Left the world: …", offline from then on.
+- **Discord**: an open friends-only or public lobby sets the activity's join secret (its `steam:<id>`) and party (the
+  room code, players of max), so friends see Join on the profile. Every game connected to Discord asks it for Joins
+  (`SUBSCRIBE ACTIVITY_JOIN`, once a connection), because Discord sends the Join to the game of the player who pressed
+  it; that game joins the secret's `steam:<id>` like an invite. An unlisted lobby shows no Join. Discord friends who are
+  not Steam friends are turned away by a friends-only door.
+- **Tests** (mp-tests builds): a game with `--dev-id` hosts on TCP 127.0.0.1 instead of Steam and writes its code as a
+  file in `XR_FAKE_ROOMS` (a dev input); a headless game hosts with `XR_MP_HOST=FRAME:MAX:ACCESS[:NAME]` and removes the
+  first player with `XR_MP_KICK=FRAME`; a dev login named `redex-test-panic` makes its server thread panic.
+  `two_instances.rs` `lobby_host_join_by_code_and_kick` runs A (hosts from its running game) and B (`--lobby CODE`);
+  `exec.rs` `a_lobby_server_thread_panic_keeps_the_game_running` and `hosting_hits_lockdown`; `lobby.rs` tests the state
+  machine and re-hosting while a lobby is still closing; `e2e.rs` `a_stranger_cannot_crowd_out_the_host_or_friends`;
+  `a_real_steam_lobby` (ignored, `XR_REAL_STEAM=1`) the Steam path on one PC.
+- In-process rather than a child `redex-world.exe`: nothing more to ship or find, no server left running when the game
+  dies, and the member list and Remove are plain calls.
 
 ### Manual Steam check (two PCs, two Steam accounts that are friends)
 

@@ -465,6 +465,25 @@ impl World {
     pub fn is_empty(&self) -> bool {
         self.sessions.is_empty()
     }
+
+    /// Everyone logged in: (session, name, login key), by session.
+    pub fn list(&self) -> Vec<(u32, String, u128)> {
+        let mut v: Vec<_> = self.sessions.iter().map(|(&sid, s)| (sid, s.name.clone(), s.id)).collect();
+        v.sort_by_key(|e| e.0);
+        v
+    }
+
+    /// Ends a session from the server's side (a lobby host's kick, or the lobby closing): it is sent `why` (a
+    /// `Refuse`, which its connection passes on before it closes) and leaves the world. Its login key; None when there
+    /// is no such session.
+    pub fn end(&mut self, sid: u32, why: Msg) -> Option<u128> {
+        let s = self.sessions.get(&sid)?;
+        let key = s.id;
+        // straight into the outbox: its thread takes what was queued before it sees the sender gone
+        let _ = s.tx.try_send(why);
+        self.remove(sid);
+        Some(key)
+    }
 }
 
 #[cfg(test)]
@@ -495,6 +514,26 @@ mod tests {
             t.get()
         });
         w.enter(s, G, map, Instant::now() + Duration::from_secs(n * 10)).unwrap()
+    }
+
+    /// A session ended by the server gets its refusal, then nothing: it is out of the world, and its mates see it go.
+    #[test]
+    fn an_ended_session_is_told_and_gone() {
+        let mut w = World::default();
+        let (a, ra) = add(&mut w, 1);
+        let (b, rb) = add(&mut w, 2);
+        enter(&mut w, a, 10);
+        enter(&mut w, b, 10);
+        drain(&ra);
+        drain(&rb);
+        assert_eq!(w.list().iter().map(|e| (e.0, e.2)).collect::<Vec<_>>(), [(a, 1), (b, 2)]);
+        let why = Msg::Refuse { code: redex_proto::refuse::CLOSED, reason: "removed".into() };
+        assert_eq!(w.end(b, why.clone()), Some(2));
+        assert_eq!(drain(&rb), [why]);
+        assert!(matches!(rb.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)), "its outbox is closed");
+        assert!(matches!(drain(&ra)[..], [Msg::PeerGone { session }] if session == b));
+        assert!(!w.contains(b) && w.len() == 1);
+        assert_eq!(w.end(b, Msg::Bye), None);
     }
 
     #[test]

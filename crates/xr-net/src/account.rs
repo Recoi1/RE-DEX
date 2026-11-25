@@ -380,12 +380,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
     }
 
-    /// a session kept for an earlier official address is not given out for the new one: signed out
+    /// a session kept for an earlier official address (the sslip.io one) is not given out for the new one: signed out
     #[cfg(windows)]
     #[test]
     fn a_session_kept_for_the_old_official_server_reads_as_signed_out() {
         let data = temp("moved");
-        let old = "https://accounts.old-server.example.org";
+        let old = "https://playredex.mooo.com";
         let a = Account { server: old.into(), token: "rdx_s_old".into(), account_id: 0, public_id: 0, agent: agent(old) };
         save_session(&data, &a).unwrap();
         assert_eq!(saved_session(&data, old).as_deref(), Some("rdx_s_old"));

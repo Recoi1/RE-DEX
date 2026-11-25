@@ -1,6 +1,6 @@
 //! The start screen: RE:DEX's own front door when it opens with no arguments. Game cards (a built game shows a blurred,
 //! dimmed picture of its own title screen, made on this PC), "Add your game" (a file picker, then the builder's
-//! progress), a row for characters, the P2P world, and Play (offline, with friends over P2P, or online). It paints with the liquid glass
+//! progress), a row for characters (plan 2), the P2P world, and Play (offline, with friends over P2P, or online). It paints with the liquid glass
 //! look (glass.rs) on the same winit window + presenter the game uses, with no game booted: Play hands a [`Launch`]
 //! back and the runtime starts the game in a fresh process.
 pub mod account;
@@ -55,6 +55,8 @@ pub enum Mode {
     Offline,
     /// `--world W` (the P2P world the settings name), else `--p2p` (Steam's server list and invites in the game)
     P2p { world: Option<String> },
+    /// `--lobby CODE`: P2P, joining the lobby a room code names (typed in the World field; the game finds it through Steam)
+    Lobby(String),
     /// `--world W --account-server S`: an online character of the account signed in to this service; the game joins
     /// with world tickets from the session kept on this PC, never with a password
     Online { world: String, account: String },
@@ -78,6 +80,7 @@ impl Launch {
             Mode::Offline => a.push("--offline".into()),
             Mode::P2p { world: Some(w) } => a.extend(["--world".into(), w.into()]),
             Mode::P2p { world: None } => a.push("--p2p".into()),
+            Mode::Lobby(code) => a.extend(["--lobby".into(), code.into()]),
             Mode::Online { world, .. } => a.extend(["--world".into(), world.into()]),
         }
         a.extend(["--character".into(), format!("{:016x}", self.character).into()]);
@@ -137,6 +140,7 @@ impl Start {
         online_view: true,
         sign_in_tab: false,
         p2p: false,
+        lobby_code: None,
         panel: None,
         form: Form::default(),
         hook_submit: false,
@@ -237,6 +241,8 @@ struct Start {
     sign_in_tab: bool,
     /// "Play with friends (P2P)" was chosen while the official server is unreachable
     p2p: bool,
+    /// a room code typed in the World field: Play with friends joins that lobby (kept for this screen only, never saved)
+    lobby_code: Option<String>,
     /// the account panel, while it is open (it stands in for the character row)
     panel: Option<Panel>,
     form: Form,
@@ -546,7 +552,13 @@ impl Start {
                 (self.online_view() && self.session.can_play_online(), Mode::Online { world: s.world.clone(), account: s.accounts.clone() })
             }
             Play::Offline => (!self.online_tab(), Mode::Offline),
-            Play::P2p => (!self.online_tab(), Mode::P2p { world: Some(self.settings.world_address.clone()).filter(|w| !w.is_empty()) }),
+            Play::P2p => {
+                let mode = match &self.lobby_code {
+                    Some(code) => Mode::Lobby(code.clone()),
+                    None => Mode::P2p { world: Some(self.settings.world_address.clone()).filter(|w| !w.is_empty()) },
+                };
+                (!self.online_tab(), mode)
+            }
         };
         launch_for(&self.data, self.library.games.get(self.selected), ready && shown && self.ready(), self.character, mode)
     }
@@ -968,7 +980,7 @@ impl Start {
                 }
             }
             if let Some(buf) = &mut editing {
-                let edit = ui.add_sized([232.0, 40.0], egui::TextEdit::singleline(buf).hint_text("host:port or steam:<id>").font(FontId::proportional(16.0)));
+                let edit = ui.add_sized([232.0, 40.0], egui::TextEdit::singleline(buf).hint_text("room code, steam:<id> or host:port").font(FontId::proportional(16.0)));
                 commit |= edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 let r = glass.pill(ui, "Save", Some(80.0), true);
                 commit |= self.item(ui, &r, world, 20.0);
@@ -978,6 +990,7 @@ impl Start {
             } else if !official {
                 let addr = &self.settings.world_address;
                 let shown = match (addr.is_empty(), self.settings.world_name.is_empty()) {
+                    _ if self.lobby_code.is_some() => format!("Lobby: {}", redex_proto::room::shown(self.lobby_code.as_deref().unwrap_or_default())),
                     (true, _) => "World: none".to_owned(),
                     (false, true) => format!("World: {}", short(addr, 12)),
                     (false, false) => format!("World: {}", short(&self.settings.world_name, 12)),
@@ -1005,7 +1018,14 @@ impl Start {
         self.editing = editing;
         if commit {
             let value = self.editing.clone().unwrap_or_default().trim().to_owned();
-            if value.is_empty() || valid_address(&value) {
+            let code = redex_proto::room::looks_like_code(&value).then(|| redex_proto::room::parse(&value));
+            if let Some(Ok(code)) = code {
+                // a room code: Play with friends joins that lobby; it is not kept as the world
+                (self.lobby_code, self.editing) = (Some(code), None);
+            } else if let Some(Err(why)) = code.filter(|_| !value.is_empty()) {
+                self.edit_error = Some(why);
+            } else if value.is_empty() || valid_address(&value) {
+                self.lobby_code = None;
                 self.settings.world_address = value.clone();
                 self.settings.save();
                 self.editing = None;
@@ -1549,7 +1569,7 @@ impl Start {
         if let Some(backend) = &mut self.backend {
             let blank = || ScreenImage { width: 0, height: 0, pixels: &[], gpu: None };
             match backend.present(blank(), blank(), blank(), &overlay) {
-                Ok(()) | Err(PresentError::OutOfDate) => {}
+                Ok(()) | Err(PresentError::OutOfDate | PresentError::Stale) => {}
                 Err(e) => self.failure = Some(format!("presentation failed: {e}")),
             }
         }
@@ -1683,6 +1703,11 @@ mod tests {
         let l = launch_for(data, Some(&game), true, Some(7), Mode::P2p { world: Some("host:1".into()) }).unwrap();
         assert_eq!(l.character, 7);
         assert_eq!(l.build_dir, data.join("build").join("x-abc"));
+        // a room code typed in the World field: P2P, joining that lobby
+        let l = launch_for(data, Some(&game), true, Some(7), Mode::Lobby("K7MQ2X".into())).unwrap();
+        let args: Vec<String> = l.args().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.windows(2).any(|w| w == ["--lobby", "K7MQ2X"]), "{args:?}");
+        assert!(!args.iter().any(|a| a == "--offline" || a == "--world" || a == "--p2p" || a == "--account-server"), "--lobby alone: P2P without the settings' world {args:?}");
     }
 
     /// a ready X with one character on this PC ("Here") and one the account would have ("Away")

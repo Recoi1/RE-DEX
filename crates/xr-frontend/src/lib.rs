@@ -137,8 +137,11 @@ pub fn run<G: Game + 'static>(options: Options, config: Config, boot: impl FnOnc
         repeats: std::env::var_os("XR_NO_REPEAT").is_none(),
         next_present: Instant::now(),
         last_present: Instant::now(),
+        backend_took: Duration::ZERO,
+        waited: Duration::ZERO,
         seen: (0, Duration::ZERO),
         between: None,
+        refreshed: (0, Duration::ZERO),
         pace: PaceGuard::new(),
         switch: std::env::var("XR_SMOOTH_SWITCH").ok().and_then(|v| {
             let (seconds, smooth) = v.split_once(':')?;
@@ -246,6 +249,10 @@ struct App<G: Game> {
     next_present: Instant,
     /// when the last present was
     last_present: Instant,
+    /// XR_FRAMESTATS: the presenter's own part of the last present, and the step's deliberate waits since the last
+    /// present (for the pictures, to the next vblank estimate)
+    backend_took: Duration,
+    waited: Duration,
     /// XR_FRAMESTATS: the refreshes run and their time at the last present
     seen: (u64, Duration),
     /// Smooth motion's pace guard (see PaceGuard)
@@ -254,9 +261,12 @@ struct App<G: Game> {
     /// Configure window would change it (a check of how the guards follow it)
     switch: Option<(Instant, SmoothMotion)>,
     /// the picture in between (k, from 0) the last present showed, none the game's own; and the pictures in between
-    /// last shown (Pictures::since tells them apart) and when the first of them went up
+    /// last shown (Pictures::since tells them apart), when the first of them went up and the vblanks since (see
+    /// vblanks_on)
     between: Option<usize>,
-    motion: Option<(Instant, Instant)>,
+    motion: Option<(Instant, Instant, u32)>,
+    /// the refreshes run and their time as of the last set taken, for the pace guard (PaceGuard::stalled)
+    refreshed: (u64, Duration),
     /// since when frames are counted for the frame rate, and the frames run and shown since
     counted: (Instant, u64, u64),
     /// frames shown a second and the speed against the console's
@@ -309,28 +319,62 @@ fn smooth_hz(smooth: SmoothMotion, monitor_hz: f64, repeats: bool) -> u32 {
 /// which picture in between goes up now (by its t, oldest first), none for the game's own: the latest whose time came,
 /// `elapsed` after the first of them went up, for a game frame lasting `span`. Its time is t of the way along the frame
 /// at the middle of the vblank the present shows in, plus 1/K: the first goes up at once, the game's own picture (K-1)/K
-/// of a frame late, and each gets 1/K of the frame
+/// of a frame late, and each gets 1/K of the frame. Pictures in between at the display's vblanks (a step apart, not
+/// ending at 1) have the game's own a step after their last: it only shows while the next picture's are late
 fn pick(ts: &[f32], elapsed: Duration, vblank: Duration, span: Duration) -> Option<usize> {
     let first = *ts.first()?;
     if span.is_zero() {
         return None;
     }
     let t = (elapsed + vblank / 2).as_secs_f32() / span.as_secs_f32() + first;
-    if t >= 1.0 {
+    if t >= own_t(ts) {
         return None;
     }
     ts.iter().rposition(|&at| at <= t)
+}
+
+/// where the game's own picture comes after a set's pictures in between: at 1 evenly, a step after the last (past 1)
+/// at the display's vblanks
+fn own_t(ts: &[f32]) -> f32 {
+    let step = if ts.len() > 1 { ts[1] - ts[0] } else { ts.first().copied().unwrap_or(1.0) };
+    let own = ts.last().map_or(1.0, |last| last + step);
+    if own < 1.001 {
+        1.0
+    } else {
+        own
+    }
+}
+
+/// the vblanks a present `elapsed` after the first of a set's shows at, the last showing at `last` (none: this is the
+/// first): the one after the last, FIFO shows each present for a vblank of its own however unevenly the presents
+/// return; more only once the time says it's two behind (presents that missed a vblank), a vblank's jitter isn't one
+fn vblanks_on(elapsed: Duration, vblank: Duration, last: Option<u32>) -> u32 {
+    let by_time = (elapsed.as_secs_f64() / vblank.as_secs_f64().max(1e-6)).round() as u32;
+    last.map_or(0, |last| by_time.saturating_sub(1).max(last + 1))
+}
+
+/// does the next picture's set go up now, by the timeline of the one showing (as pick has it, `elapsed` after its
+/// first present, its first picture in between at `first`, none w/o): once that reached the next set's first (t
+/// `next` past 1), so the one showing gets all its vblanks however early the next came; at once after a set w/o any
+fn due(first: Option<f32>, elapsed: Duration, vblank: Duration, span: Duration, next: f32) -> bool {
+    match first.filter(|_| !span.is_zero()) {
+        Some(first) => (elapsed + vblank / 2).as_secs_f32() / span.as_secs_f32() + first >= 1.0 + next,
+        None => true,
+    }
 }
 
 /// Smooth motion's pace guard: the GPU draws the pictures in between too, and where that's more than it can do and
 /// still have each present on time (8x: a frame's full-screen draws again for each picture in between), presents come
 /// a vblank late. Each second it counts the presents while pictures repeat and those later than 1.5 vblanks: more than
 /// 2% late in the second, or more than 0.5% over the last 3 seconds, takes K a step down from what the game shows now
-/// (to 2) and doubles how long it waits b4 trying a step up again (4 s at first, 16 at most: longer kept light scenes
-/// at a heavy one's K for a minute); every other second counts
+/// (to 2); a step down within `wait` seconds of a step up (K flapping between two) doubles how long it waits b4 trying a
+/// step up again (4 s at first, 16 at most: longer kept light scenes at a heavy one's K for a minute), a run of steps
+/// down (a scene's first seconds) doesn't, and a minute at 8 w/o one brings it back to 4; every other second counts
 /// toward that wait. The 3 seconds let a second w/ a couple of late presents in a field running at 0.3% pass (the p99
 /// line is 1%); the 2% catches a K the GPU can't keep up w/ at once. The window owns the cap and sends it whole
-/// (Request::Pace); a new Smooth motion setting starts it over at 8
+/// (Request::Pace); a new Smooth motion setting starts it over at 8. A refresh of the game that took two console frames
+/// or more (a load, a new scene's shaders) leaves its second and the two after it uncounted: their late presents aren't
+/// K's (a GPU that can't keep up w/ K makes refreshes a bit long, not that long, and counts)
 struct PaceGuard {
     /// the Smooth motion setting it learned for
     setting: SmoothMotion,
@@ -342,11 +386,16 @@ struct PaceGuard {
     since: Instant,
     calm: u32,
     wait: u32,
+    /// seconds left uncounted for a long refresh (see stall)
+    stalled: u32,
+    /// K last changed by a step up, and the seconds counted since
+    raised: bool,
+    since_raise: u32,
 }
 
 impl PaceGuard {
     fn new() -> PaceGuard {
-        PaceGuard { setting: SmoothMotion::Off, cap: 8, presents: 0, late: 0, window: Default::default(), since: Instant::now(), calm: 0, wait: 4 }
+        PaceGuard { setting: SmoothMotion::Off, cap: 8, presents: 0, late: 0, window: Default::default(), since: Instant::now(), calm: 0, wait: 4, stalled: 0, raised: false, since_raise: 0 }
     }
 
     /// a present `interval` after the one b4 while pictures repeat, w/ K what the game shows now; once a second, the new
@@ -362,18 +411,42 @@ impl PaceGuard {
         }
         self.since = Instant::now();
         let second = (std::mem::take(&mut self.presents), std::mem::take(&mut self.late));
+        if self.stalled > 0 {
+            self.stalled -= 1;
+            return None;
+        }
         self.window.push_back(second);
         if self.window.len() > 3 {
             self.window.pop_front();
         }
         let window = self.window.iter().fold((0, 0), |sum, &(presents, late)| (sum.0 + presents, sum.1 + late));
-        let before = self.cap;
-        (self.cap, self.calm, self.wait) = pace_step(self.cap.min(now.max(2)), second, window, self.calm, self.wait);
+        let (before, base, wait) = (self.cap, self.cap.min(now.max(2)), self.wait);
+        self.since_raise = self.since_raise.saturating_add(1);
+        (self.cap, self.calm, self.wait) = pace_step(base, second, window, self.calm, self.wait);
+        if self.cap < base {
+            // the wait grows only for a flap, a step down soon after a step up
+            let flap = self.raised && self.since_raise <= wait;
+            self.wait = if flap { self.wait } else { wait };
+            self.raised = false;
+        } else if self.cap > base {
+            (self.raised, self.since_raise) = (true, 0);
+        } else if self.cap >= 8 && self.calm >= 60 {
+            // a minute at the top: what flapped back then is no reason to come back slowly now
+            self.wait = 4;
+        }
         if self.cap < before {
             // measured again at the new K
             self.window.clear();
         }
         (self.cap != before).then_some(self.cap)
+    }
+
+    /// `refreshes` of the game took `game`: two console frames or more a refresh leaves this second and two more
+    /// uncounted
+    fn stall(&mut self, refreshes: u32, game: Duration) {
+        if refreshes > 0 && game >= FRAME_TIME * 2 * refreshes {
+            self.stalled = 3;
+        }
     }
 }
 
@@ -431,6 +504,19 @@ impl<G: Game + 'static> ApplicationHandler for App<G> {
             use winit::platform::windows::WindowAttributesExtWindows;
             attributes.with_taskbar_icon(icon(256))
         };
+        // the test harness's runs: far off every screen, never activated, not on the taskbar (XR_TEST_OFFSCREEN)
+        #[cfg(all(feature = "test-hooks", windows))]
+        let offscreen = std::env::var_os("XR_TEST_OFFSCREEN").is_some();
+        #[cfg(not(all(feature = "test-hooks", windows)))]
+        let offscreen = false;
+        #[cfg(all(feature = "test-hooks", windows))]
+        let attributes = match offscreen {
+            true => {
+                use winit::platform::windows::WindowAttributesExtWindows;
+                attributes.with_position(winit::dpi::PhysicalPosition::new(-20000, -20000)).with_active(false).with_skip_taskbar(true)
+            }
+            false => attributes,
+        };
         let renderer = match self.settings.renderer {
             Renderer::Vulkan => RendererKind::Vulkan,
             Renderer::OpenGl => RendererKind::OpenGl,
@@ -453,7 +539,9 @@ impl<G: Game + 'static> ApplicationHandler for App<G> {
             Ok(bar) => self.menubar = Some(bar),
             Err(error) => log::warn!("no menu bar, {error}"),
         }
-        self.place(&window);
+        if !offscreen {
+            self.place(&window);
+        }
         window.set_visible(true);
         self.gui = Some(Gui::new(&window));
         self.menus.motion = animations();
@@ -576,6 +664,7 @@ impl<G: Game> App<G> {
         let settings = &self.settings;
         Live {
             smooth_hz: smooth_hz(settings.frame_interpolation, self.monitor_hz, self.repeats && repeats_at(self.vblank)),
+            vblank: self.vblank,
             slider_3d: settings.slider_3d(),
             microphone: settings.microphone,
             volume: if settings.mute { 0.0 } else { settings.volume },
@@ -1072,12 +1161,27 @@ impl<G: Game> App<G> {
             // nothing to show yet: wait for the game's next refresh, a console frame at most (standing still, until a
             // console frame after the last present)
             let wait = if playing { FRAME_TIME } else { FRAME_TIME.saturating_sub(self.last_present.elapsed()) };
+            let began = Instant::now();
             sets = emulation.link.published.wait_timeout_while(sets, wait, |sets| !next(sets)).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+            self.waited += began.elapsed();
         }
+        // Smooth motion: a later picture's set waits till the one showing reached it (see due)
         let fresh = next(&mut sets);
+        let held = fresh && repeating && self.holds(&sets);
+        let fresh = fresh && !held;
         // the front set goes up; it stays for the repeats while no later one waits
-        let front = if sets.len() > 1 { sets.pop_front() } else { sets.front().cloned() };
+        let front = if held {
+            None
+        } else if sets.len() > 1 {
+            sets.pop_front()
+        } else {
+            sets.front().cloned()
+        };
         drop(sets);
+        if let Some(new) = &front {
+            let (frame, game) = std::mem::replace(&mut self.refreshed, (new.frame, new.game));
+            self.pace.stall(new.frame.saturating_sub(frame).min(1000) as u32, new.game.saturating_sub(game));
+        }
         if front.is_some() {
             self.pictures = front;
         }
@@ -1089,19 +1193,23 @@ impl<G: Game> App<G> {
             return;
         }
         if repeating && !waits && !fresh {
+            let began = Instant::now();
             std::thread::sleep(self.next_present.saturating_duration_since(Instant::now()));
+            self.waited += began.elapsed();
         }
         // between the presents' returns, as XR_FRAMESTATS counts it: a present blocked for a missed vblank is the long one
         let before = self.last_present;
         let took = self.show(event_loop, fresh);
         let interval = self.last_present - before;
         // K as the pictures shown now have it (the load guard may have it lower than the pace guard's cap)
-        let now = self.pictures.as_ref().and_then(|pictures| pictures.between.first()).map_or(8, |between| (1.0 / between.t).round() as usize);
+        let now = self.pictures.as_ref().map_or(8, |pictures| self.shown_k(pictures));
         if let Some(cap) = repeating.then(|| self.pace.present(interval, self.vblank, now)).flatten() {
             self.ask(Request::Pace(cap));
         }
         if repeating && waits && waits_itself(waits, took, self.vblank) {
+            let began = Instant::now();
             std::thread::sleep(self.next_present.saturating_duration_since(Instant::now()).min(self.vblank));
+            self.waited += began.elapsed();
         }
 
         let (since, ran, shown) = self.counted;
@@ -1156,9 +1264,32 @@ impl<G: Game> App<G> {
         }
     }
 
+    /// the K the pictures shown are at, for the pace guard: 1/t of the first evenly (8 w/o any); at the display's vblanks
+    /// (6 or 7 at 200 Hz) the K they need allowed, one over the rate's (emulation::at_vblanks)
+    fn shown_k(&self, pictures: &emulation::Pictures) -> usize {
+        match pictures.between.first() {
+            None => 8,
+            Some(_) if pictures.at_vblanks => xr_hle::steps_for(self.live().smooth_hz, 2) + 1,
+            Some(first) => (1.0 / first.t).round() as usize,
+        }
+    }
+
+    /// Smooth motion: does the set at the front, a later picture's, wait for the one showing to reach it (see due); not
+    /// once two later pictures wait or it waited half a picture (by then the next picture may take the showing one's
+    /// images, see zakuro_gpu's two slots)
+    fn holds(&self, sets: &std::collections::VecDeque<emulation::Pictures>) -> bool {
+        let (Some(now), Some(next), Some((since, first, vblanks))) = (&self.pictures, sets.front(), self.motion) else { return false };
+        if since != now.since || next.since == now.since || sets.iter().any(|set| set.since != next.since) || next.since.elapsed() >= now.span / 2 {
+            return false;
+        }
+        let t = |pictures: &emulation::Pictures| pictures.between.first().map(|between| between.t);
+        !due(t(now), self.vblank * vblanks_on(first.elapsed(), self.vblank, Some(vblanks)), self.vblank, now.span, t(next).unwrap_or(0.0))
+    }
+
     /// presents once, with the newest pictures (again, when no refresh came since), and counts it
     fn show(&mut self, event_loop: &ActiveEventLoop, fresh: bool) -> Duration {
         let began = Instant::now();
+        let (pre, waited) = (began - self.last_present, std::mem::take(&mut self.waited));
         self.present(event_loop);
         let took = began.elapsed();
         self.counted.2 += 1;
@@ -1168,7 +1299,11 @@ impl<G: Game> App<G> {
             // the refreshes since the last present, those the window never showed too, and their time
             let (frame, game) = std::mem::replace(&mut self.seen, (pictures.frame, pictures.game));
             let between = self.between.map_or(0, |k| k as u8 + 1);
-            stats.present(fresh as u8, pictures.cadence.pictures, between, pictures.frame.saturating_sub(frame) as u32, pictures.game.saturating_sub(game), took);
+            let (steps, t) = match self.between {
+                _ if pictures.between.is_empty() => (0, 1.0),
+                k => (pictures.between.len() + 1, k.and_then(|k| pictures.between.get(k)).map_or(1.0, |between| between.t)),
+            };
+            stats.present(fresh as u8, pictures.cadence.pictures, between, pictures.frame.saturating_sub(frame) as u32, pictures.game.saturating_sub(game), took, pictures.frame, pictures.began, self.backend_took, steps, t, pre, waited);
         }
         took
     }
@@ -1254,8 +1389,32 @@ impl<G: Game> App<G> {
     }
 
     fn present(&mut self, event_loop: &ActiveEventLoop) {
-        let overlay = self.interface(event_loop);
-        let (Some(pictures), Some(backend)) = (&self.pictures, &mut self.backend) else { return };
+        let mut overlay = self.interface(event_loop);
+        // the sets that wait (two at most) and the one showing
+        for _ in 0..3 {
+            match self.present_pictures(&overlay) {
+                // the game ran two pictures ahead and drew over these: the next set goes up instead, never one out of
+                // turn (the overlay's texture changes were kept for the next present)
+                Some(Err(PresentError::Stale)) if self.take_next() => {
+                    overlay = Overlay { meshes: std::mem::take(&mut overlay.meshes), ..Overlay::default() };
+                }
+                None | Some(Ok(()) | Err(PresentError::OutOfDate | PresentError::Stale)) => return,
+                Some(Err(error)) => return self.fail(event_loop, format!("presentation failed: {error}")),
+            }
+        }
+    }
+
+    /// the oldest set after the one showing goes up next (emulation::next_after); false when none waits
+    fn take_next(&mut self) -> bool {
+        let Some(emulation) = &self.emulation else { return false };
+        let shown = self.pictures.as_ref().map_or(0, |pictures| pictures.frame);
+        let next = emulation::next_after(&mut lock(&emulation.link.pictures), shown, |pictures| pictures.frame);
+        next.map(|next| self.pictures = Some(next)).is_some()
+    }
+
+    /// presents the pictures showing (the picture in between whose time came), none w/o pictures or a window
+    fn present_pictures(&mut self, overlay: &Overlay) -> Option<Result<(), PresentError>> {
+        let (Some(pictures), Some(backend)) = (&self.pictures, &mut self.backend) else { return None };
         // the right eye's picture only while the 3D shows
         let stereo = self.settings.stereo != settings::Stereo3d::Off;
         let blank = || ((std::sync::Arc::new(Vec::new()), Screen::Top.width(), Screen::Top.height()), None);
@@ -1266,25 +1425,26 @@ impl<G: Game> App<G> {
         let ts: Vec<f32> = pictures.between.iter().map(|between| between.t).collect();
         // timed from the first present of them, not from when they were made: a present blocked on the vblank when
         // they came would otherwise start them a picture late
-        let first = match self.motion {
-            Some((since, first)) if since == pictures.since => first,
-            _ => self.motion.insert((pictures.since, Instant::now())).1,
+        let vblanks = match self.motion {
+            Some((since, first, vblanks)) if since == pictures.since => vblanks_on(first.elapsed(), self.vblank, Some(vblanks)),
+            _ => 0,
         };
-        self.between = pick(&ts, first.elapsed(), self.vblank, pictures.span);
+        let first = self.motion.filter(|motion| motion.0 == pictures.since).map_or_else(Instant::now, |motion| motion.1);
+        self.motion = Some((pictures.since, first, vblanks));
+        self.between = pick(&ts, self.vblank * vblanks, self.vblank, pictures.span);
         let (top_gpu, bottom_gpu, right_gpu) = match self.between.map(|k| pictures.between[k]) {
             Some(between) => (Some(between.top), between.bottom.or(*bottom_gpu), between.right.or(right_gpu).filter(|_| stereo)),
             None => (*top_gpu, *bottom_gpu, right_gpu),
         };
+        let began = Instant::now();
         let result = backend.present(
             ScreenImage { width: *top_width, height: *top_height, pixels: top, gpu: top_gpu },
             ScreenImage { width: *bottom_width, height: *bottom_height, pixels: bottom, gpu: bottom_gpu },
             ScreenImage { width: right_width, height: right_height, pixels: &right, gpu: right_gpu },
-            &overlay,
+            overlay,
         );
-        match result {
-            Ok(()) | Err(PresentError::OutOfDate) => {}
-            Err(error) => self.fail(event_loop, format!("presentation failed: {error}")),
-        }
+        self.backend_took = began.elapsed();
+        Some(result)
     }
 }
 
@@ -1570,6 +1730,45 @@ mod tests {
         assert_eq!(pick(&[0.5], ms(0.0), vblank, Duration::ZERO), None);
     }
 
+    /// at the display's vblanks (200 Hz: 6.68 a picture) one picture in between goes up each vblank, the last too when
+    /// it's near the picture, the game's own only while the next set is late, and the next set is due the vblank after
+    /// the last; evenly, it's due a picture after the set's first
+    #[test]
+    fn pictures_at_the_vblanks_go_up_one_a_vblank() {
+        let (vblank, span) = (vblank_of(Some(200_000)), FRAME_TIME * 2);
+        let step = vblank.as_secs_f32() / span.as_secs_f32();
+        for (first, count) in [(0.12, 6), (0.05, 7)] {
+            let ts: Vec<f32> = (0..count).map(|k| first + k as f32 * step).collect();
+            let shown: Vec<Option<usize>> = (0..count + 2).map(|n| pick(&ts, vblank * n as u32, vblank, span)).collect();
+            let each: Vec<Option<usize>> = (0..count).map(Some).chain([None, None]).collect();
+            assert_eq!(shown, each, "first {first}");
+            let next = first + count as f32 * step - 1.0;
+            let due_at: Vec<bool> = (0..count + 2).map(|n| due(Some(first), vblank * n as u32, vblank, span, next)).collect();
+            assert_eq!(due_at.iter().position(|&due| due), Some(count), "first {first}: the vblank after the last");
+        }
+        // evenly (K = 3, 89.7 Hz): the next is due as the game's own picture's time ends
+        let third = 1.0 / 3.0;
+        assert!(!due(Some(third), span - vblank, vblank, span, third) && due(Some(third), span - vblank / 2, vblank, span, third));
+        assert!(due(None, Duration::ZERO, vblank, span, 0.5), "after a set w/o pictures in between: at once");
+    }
+
+    /// presents returning unevenly (FIFO shows each for a vblank anyway) go a vblank each, a late one as many as passed
+    #[test]
+    fn presents_count_their_vblanks() {
+        let (vblank, ms) = (vblank_of(Some(200_000)), |ms: f64| Duration::from_secs_f64(ms / 1000.0));
+        let mut last = Some(vblanks_on(ms(0.0), vblank, None));
+        let mut seen = Vec::new();
+        // returns 3.4 and 7.4 ms apart, two in one vblank, then one blocked a vblank too long
+        for at in [3.4, 10.8, 12.0, 12.5, 25.6] {
+            last = Some(vblanks_on(ms(at), vblank, last));
+            seen.push(last.unwrap());
+        }
+        assert_eq!(seen, [1, 2, 3, 4, 5]);
+        assert_eq!(vblanks_on(ms(36.0), vblank, last), 6, "a vblank behind the time: in turn");
+        assert_eq!(vblanks_on(ms(41.0), vblank, last), 7, "two behind: one skipped");
+        assert_eq!(vblanks_on(ms(1.0), vblank, None), 0, "the set's first");
+    }
+
     /// the pace guard takes K down a step a second while more than 0.5% of the presents come 1.5 vblanks late, to 2,
     /// and up again a step after a calm wait that doubles w/ each step down
     #[test]
@@ -1609,6 +1808,48 @@ mod tests {
             sent.extend(guard.present(vblank, vblank, 8));
         }
         assert_eq!(sent, [3, 4, 5, 6, 7, 8], "back to 8 in steps");
+        // a load (a refresh of two frames or more) leaves its second and two more uncounted, a slow GPU's refreshes don't
+        let mut guard = PaceGuard::new();
+        guard.stall(2, FRAME_TIME * 3);
+        assert_eq!(guard.stalled, 0, "a bit long: counts");
+        guard.stall(1, FRAME_TIME * 5);
+        let late_second = |guard: &mut PaceGuard| {
+            (guard.since, guard.presents, guard.late) = (Instant::now() - Duration::from_secs(2), 199, 20);
+            guard.present(vblank, vblank, 8)
+        };
+        assert_eq!([late_second(&mut guard), late_second(&mut guard), late_second(&mut guard)], [None; 3]);
+        assert_eq!(late_second(&mut guard), Some(7), "counted again");
+        // a scene's first seconds: K down a step a second, the wait stays at 4 s, so it's back at 8 in 4 x 4 s; a step
+        // down right after a step up (flapping) doubles it
+        let mut guard = PaceGuard::new();
+        let second = |guard: &mut PaceGuard, late: u32| {
+            (guard.since, guard.presents, guard.late) = (Instant::now() - Duration::from_secs(2), 199, late);
+            guard.present(vblank, vblank, 8)
+        };
+        let down: Vec<Option<usize>> = (0..4).map(|_| second(&mut guard, 20)).collect();
+        assert_eq!((down, guard.wait), (vec![Some(7), Some(6), Some(5), Some(4)], 4));
+        let up: Vec<usize> = (0..16).filter_map(|_| second(&mut guard, 0)).collect();
+        assert_eq!(up, [5, 6, 7, 8], "back to 8 in 16 s");
+        assert_eq!((second(&mut guard, 20), guard.wait), (Some(7), 8), "down right after up: the wait doubles");
+        // back at 8 after the longer wait, then a calm minute there: the wait is back to 4, and the next scene's first
+        // seconds come back in 16 s again
+        let up: Vec<usize> = (0..8).filter_map(|_| second(&mut guard, 0)).collect();
+        assert_eq!(up, [8]);
+        for _ in 0..60 {
+            assert_eq!(second(&mut guard, 0), None);
+        }
+        assert_eq!(guard.wait, 4, "a minute at the top");
+        let down: Vec<Option<usize>> = (0..4).map(|_| second(&mut guard, 20)).collect();
+        assert_eq!((down, guard.wait), (vec![Some(7), Some(6), Some(5), Some(4)], 4), "no flap: a while after the step up");
+        let up: Vec<usize> = (0..16).filter_map(|_| second(&mut guard, 0)).collect();
+        assert_eq!(up, [5, 6, 7, 8], "back to 8 in 16 s again");
+        // a step down long after a step up isn't a flap
+        let mut guard = PaceGuard::new();
+        second(&mut guard, 20);
+        let up: Vec<usize> = (0..4).filter_map(|_| second(&mut guard, 0)).collect();
+        assert_eq!(up, [8]);
+        (0..10).for_each(|_| assert_eq!(second(&mut guard, 0), None));
+        assert_eq!((second(&mut guard, 20), guard.wait), (Some(7), 4), "ten seconds after the step up");
     }
 
     /// a present that comes back in a fraction of a vblank (minimized, zero size) leaves the loop to wait, a blocking one doesn't

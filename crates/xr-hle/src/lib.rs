@@ -138,13 +138,17 @@ struct Pacing {
     shown: u64,
     /// the monitor rate the pictures in between are made for, see steps_for
     hz: u32,
+    /// the display's vblank in refreshes where they go at its vblanks (0: evenly, see vblank_times), and the next
+    /// picture's first t then
+    vblank: f64,
+    next: f64,
     /// the refresh the camera last cut elsewhere at, and whether a new picture came after it (see camera_cut)
     cut: Option<(u64, bool)>,
 }
 
 impl Default for Pacing {
     fn default() -> Self {
-        Pacing { refreshes: 0, new_at: 0, last: None, matches: None, between: None, with: [None; 3], shown: 0, hz: 60, cut: None }
+        Pacing { refreshes: 0, new_at: 0, last: None, matches: None, between: None, with: [None; 3], shown: 0, hz: 60, vblank: 0.0, next: 0.0, cut: None }
     }
 }
 
@@ -165,12 +169,42 @@ fn cut_holds(cut: Option<(u64, bool)>, refresh: u64) -> (bool, Option<(u64, bool
 
 /// a top picture w/ pictures in between it and the one b4 (frame interpolation, see System::pace): the refresh it came
 /// at (it tells pictures apart), the refreshes it took to come (2 or 3), and K: picture k in between (from 0) is
-/// (k + 1)/K of the way from the one b4 to it
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// (k + 1)/K of the way from the one b4 to it, or at the display's vblanks `times` (see vblank_times, t)
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Motion {
     pub picture: u64,
     pub gap: u64,
     pub steps: usize,
+    pub times: Option<(f32, f32)>,
+}
+
+impl Motion {
+    /// how far picture k (from 0) in between is from the picture b4 (0) to this one (1)
+    pub fn t(&self, k: usize) -> f32 {
+        match self.times {
+            Some((first, step)) => first + k as f32 * step,
+            None => (k + 1) as f32 / self.steps.max(2) as f32,
+        }
+    }
+}
+
+/// pictures in between that go at the display's vblanks, `vblank` refreshes apart, for a picture `gap` refreshes after
+/// the one b4, the first `first` of the way (0: a step, the first picture): how many there are, at what t the first
+/// and how far apart (a vblank), and the next picture's first t, which carries on a step after this one's last (or
+/// after the picture itself when a vblank falls on it). So the display moves the same step every vblank, across
+/// pictures too. None where they'd be more than the GPU draws (MAX_TWINS) or none
+pub fn vblank_times(vblank: f64, gap: u64, first: f64) -> Option<(usize, f32, f32, f64)> {
+    // a point this close to the picture is the picture
+    const NEAR: f64 = 1e-3;
+    let step = vblank / gap.max(1) as f64;
+    if !(step > 1.0 / 16.0 && step < 1.0 - NEAR) {
+        return None;
+    }
+    let first = if first > 0.0 && first <= step + NEAR { first } else { step };
+    let count = ((1.0 - NEAR - first) / step).floor() as usize + 1;
+    let last = first + (count - 1) as f64 * step;
+    let next = if last + step < 1.0 + NEAR { last + 2.0 * step - 1.0 } else { last + step - 1.0 };
+    (count <= zakuro_gpu::MAX_TWINS).then_some((count, first as f32, step as f32, next))
 }
 
 /// K, the steps between two of a title's pictures `gap` refreshes apart for a monitor at `hz`: enough for a picture
@@ -835,8 +869,9 @@ impl System {
         let gap = pacing.refreshes - pacing.new_at;
         pacing.new_at = pacing.refreshes;
         pacing.last = top;
-        // the frame just drawn has its twins at the steps set when it began
+        // the frame just drawn has its twins at the steps (and times) set when it began
         let steps = self.gpu.steps();
+        let times = self.gpu.twin_times();
         let matches = self.gpu.frame_done();
         let with = [self.screen_ref(zakuro_common::Screen::Top, false), self.screen_ref(zakuro_common::Screen::Bottom, false), self.screen_ref(zakuro_common::Screen::Top, true)];
         let pacing = &mut self.pacing;
@@ -850,18 +885,30 @@ impl System {
             self.cadence.held += self.cadence.on as u64;
         }
         let smooth = matched && !cut;
-        pacing.between = smooth.then_some(Motion { picture: pacing.refreshes, gap, steps });
+        pacing.between = smooth.then_some(Motion { picture: pacing.refreshes, gap, steps, times });
         pacing.with = with;
         pacing.shown += smooth as u64;
-        // the next frame gets pictures in between too while the title sticks to every other or third refresh
-        let twins = if paced { steps_for(pacing.hz, gap) - 1 } else { 0 };
+        // the next frame gets pictures in between too while the title sticks to every other or third refresh, at the
+        // display's vblanks where they fit, else evenly
+        let vblank = vblank_times(pacing.vblank, gap, pacing.next).filter(|_| paced);
+        let twins = match vblank {
+            Some((count, ..)) => count,
+            None if paced => steps_for(pacing.hz, gap) - 1,
+            None => 0,
+        };
         self.gpu.set_twins(twins);
+        // fewer for the GPU's memory: evenly
+        let vblank = vblank.filter(|_| self.gpu.twins() == twins);
+        self.gpu.set_twin_times(vblank.map(|(_, first, step, _)| (first, step)));
+        if let Some((.., next)) = vblank {
+            self.pacing.next = next;
+        }
     }
 
     /// draws pictures in between each two of the title's from now on (when it draws every other or third refresh, see
     /// pace), or stops; says whether it does, needs the host GPU showing the screens
     pub fn set_interpolation(&mut self, on: bool) -> bool {
-        self.pacing = Pacing { hz: self.pacing.hz, ..Pacing::default() };
+        self.pacing = Pacing { hz: self.pacing.hz, vblank: self.pacing.vblank, ..Pacing::default() };
         self.gpu.set_interpolation(on)
     }
 
@@ -869,6 +916,12 @@ impl System {
     /// 30 fps; 240: seven), see steps_for
     pub fn set_motion_rate(&mut self, hz: u32) {
         self.pacing.hz = hz;
+    }
+
+    /// the display's vblank in refreshes (at the pace the game runs) when the pictures in between go at its vblanks
+    /// from the next frame on (see vblank_times), 0 evenly at the rate's K
+    pub fn set_motion_vblank(&mut self, vblank: f64) {
+        self.pacing.vblank = vblank;
     }
 
     /// the title's camera cut elsewhere this refresh (a hint a title's own reader of its camera gives, e.g. X's field
@@ -1399,6 +1452,43 @@ mod tests {
         assert_eq!(at(240), [8, 8], "K = 8 at most");
         assert_eq!(at(360), [8, 8]);
         assert_eq!(steps_for(0, 2), 2);
+    }
+
+    /// at the display's vblanks every step is one vblank long, across pictures too: 200 Hz at 30 fps is 6.68 a picture,
+    /// six or seven in between each, and 1 (the picture) when a vblank falls on it
+    #[test]
+    fn pictures_in_between_go_at_the_vblanks() {
+        let vblank = 59.83 / 200.0;
+        let step = vblank / 2.0;
+        let (mut first, mut counts, mut ts) = (0.0, Vec::new(), Vec::new());
+        for picture in 0..200 {
+            let (count, at, by, next) = vblank_times(vblank, 2, first).expect("fits seven");
+            assert!((f64::from(by) - step).abs() < 1e-6);
+            counts.push(count);
+            ts.extend((0..count).map(|k| picture as f64 + f64::from(at) + k as f64 * f64::from(by)));
+            first = next;
+        }
+        assert!(counts.iter().all(|&count| count == 6 || count == 7), "{counts:?}");
+        let average = counts.iter().sum::<usize>() as f64 / counts.len() as f64;
+        assert!((average - 1.0 / step).abs() < 0.02, "a picture's worth of vblanks each: {average}");
+        // the steps between them all, the picture's own (an integer) left out unless a vblank fell on it
+        for pair in ts.windows(2) {
+            let gap = pair[1] - pair[0];
+            let on_picture = ((pair[0] + step) - (pair[0] + step).round()).abs() < 2e-3;
+            assert!((gap - step).abs() < 1e-3 || ((gap - 2.0 * step).abs() < 1e-3 && on_picture), "{pair:?}");
+        }
+        // a vblank on the picture: the next one carries on a step after it
+        assert_eq!(vblank_times(0.5, 2, 0.25), Some((3, 0.25, 0.25, 0.25)));
+        assert_eq!(vblank_times(0.5, 2, 0.1).map(|(count, .., next)| (count, (next * 1e6).round())), Some((4, 0.1e6)));
+        // more than the GPU draws (240 Hz), slower than a picture a vblank, or none: evenly
+        assert_eq!(vblank_times(59.83 / 240.0, 2, 0.0), None);
+        assert_eq!(vblank_times(59.83 / 200.0, 3, 0.0), None, "20 fps at 200 Hz: ten");
+        assert_eq!(vblank_times(2.0, 2, 0.0), None);
+        assert_eq!(vblank_times(0.0, 2, 0.0), None);
+        let even = Motion { picture: 0, gap: 2, steps: 4, times: None };
+        assert_eq!((even.t(0), even.t(2)), (0.25, 0.75));
+        let at = Motion { times: Some((0.1, 0.15)), ..even };
+        assert!((at.t(2) - 0.4).abs() < 1e-6);
     }
 
     fn mutex_state(system: &System, handle: u32) -> (Option<ThreadId>, u32) {

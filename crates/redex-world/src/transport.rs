@@ -28,6 +28,11 @@ pub trait Link: Send {
     fn steam_id(&self) -> Option<u64> {
         None
     }
+    /// The login key this connection is known to be, before it says Hello (over Steam: its account, which Steam
+    /// authenticated; over TCP nothing is known yet). A lobby's door decides on it at once (`Door::early`).
+    fn account(&self) -> Option<u128> {
+        None
+    }
     /// Whether a `Refuse` can be written now without waiting on the peer: false for TLS before its handshake (the
     /// write would first run the handshake, which a silent peer holds forever), so the accept thread just drops those.
     fn refusable(&self) -> bool {
@@ -394,20 +399,21 @@ pub fn relay_only() -> [NetworkingConfigEntry; 1] {
 /// Steam's relays (`steam:<steamid64>` on the client), so the server's address is never exposed. Each Steam message
 /// carries whole frames (the same length-prefixed bytes as TCP).
 pub struct SteamTransport {
-    server: steamworks::Server,
+    /// first: closed before `steam` (the game server) may go
     listen: ListenSocket,
+    steam: std::sync::Arc<crate::steam::Steam>,
 }
 
 #[cfg(feature = "steam")]
 impl SteamTransport {
     /// `steam` must stay alive as long as this (its thread runs the callbacks that deliver connections).
-    pub fn listen(steam: &crate::steam::Steam) -> io::Result<Self> {
-        let server = steam.server().clone();
-        let listen = server
+    pub fn listen(steam: &std::sync::Arc<crate::steam::Steam>) -> io::Result<Self> {
+        let listen = steam
+            .server()
             .networking_sockets()
             .create_listen_socket_p2p(0, relay_only())
             .map_err(|_| io::Error::other("Steam refused the P2P listen socket"))?;
-        Ok(Self { server, listen })
+        Ok(Self { listen, steam: steam.clone() })
     }
 }
 
@@ -425,7 +431,7 @@ impl Transport for SteamTransport {
                         // the peer's SteamID, authenticated by Steam's P2P layer: the per-peer limit's key
                         let remote = c.remote().steam_id().map(|id| id.raw());
                         let peer = remote.map_or_else(|| "steam:?".into(), |id| format!("steam:{id}"));
-                        let link = SteamLink { conn: c.take_connection(), server: self.server.clone(), peer, remote, dec: Decoder::default() };
+                        let link = SteamLink { conn: Some(c.take_connection()), steam: self.steam.clone(), peer, remote, dec: Decoder::default() };
                         return Ok(Some(Box::new(link)));
                     }
                     ListenSocketEvent::Disconnected(_) => {} // its link sees the closed state
@@ -441,8 +447,10 @@ impl Transport for SteamTransport {
 
 #[cfg(feature = "steam")]
 pub struct SteamLink {
-    conn: NetConnection,
-    server: steamworks::Server,
+    /// Some until dropped (closed with linger then)
+    conn: Option<NetConnection>,
+    /// after `conn`: the game server outlives every connection to it
+    steam: std::sync::Arc<crate::steam::Steam>,
     peer: String,
     remote: Option<u64>,
     dec: Decoder,
@@ -463,9 +471,10 @@ impl Link for SteamLink {
             if let Some(m) = self.dec.next().map_err(bad)? {
                 return Ok(Recv::Msg(m));
             }
-            let msgs = self.conn.receive_messages(16).map_err(|_| io::Error::from(io::ErrorKind::ConnectionReset))?;
+            let conn = self.conn.as_mut().ok_or_else(|| io::Error::from(io::ErrorKind::NotConnected))?;
+            let msgs = conn.receive_messages(16).map_err(|_| io::Error::from(io::ErrorKind::ConnectionReset))?;
             if msgs.is_empty() {
-                if !steam_live(&self.server.networking_sockets(), &self.conn) {
+                if !steam_live(&self.steam.server().networking_sockets(), conn) {
                     return Ok(Recv::Closed);
                 }
                 if std::time::Instant::now() >= until {
@@ -484,7 +493,8 @@ impl Link for SteamLink {
     }
 
     fn send(&mut self, m: &Msg) -> io::Result<()> {
-        self.conn.send_message(&m.encode(), SendFlags::RELIABLE_NO_NAGLE).map(|_| ()).map_err(io::Error::other)
+        let conn = self.conn.as_ref().ok_or_else(|| io::Error::from(io::ErrorKind::NotConnected))?;
+        conn.send_message(&m.encode(), SendFlags::RELIABLE_NO_NAGLE).map(|_| ()).map_err(io::Error::other)
     }
 
     fn peer(&self) -> String {
@@ -498,6 +508,22 @@ impl Link for SteamLink {
     fn steam_id(&self) -> Option<u64> {
         // a connection Steam could not tie to an account gets 0, which no ticket's SteamID matches
         Some(self.remote.unwrap_or(0))
+    }
+
+    fn account(&self) -> Option<u128> {
+        self.remote.map(|id| crate::world::STEAM_KEY | u128::from(id))
+    }
+}
+
+#[cfg(feature = "steam")]
+impl Drop for SteamLink {
+    /// Closed with linger: Steam sends what is queued (a kick's or a closing lobby's refusal) before it ends the
+    /// connection, where a plain drop would discard it.
+    fn drop(&mut self) {
+        if let Some(c) = self.conn.take() {
+            use steamworks::networking_types::{AppNetConnectionEnd, NetConnectionEnd};
+            c.close(NetConnectionEnd::App(AppNetConnectionEnd::generic_normal()), None, true);
+        }
     }
 }
 

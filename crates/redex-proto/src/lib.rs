@@ -43,6 +43,7 @@
 pub mod appearance;
 pub mod friends;
 pub mod names;
+pub mod room;
 
 pub use friends::{decode_friend, encode_friend, steam_world, FriendMsg, FRIEND_MAX, FRIEND_VERSION};
 
@@ -171,6 +172,9 @@ pub mod refuse {
     pub const FLOOD: u8 = 8;
     /// The identity is not accepted here (a dev id on a server without `--dev`, or a ticket that does not verify).
     pub const AUTH: u8 = 9;
+    /// An in-game lobby ended for this player: its host closed it, or removed them. An older client takes it as a
+    /// retryable refusal (the lobby's door then keeps it out).
+    pub const CLOSED: u8 = 10;
 
     /// Starts the reason of an `AUTH` that came from Steam's own later answer about the account (not a malformed or
     /// replayed ticket). Steam says only which account an answer is for, so one meant for an older connection can land
@@ -179,7 +183,7 @@ pub mod refuse {
 
     /// A retry would get the same answer (or kick the newer login): do not reconnect on these.
     pub fn lasting(code: u8) -> bool {
-        matches!(code, BAD_FRAME | VERSION | TITLE | ELSEWHERE | MISUSE | AUTH)
+        matches!(code, BAD_FRAME | VERSION | TITLE | ELSEWHERE | MISUSE | AUTH | CLOSED)
     }
 }
 

@@ -15,6 +15,8 @@ use crate::settings::Orientation;
 
 #[path = "friends_ui.rs"]
 mod friends_ui;
+#[path = "lobby_ui.rs"]
+mod lobby_ui;
 pub use friends_ui::{friends_sorted, FRIENDS_AGAIN, INVITE_ARM};
 pub use xr_net::friends::{Friend, FriendMsg, Limiter};
 
@@ -60,9 +62,60 @@ pub struct Server {
     pub ping: Option<u32>,
 }
 
+/// Who may come into a lobby the player hosts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Access {
+    /// the host's Steam friends (the world's door checks), by invite or code
+    #[default]
+    Friends,
+    /// unlisted: anyone with the room code (or an invite); codes can be found by anyone listing lobbies
+    Code,
+    /// also listed in Browse servers
+    Public,
+}
+
+pub const ACCESS: [(Access, &str, &str); 3] = [
+    (Access::Friends, "Friends only", "Your Steam friends only, by invite or room code"),
+    (Access::Code, "Unlisted (anyone with the code)", "Not listed, but codes are not secret: anyone who finds one can come in. Friends only keeps strangers out"),
+    (Access::Public, "Public", "Also listed in Browse servers (Windows may ask to let RE:DEX through its firewall)"),
+];
+
+/// A lobby's settings: its name (empty: "<name>'s lobby"), players with the host (2 to 8), who may come in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LobbySettings {
+    pub name: String,
+    pub max: u8,
+    pub access: Access,
+}
+
+impl Default for LobbySettings {
+    fn default() -> LobbySettings {
+        LobbySettings { name: String::new(), max: 4, access: Access::Friends }
+    }
+}
+
+/// The lobby the player hosts, as the runtime says it is.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LobbyView {
+    /// the room code (empty while the server starts)
+    pub code: String,
+    pub settings: LobbySettings,
+    /// the players in it but the host: (session, name)
+    pub members: Vec<(u32, String)>,
+    /// up (false while it starts)
+    pub open: bool,
+}
+
+/// What every lobby means, said before hosting (and on joining by code): the online lockdown and local characters.
+pub const LOBBY_RULES: &str = "While you are in a lobby the online rules hold: no fast forward (100% speed at most), no dev or test tools, and mods that change the game are off (skins and texture packs are fine). Lobbies use the characters on this PC; nothing from a lobby reaches your online account.";
+
 /// What the runtime says this frame.
 #[derive(Debug, Clone, Default)]
 pub struct View {
+    /// the lobby this game hosts, if it does
+    pub lobby: Option<LobbyView>,
+    /// why this game cannot host or join a lobby now (an online character, test options, a mod), if it cannot
+    pub lobby_blocked: Option<String>,
     /// the world joined or being joined (its address), none offline
     pub world: Option<String>,
     /// logged in to it
@@ -129,6 +182,16 @@ pub enum Request {
     FriendsOpened,
     /// the Steam accounts ignored now (the friends link refuses their sessions and frames)
     Ignored(Vec<u64>),
+    /// "Host lobby": this game becomes the host of a lobby, and joins it
+    HostLobby(LobbySettings),
+    /// the host removes a player from its lobby
+    Kick { session: u32, name: String },
+    /// the host closes its lobby (everyone in it is told)
+    CloseLobby,
+    /// join the lobby a room code names
+    JoinCode(String),
+    /// leave the world this game is in, and play on offline
+    Leave,
 }
 
 /// One step of the keyboard or a controller in the panels.
@@ -274,6 +337,8 @@ pub struct Online {
     ignored: Vec<(u64, Option<String>, u32)>,
     /// the Friends tab, chats and invite prompt
     fr: friends_ui::FriendsUi,
+    /// the Lobby panel
+    lb: lobby_ui::LobbyUi,
     nav: Vec<Nav>,
     pub requests: Vec<Request>,
     pub motion: bool,
@@ -307,6 +372,7 @@ impl Default for Online {
             world: None,
             ignored: Vec::new(),
             fr: friends_ui::FriendsUi::default(),
+            lb: lobby_ui::LobbyUi::default(),
             nav: Vec::new(),
             requests: Vec::new(),
             motion: true,
@@ -350,7 +416,7 @@ impl Online {
 
     /// a panel is up that takes the keyboard and the controller from the game (the game itself keeps running)
     pub fn takes_input(&self) -> bool {
-        self.players || self.menu_open || self.whisper_open || self.report_open || self.browser || self.fr.menu_open || self.fr.chat_open || self.fr.invite.is_some()
+        self.players || self.menu_open || self.whisper_open || self.report_open || self.browser || self.fr.menu_open || self.fr.chat_open || self.fr.invite.is_some() || self.lb.open
     }
 
     /// a controller's step, done on the next frame
@@ -382,6 +448,7 @@ impl Online {
         self.whisper_open = false;
         self.report_open = false;
         self.browser = false;
+        self.lb.open = false;
         (self.fr.menu_open, self.fr.chat_open) = (false, false);
         // the prompt goes too: Not now
         self.decline_invite();
@@ -507,7 +574,7 @@ impl Online {
 
     /// does a step in the panel on top
     fn step(&mut self, nav: Nav, pad: bool, view: &View, menus: &mut Menus) {
-        if self.friend_step(nav, pad, view, menus) {
+        if self.friend_step(nav, pad, view, menus) || self.lobby_step(nav, view, menus) {
             return;
         }
         if self.report_open {
@@ -563,8 +630,8 @@ impl Online {
                 Nav::Left | Nav::Right => {}
             }
         } else if self.players {
-            // the peers, then Whispers, then Browse servers
-            let rows = view.peers.len() + 2;
+            // the peers, then Whispers, Browse servers and Lobby
+            let rows = view.peers.len() + 3;
             match nav {
                 Nav::Up => self.focus = self.focus.saturating_sub(1),
                 Nav::Down => self.focus = (self.focus + 1).min(rows - 1),
@@ -583,8 +650,10 @@ impl Online {
         } else if row == peers.len() {
             self.log_pinned = !self.log_pinned;
             self.unread = 0;
-        } else {
+        } else if row == peers.len() + 1 {
             self.open_browser();
+        } else {
+            self.open_lobby();
         }
     }
 
@@ -664,6 +733,7 @@ impl Online {
         self.friend_menu_panel(ctx, view, menus);
         self.chat_panel(ctx, menus);
         self.invite_panel(ctx, menus);
+        self.lobby_panel(ctx, view, menus);
     }
 
     /// the names over the players' heads, fading in and out, a click opens the player menu
@@ -742,7 +812,7 @@ impl Online {
             return;
         }
         let peers = sorted(&view.peers);
-        let rows = peers.len() + 2;
+        let rows = peers.len() + 3;
         self.focus = self.focus.min(rows - 1);
         self.fr.focus = self.fr.focus.min(view.friends.len().saturating_sub(1));
         let (mut picked, mut friend, mut tab) = (None, None, None);
@@ -789,6 +859,14 @@ impl Online {
                     }
                     if row(ui, "browse row", self.focus == peers.len() + 1, None, "Browse servers\u{2026}", "").clicked() {
                         picked = Some(peers.len() + 1);
+                    }
+                    let lobby = match &view.lobby {
+                        Some(l) if l.open => format!("{} \u{b7} {}", redex_proto::room::shown(&l.code), l.members.len() + 1),
+                        Some(_) => "starting".to_owned(),
+                        None => String::new(),
+                    };
+                    if row(ui, "lobby row", self.focus == peers.len() + 2, None, if view.lobby.is_some() { "Your lobby\u{2026}" } else { "Host or join a lobby\u{2026}" }, &lobby).clicked() {
+                        picked = Some(peers.len() + 2);
                     }
                     hint(ui, "Up/Down choose \u{b7} Enter / A open \u{b7} Esc / B close");
                 });
@@ -1433,6 +1511,65 @@ mod tests {
         assert_eq!(online.requests.pop(), Some(Request::Search));
         frame(&ctx, &mut online, &mut menus, &view, &[Nav::Back]);
         assert!(!online.takes_input());
+    }
+
+    /// With a controller alone: the list's last row opens the Lobby panel; the players and who may come in change, Host
+    /// lobby asks the runtime with those settings (refused, with why, while it can't); the open lobby shows its members,
+    /// A on one removes them, Close lobby closes it; a typed code is checked before it is looked up.
+    #[test]
+    fn a_controller_alone_hosts_and_runs_a_lobby() {
+        let ctx = egui::Context::default();
+        menus::style(&ctx, true, false);
+        let mut online = Online { motion: false, ..Online::default() };
+        let mut menus = Menus::default();
+        menus.motion = false;
+        let view = View::default();
+        online.toggle_players();
+        frame(&ctx, &mut online, &mut menus, &view, &[]);
+        // no peers: Whispers, Browse servers, Lobby
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Down, Nav::Down, Nav::Accept]);
+        assert!(online.lb.open && !online.players && online.takes_input());
+        // players: right twice (6), left once (5); the second access (anyone with the code)
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Right, Nav::Right, Nav::Left, Nav::Down, Nav::Down, Nav::Accept]);
+        assert_eq!((online.lb.form.max, online.lb.form.access), (5, Access::Code));
+        let host = lobby_ui::focus_of(&view, "Host").unwrap();
+        let steps: Vec<Nav> = std::iter::repeat_n(Nav::Down, host - 2).chain([Nav::Accept]).collect();
+        let blocked = View { lobby_blocked: Some("Lobbies use characters on this PC".into()), ..View::default() };
+        frame(&ctx, &mut online, &mut menus, &blocked, &steps);
+        assert!(online.requests.is_empty(), "nothing asked while it can't host");
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Accept]);
+        assert_eq!(online.requests.pop(), Some(Request::HostLobby(LobbySettings { name: String::new(), max: 5, access: Access::Code })));
+        // the lobby is open with two players: the first rows are its players; A on the second removes them
+        let lobby = LobbyView { code: "K7MQ2X".into(), settings: LobbySettings { name: "Tobin's lobby".into(), max: 5, access: Access::Code }, members: vec![(2, "Ash".into()), (3, "Brock".into())], open: true };
+        let up = View { lobby: Some(lobby), world: Some("steam:9".into()), online: true, ..View::default() };
+        frame(&ctx, &mut online, &mut menus, &up, &[Nav::Up, Nav::Up, Nav::Up, Nav::Up, Nav::Up, Nav::Up, Nav::Down, Nav::Accept]);
+        assert!(online.requests.is_empty(), "one press only asks");
+        frame(&ctx, &mut online, &mut menus, &up, &[Nav::Accept]);
+        assert_eq!(online.requests.pop(), Some(Request::Kick { session: 3, name: "Brock".into() }), "the second press removes");
+        // a press on one player, then a move: the next press asks again
+        frame(&ctx, &mut online, &mut menus, &up, &[Nav::Accept, Nav::Up, Nav::Down, Nav::Accept]);
+        assert!(online.requests.is_empty());
+        let close = lobby_ui::focus_of(&up, "CloseLobby").unwrap();
+        frame(&ctx, &mut online, &mut menus, &up, &std::iter::repeat_n(Nav::Down, close - 1).chain([Nav::Accept]).collect::<Vec<_>>());
+        assert_eq!(online.requests.pop(), Some(Request::CloseLobby));
+        frame(&ctx, &mut online, &mut menus, &up, &[Nav::Back]);
+        assert!(!online.takes_input());
+        // opened again while hosting: A by habit copies the code, it never removes anyone
+        online.open_lobby();
+        frame(&ctx, &mut online, &mut menus, &up, &[Nav::Accept, Nav::Accept]);
+        assert!(online.requests.is_empty(), "{:?}", online.requests);
+        frame(&ctx, &mut online, &mut menus, &up, &[Nav::Back]);
+        // a code with a typo is not looked up; a good one is, in any case and with its dash
+        online.open_lobby();
+        online.lb.code = "abc0ef".into();
+        let join = lobby_ui::focus_of(&view, "Join").unwrap();
+        frame(&ctx, &mut online, &mut menus, &view, &std::iter::repeat_n(Nav::Down, join).chain([Nav::Accept]).collect::<Vec<_>>());
+        assert!(online.requests.is_empty() && online.lb.open);
+        let code = redex_proto::room::new(7);
+        online.lb.code = redex_proto::room::shown(&code).to_lowercase();
+        frame(&ctx, &mut online, &mut menus, &view, &[Nav::Accept]);
+        assert_eq!(online.requests.pop(), Some(Request::JoinCode(code)));
+        assert!(!online.lb.open);
     }
 
     /// Session ids start over in every server: when the world changes, the menu, whisper box and report card about a

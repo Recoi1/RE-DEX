@@ -1718,14 +1718,11 @@ impl TextureCache {
                 return (decoded.texels.clone(), decoded.replacement.clone());
             }
         }
-        let texels: Arc<[[u8; 4]]> = texture_levels(format, width, height, levels)
-            .flat_map(|level| {
-                let data = &data[level.bytes..];
-                (0..level.height)
-                    .flat_map(move |y| (0..level.width).map(move |x| (x, y)))
-                    .map(move |(x, y)| crate::texture::sample_texel(data, format, level.width, x, y))
-            })
-            .collect();
+        let mut texels = Vec::new();
+        for level in texture_levels(format, width, height, levels) {
+            crate::texture::decode_level(&data[level.bytes..], format, level.width, level.height, &mut texels);
+        }
+        let texels: Arc<[[u8; 4]]> = texels.into();
         let count = texels.len();
         if self.texels + count > CACHED_TEXELS {
             self.entries.clear();
@@ -6753,6 +6750,272 @@ mod tests {
         assert!(one == plain);
         let (_, one) = scene(-1.0, &[-0.5]).unwrap();
         assert!(one[0] == halfway, "one picture in between, as before K-way");
+    }
+
+    /// a screen's picture and its picture in between go into two slots in turn, so the window can go on showing one
+    /// picture's while the next is drawn, and the one after takes its slot; w/o memory for the second slot, one slot
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn pictures_alternate_between_two_slots() {
+        use crate::format::ColorFormat::Rgba8;
+        const SIZE: u32 = 32;
+        const OUTPUT: u32 = 0x10_0000;
+        let band = |left: f32| -> Vec<Vertex> {
+            [[left, -1.0], [left + 1.0, -1.0], [left, 1.0], [left + 1.0, -1.0], [left + 1.0, 1.0], [left, 1.0]]
+                .into_iter()
+                .map(|[x, y]| Vertex { clip: [x, y, 0.0, 1.0], color: RED, texcoords: [[0.0; 2]; 3], quaternion: [0.0, 0.0, 0.0, 1.0], view: [0.0; 3], texcoord0_w: 1.0 })
+                .collect()
+        };
+        let mut registers = target_registers();
+        registers[REG_VIEWPORT_WIDTH] = float24(SIZE as f32 / 2.0);
+        registers[REG_VIEWPORT_HEIGHT] = float24(SIZE as f32 / 2.0);
+        registers[REG_FRAMEBUFFER_DIMENSIONS] = SIZE | ((SIZE - 1) << 12) | 1 << 24;
+        let transfer = hardware::Transfer {
+            input: COLOR,
+            output: OUTPUT,
+            input_width: SIZE,
+            output_width: SIZE,
+            output_height: SIZE,
+            copy: (SIZE, SIZE),
+            scale: (1, 1),
+            flip: false,
+            input_linear: false,
+            output_tiled: false,
+            input_format: Rgba8,
+            output_format: Rgba8,
+        };
+        let picture = |resources: &mut Resources, memory: &mut ConsoleMemory, left: f32| {
+            let pass = |resources: &mut Resources, pass| resources.hardware.as_mut().unwrap().pass = pass;
+            rasterize_shaded(&registers, memory, resources, &cover(0.0, BLUE));
+            pass(resources, Pass::Twinned);
+            rasterize_shaded(&registers, memory, resources, &band(left));
+            pass(resources, Pass::Twin(0));
+            rasterize_shaded(&registers, memory, resources, &band(left - 0.25));
+            pass(resources, Pass::Real);
+            let hardware = resources.hardware.as_mut().unwrap();
+            assert!(hardware.display_transfer(memory, &transfer).unwrap());
+            hardware.screen(OUTPUT, (SIZE, SIZE), SIZE, Rgba8, &[]).expect("drawn on the GPU")
+        };
+        let Ok(device) = hardware::own_device() else { return };
+        let mut hardware = hardware::Hardware::with_device(std::sync::Arc::new(device), true, None).unwrap();
+        hardware.set_twins(1);
+        let mut resources = Resources { hardware: Some(hardware), ..Default::default() };
+        let mut memory = ConsoleMemory::default();
+        let a = picture(&mut resources, &mut memory, -1.0);
+        let b = picture(&mut resources, &mut memory, -0.5);
+        let hardware = resources.hardware.as_mut().unwrap();
+        let view = |hardware: &mut hardware::Hardware, screen, k: Option<usize>| {
+            let image = match k {
+                Some(k) => hardware.between_image(screen, k).unwrap(),
+                None => hardware.screen_image(screen).unwrap(),
+            };
+            image.map(|image| image.view)
+        };
+        let (own_a, between_a) = (view(hardware, a, None).expect("a still shows"), view(hardware, a, Some(0)).expect("and its in between one"));
+        let (own_b, between_b) = (view(hardware, b, None).unwrap(), view(hardware, b, Some(0)).unwrap());
+        assert!(own_a != own_b && between_a != between_b, "the next picture in the other slot");
+        assert!(hardware.upright_pixels(a, None).unwrap().0 != hardware.upright_pixels(b, None).unwrap().0, "each holds its own picture");
+        let c = picture(&mut resources, &mut memory, 0.0);
+        let hardware = resources.hardware.as_mut().unwrap();
+        assert_eq!((view(hardware, a, None), view(hardware, a, Some(0))), (None, None), "the one after took its slot");
+        assert_eq!((view(hardware, c, None), view(hardware, c, Some(0))), (Some(own_a), Some(between_a)));
+        assert_eq!(view(hardware, b, None), Some(own_b), "the one b4 it still shows");
+
+        // memory for one slot only: the second picture takes the first one's
+        let Ok(device) = hardware::own_device() else { return };
+        let mut hardware = hardware::Hardware::with_device(std::sync::Arc::new(device), true, None).unwrap();
+        hardware.set_twins(1);
+        let mut resources = Resources { hardware: Some(hardware), ..Default::default() };
+        let mut memory = ConsoleMemory::default();
+        let a = picture(&mut resources, &mut memory, -1.0);
+        let hardware = resources.hardware.as_mut().unwrap();
+        let used = hardware.twin_memory().0;
+        hardware.set_twin_budget(used);
+        let own_a = view(hardware, a, None).unwrap();
+        let b = picture(&mut resources, &mut memory, -0.5);
+        let hardware = resources.hardware.as_mut().unwrap();
+        assert_eq!(view(hardware, a, None), None, "one slot");
+        assert_eq!(view(hardware, b, None), Some(own_a));
+        assert!(view(hardware, b, Some(0)).is_some(), "K stays");
+        assert_eq!(hardware.twin_memory(), (used, hardware::MAX_TWINS), "w/ its twins as they were");
+    }
+
+    /// a 32x32 picture w/ a band at `left` and `twins` pictures in between (the band further left in each), through a
+    /// display transfer, as the screen shows it
+    #[cfg(feature = "vulkan")]
+    fn slot_picture(resources: &mut Resources, memory: &mut ConsoleMemory, left: f32, twins: usize) -> crate::ScreenRef {
+        use crate::format::ColorFormat::Rgba8;
+        const SIZE: u32 = 32;
+        const OUTPUT: u32 = 0x10_0000;
+        let band = |left: f32| -> Vec<Vertex> {
+            [[left, -1.0], [left + 1.0, -1.0], [left, 1.0], [left + 1.0, -1.0], [left + 1.0, 1.0], [left, 1.0]]
+                .into_iter()
+                .map(|[x, y]| Vertex { clip: [x, y, 0.0, 1.0], color: RED, texcoords: [[0.0; 2]; 3], quaternion: [0.0, 0.0, 0.0, 1.0], view: [0.0; 3], texcoord0_w: 1.0 })
+                .collect()
+        };
+        let mut registers = target_registers();
+        registers[REG_VIEWPORT_WIDTH] = float24(SIZE as f32 / 2.0);
+        registers[REG_VIEWPORT_HEIGHT] = float24(SIZE as f32 / 2.0);
+        registers[REG_FRAMEBUFFER_DIMENSIONS] = SIZE | ((SIZE - 1) << 12) | 1 << 24;
+        let transfer = hardware::Transfer {
+            input: COLOR,
+            output: OUTPUT,
+            input_width: SIZE,
+            output_width: SIZE,
+            output_height: SIZE,
+            copy: (SIZE, SIZE),
+            scale: (1, 1),
+            flip: false,
+            input_linear: false,
+            output_tiled: false,
+            input_format: Rgba8,
+            output_format: Rgba8,
+        };
+        let pass = |resources: &mut Resources, pass| resources.hardware.as_mut().unwrap().pass = pass;
+        rasterize_shaded(&registers, memory, resources, &cover(0.0, BLUE));
+        if twins > 0 {
+            pass(resources, Pass::Twinned);
+        }
+        rasterize_shaded(&registers, memory, resources, &band(left));
+        for k in 0..twins {
+            pass(resources, Pass::Twin(k as u8));
+            rasterize_shaded(&registers, memory, resources, &band(left - 0.25 * (k + 1) as f32));
+        }
+        pass(resources, Pass::Real);
+        let hardware = resources.hardware.as_mut().unwrap();
+        assert!(hardware.display_transfer(memory, &transfer).unwrap());
+        hardware.screen(OUTPUT, (SIZE, SIZE), SIZE, Rgba8, &[]).expect("drawn on the GPU")
+    }
+
+    /// the views a screen's picture (k none) or its in between one k is shown from now, none once gone
+    #[cfg(feature = "vulkan")]
+    fn shown_view(hardware: &mut hardware::Hardware, screen: crate::ScreenRef, k: Option<usize>) -> Option<ash::vk::ImageView> {
+        let image = match k {
+            Some(k) => hardware.between_image(screen, k).unwrap(),
+            None => hardware.screen_image(screen).unwrap(),
+        };
+        image.map(|image| image.view)
+    }
+
+    /// Smooth motion off: the next picture goes into the first slot and twins_idle frames on the second goes, the twins'
+    /// memory back where it started; on again, two slots again
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn the_second_slot_goes_and_comes_back() {
+        let Ok(device) = hardware::own_device() else { return };
+        let mut hardware = hardware::Hardware::with_device(std::sync::Arc::new(device), true, None).unwrap();
+        hardware.set_twins(1);
+        let mut resources = Resources { hardware: Some(hardware), ..Default::default() };
+        let mut memory = ConsoleMemory::default();
+        let a = slot_picture(&mut resources, &mut memory, -1.0, 1);
+        let b = slot_picture(&mut resources, &mut memory, -0.5, 1);
+        let hardware = resources.hardware.as_mut().unwrap();
+        let (first, second) = (shown_view(hardware, a, None).unwrap(), shown_view(hardware, b, None).unwrap());
+        assert!(first != second && hardware.twin_memory().0 > 0);
+        hardware.set_twins_idle(0);
+        hardware.set_twins(0);
+        let c = slot_picture(&mut resources, &mut memory, 0.0, 0);
+        let hardware = resources.hardware.as_mut().unwrap();
+        assert_eq!(shown_view(hardware, c, None), Some(first), "w/o pictures in between: one slot");
+        hardware.set_twins(0);
+        assert_eq!(hardware.twin_memory().0, 0, "the second slot and the twins given back");
+        assert_eq!(shown_view(hardware, b, None), None, "the second slot's picture gone w/ it");
+        hardware.set_twins(1);
+        let d = slot_picture(&mut resources, &mut memory, -1.0, 1);
+        let e = slot_picture(&mut resources, &mut memory, -0.5, 1);
+        let hardware = resources.hardware.as_mut().unwrap();
+        assert!(shown_view(hardware, d, None) != shown_view(hardware, e, None), "two slots again");
+    }
+
+    /// no room for a picture in between in the second slot: the surface goes on w/ one slot, none of the later ones in
+    /// between takes its place, the second slot goes once old, and two slots come back once there's room
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn no_room_for_the_second_slot() {
+        let Ok(device) = hardware::own_device() else { return };
+        let mut hardware = hardware::Hardware::with_device(std::sync::Arc::new(device), true, None).unwrap();
+        hardware.set_twins(2);
+        let mut resources = Resources { hardware: Some(hardware), ..Default::default() };
+        let mut memory = ConsoleMemory::default();
+        let a = slot_picture(&mut resources, &mut memory, -1.0, 2);
+        let hardware = resources.hardware.as_mut().unwrap();
+        let (used, image) = (hardware.twin_memory().0, 32 * 32 * 4);
+        let first = shown_view(hardware, a, None).unwrap();
+        // the second slot's own picture fits, its first in between doesn't
+        hardware.set_twin_budget(used + image);
+        let b = slot_picture(&mut resources, &mut memory, -0.5, 2);
+        let hardware = resources.hardware.as_mut().unwrap();
+        assert!(shown_view(hardware, b, None).is_some_and(|view| view != first));
+        assert_eq!((shown_view(hardware, b, Some(0)), shown_view(hardware, b, Some(1))), (None, None), "none in its place");
+        assert_eq!(hardware.twin_memory().0, used + image);
+        let c = slot_picture(&mut resources, &mut memory, 0.0, 2);
+        let hardware = resources.hardware.as_mut().unwrap();
+        assert_eq!(shown_view(hardware, c, None), Some(first), "one slot");
+        assert!(shown_view(hardware, c, Some(1)).is_some(), "w/ its pictures in between");
+        // memory given back: the second slot goes, and w/ room for it two slots come back
+        hardware.set_twins_idle(0);
+        hardware.set_twin_budget(1 << 30);
+        hardware.set_twins(2);
+        assert_eq!(hardware.twin_memory().0, 0);
+        let d = slot_picture(&mut resources, &mut memory, -1.0, 2);
+        let e = slot_picture(&mut resources, &mut memory, -0.5, 2);
+        let hardware = resources.hardware.as_mut().unwrap();
+        assert!(shown_view(hardware, d, None) != shown_view(hardware, e, None), "two slots again");
+    }
+
+    /// the rewrites a present checks: the next picture (the other slot) draws over none of the one b4's images; the
+    /// one after it (the game two pictures ahead of the window) does, and a present of that one is stale
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn a_picture_drawn_over_is_stale() {
+        let Ok(device) = hardware::own_device() else { return };
+        let mut hardware = hardware::Hardware::with_device(std::sync::Arc::new(device), true, None).unwrap();
+        hardware.set_twins(1);
+        let mut resources = Resources { hardware: Some(hardware), ..Default::default() };
+        let mut memory = ConsoleMemory::default();
+        let a = slot_picture(&mut resources, &mut memory, -1.0, 1);
+        let b = slot_picture(&mut resources, &mut memory, -0.5, 1);
+        let hardware = resources.hardware.as_mut().unwrap();
+        let (a_own, a_between) = (hardware.screen_image(a).unwrap().unwrap(), hardware.between_image(a, 0).unwrap().unwrap());
+        let b_own = hardware.screen_image(b).unwrap().unwrap();
+        assert!(!hardware.sync_state().2.stale([&a_own, &a_between, &b_own]), "the next picture went into the other slot");
+        let c = slot_picture(&mut resources, &mut memory, 0.0, 1);
+        let hardware = resources.hardware.as_mut().unwrap();
+        let c_own = hardware.screen_image(c).unwrap().unwrap();
+        let shared = hardware.sync_state().2;
+        assert!(shared.stale([&a_own]) && shared.stale([&a_between]), "the one after it took a's slot");
+        assert!(!shared.stale([&b_own, &c_own]));
+    }
+
+    /// w/ a queue each, a batch that turns a picture upright waits for the presents submitted b4 it, one that doesn't
+    /// turn one upright doesn't; and asked to, one batch at a time on the GPU while there are pictures in between
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn upright_rewrites_wait_for_presents_and_go_one_at_a_time() {
+        let Ok(device) = hardware::own_device() else { return };
+        if !device.two_queues() {
+            return;
+        }
+        // a present submitted, as far as the renderer knows, and done (signalled from the host, so nothing hangs)
+        let signal = ash::vk::SemaphoreSignalInfo::default().semaphore(device.shown).value(1);
+        // safe bc the semaphore is the device's timeline semaphore, at 0 till now
+        unsafe { device.device.signal_semaphore(&signal) }.unwrap();
+        device.shown_value.store(1, std::sync::atomic::Ordering::Release);
+        let mut hardware = hardware::Hardware::with_device(std::sync::Arc::new(device), true, None).unwrap();
+        hardware.set_twins(1);
+        hardware.submit_empty().unwrap();
+        assert_eq!(hardware.sync_state().1, 0, "nothing upright: no wait");
+        let mut resources = Resources { hardware: Some(hardware), ..Default::default() };
+        let mut memory = ConsoleMemory::default();
+        slot_picture(&mut resources, &mut memory, -1.0, 1);
+        let hardware = resources.hardware.as_mut().unwrap();
+        assert!(hardware.sync_state().1 >= 1, "the batch that turned it upright waited for the present");
+        hardware.set_twins(3);
+        hardware.set_one_in_flight(true);
+        for _ in 0..4 {
+            hardware.submit_empty().unwrap();
+            assert!(hardware.sync_state().0 <= 1, "one batch at a time");
+        }
     }
 
     /// the VRAM guard: twins that don't fit the memory they may take lower K for the next frame (none this one)

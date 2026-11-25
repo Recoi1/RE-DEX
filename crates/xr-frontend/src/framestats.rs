@@ -35,7 +35,7 @@ impl FrameStats {
             writeln!(file, "{head}").ok()?;
             Some(file)
         };
-        let presents = open("framestats-presents.csv", "t_ms,kind,picture,repeat,game_ms,present_ms,between")?;
+        let presents = open("framestats-presents.csv", "t_ms,kind,picture,repeat,game_ms,present_ms,between,frame,began_ms,backend_ms,steps,pre_ms,waited_ms,t")?;
         let seconds = open(
             "framestats-seconds.csv",
             "t_s,frame,presents,refreshes,game_ms_avg,record_ms_avg,present_ms_avg,present_ms_max,gap1,gap2,gap3,gap4,gap5,gap6,gap7,gap8plus,sets,smooth,draws,matched,moved,jumped,jumping,monitor_hz",
@@ -47,12 +47,18 @@ impl FrameStats {
     /// one present: `kind` 0 the same pictures again, 1 a new refresh's (2, a refresh left unshown, was the window thread's
     /// before the emulation got its own); `refreshes` and `game` are the refreshes the emulation thread ran since the last
     /// present (those the window never showed too) and their time, `present` the present call's; `between` is Smooth
-    /// motion's picture in between it showed (k + 1), 0 the game's own: picture and between tell distinct pictures apart
-    pub fn present(&mut self, kind: u8, picture: u64, between: u8, refreshes: u32, game: Duration, present: Duration) {
+    /// motion's picture in between it showed (k + 1), 0 the game's own: picture and between tell distinct pictures apart;
+    /// `frame` and `began` the shown set's refresh and when it started (input to present), `backend` the presenter's
+    /// own part of `present` (the rest is the interface), `steps` the set's K (0 w/o pictures in between) and `t` where the
+    /// picture shown is from the one b4 (1 the game's own),
+    /// `pre` the time from the last present to this one's start and `waited` the step's deliberate waits in it
+    #[allow(clippy::too_many_arguments)]
+    pub fn present(&mut self, kind: u8, picture: u64, between: u8, refreshes: u32, game: Duration, present: Duration, frame: u64, began: Instant, backend: Duration, steps: usize, t_shown: f32, pre: Duration, waited: Duration) {
         let emulated = kind != 0;
         self.repeat = if emulated { 0 } else { self.repeat + 1 };
         let t = self.began.elapsed().as_secs_f64() * 1000.0;
-        let _ = writeln!(self.presents, "{t:.3},{kind},{picture},{},{:.3},{:.3},{between}", self.repeat, ms(game), ms(present));
+        let began = began.checked_duration_since(self.began).map_or(0.0, ms);
+        let _ = writeln!(self.presents, "{t:.3},{kind},{picture},{},{:.3},{:.3},{between},{frame},{began:.3},{:.3},{steps},{:.3},{:.3},{t_shown:.4}", self.repeat, ms(game), ms(present), ms(backend), ms(pre), ms(waited));
         let c = &mut self.count;
         c.0 += (kind != 2) as u32;
         c.1 += refreshes;

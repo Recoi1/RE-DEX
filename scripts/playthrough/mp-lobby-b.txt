@@ -1,0 +1,39 @@
+# In-game lobby, player B (the new game's trainer in Vaniville): started with --lobby CODE (the start screen's Join),
+# meets A, the host, and is removed from the lobby: out of the world, A's puppet goes.
+400 A
+440 A
+600 A   # CONTINUE
+640 A
+680 A
+720 A
+1010 DOWN 40   # out of the door
+1400 DOWN 30   # Mom's Rhyhorn send-off
+1500 A
+1540 A
+1580 A
+1620 A
+1660 A
+1700 A
+1740 A
+1780 A
+1820 A
+1860 A
+1900 A
+1940 A
+1980 A
+2020 A
+2060 A
+2100 A
+2140 A
+2180 A
+2220 A
+2260 A
+2300 A
+2340 A
+2380 A
+2480 checkpoint free
+2481 wait_until puppets>=1 7200   # A, the lobby's host
+2482 checkpoint met
+2483 wait_until puppets=0 3600    # removed from the lobby
+2484 checkpoint removed
+2700 checkpoint end

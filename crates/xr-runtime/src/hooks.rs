@@ -12,12 +12,15 @@
 use crate::abi::{XrCpu, XrFn};
 use crate::exec::exec;
 use crate::{interp, log};
-use std::sync::{Mutex, MutexGuard, TryLockError};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use xr_net::x::puppet::Puppets;
 
-/// hooks.txt's lines, in order (`hooks_txt_matches` checks the file).
-pub const HOOKED: [u32; 4] = [TICK, SAVE, CREATE, LOAD];
+/// hooks.txt's lines, in order (`hooks_txt_matches` checks the file). New hooks go at the end: a DLL built with the
+/// list's first k (k >= REQUIRED) still runs with this redex (game.rs), it just never calls the hooks after them.
+pub const HOOKED: [u32; 5] = [TICK, SAVE, CREATE, LOAD, NAME_LOOKUP];
+/// The hooks every DLL with hooks must have (the multiplayer ones, TICK to LOAD); the ones after are speed-ups.
+pub const REQUIRED: usize = 4;
 /// code.bin 0x15F860: the main loop (code.bin 0x1066D8) calls it once per pass, outside every proc's update.
 pub const TICK: u32 = 0x0015_F860;
 /// code.bin 0x433B20: the field save; it writes FieldMoveModelSave (StoreAll 0x4AAE64, its only caller).
@@ -29,6 +32,11 @@ pub const CREATE: u32 = xr_net::x::puppet::CREATE;
 /// code.bin 0x3D6DF0: the zone NPC loader (mgr, entries, count, zone, extras), from code.bin 0x3B8B88 (the map
 /// change). Puppets wait for it, so they allocate after the zone's own NPCs.
 pub const LOAD: u32 = 0x003D_6DF0;
+/// code.bin 0x4CE1B4 (X and Y alike): a name's hash looked up in a table by a linear search that divides for the
+/// table's length on every step (code.bin 0x3006F8). Amie spends most of its CPU in the two; see `name_lookup`.
+pub const NAME_LOOKUP: u32 = 0x004C_E1B4;
+/// code.bin 0x3006F8: the ARM run-time's signed division with remainder (r0 / r1 -> r0, r1).
+const DIVIDE: u32 = 0x0030_06F8;
 
 /// The puppets, when online (or with XR_FAKE_PEERS). The main loop sets what to show with `try_lock`: a hook can hold
 /// the lock while a game call it made hands the baton to the main loop at a frame's end.
@@ -53,20 +61,30 @@ pub static TICKS: AtomicU64 = AtomicU64::new(0);
 /// The game function a puppet call is in right now (0: none): the main loop logs it when TICKS stops moving.
 pub static IN_CALL: AtomicU32 = AtomicU32::new(0);
 
-/// The table for `XrRuntime.hooks`, in hooks.txt order.
+/// The table for `XrRuntime.hooks`, in hooks.txt order (made at boot, before the executor; only generated code calls it).
 pub fn table() -> *mut XrFn {
-    let t: [XrFn; HOOKED.len()] = HOOKED.map(hook_for);
+    let t: [XrFn; HOOKED.len()] = HOOKED.map(hook_of);
     Box::leak(Box::new(t)).as_mut_ptr()
 }
 
-/// The hook of a `HOOKED` address, for an interpreted call to it; None for any other.
-pub fn hook_for(pc: u32) -> XrFn {
+fn hook_of(pc: u32) -> XrFn {
     match pc {
         TICK => Some(tick),
         SAVE => Some(save),
         CREATE => Some(create),
         LOAD => Some(load),
+        NAME_LOOKUP => Some(name_lookup),
         _ => None,
+    }
+}
+
+/// The hook of a `HOOKED` address, for an interpreted call to it; None for any other. The name lookup's is a stand-in
+/// for its generated code only: where that isn't there (XR_INTERP_ALL) the interpreter runs the function as it is.
+pub fn hook_for(pc: u32) -> XrFn {
+    static GENERATED: OnceLock<XrFn> = OnceLock::new();
+    match pc {
+        NAME_LOOKUP => generated(NAME_LOOKUP, &GENERATED).and(hook_of(pc)),
+        _ => hook_of(pc),
     }
 }
 
@@ -268,6 +286,181 @@ unsafe extern "C" fn create(c: *mut XrCpu) {
     unsafe { original(c, CREATE, e) };
 }
 
+/// What `NAME_LOOKUP` does with a call, worked out without writing anything (see `name_lookup`).
+#[derive(Debug, PartialEq)]
+struct Lookup {
+    /// the hash matched an entry's (r0 0, the value stored), or not (r0 0x13, 0 stored)
+    found: bool,
+    /// the value of the last entry read, which goes to [sp-56] (None: no entry was read)
+    slot: Option<u32>,
+    /// back-edges the loops took
+    back_edges: i32,
+    /// the last DIVIDE call's r0, r1 and r2 going in, and if the search made it (lr 0x4CE22C) or the first (0x4CE204)
+    last: (u32, u32, u32, bool),
+}
+
+/// DIVIDE's short paths: both operands under 2^31 and a quotient under 2^16 (b == 0 is excluded), which take no
+/// back-edge. Gives the quotient and the r2 DIVIDE leaves: its own (q >> 1) unless the quotient is decided at once (a
+/// half under b), when r2 stays as it came in. None for the long paths.
+fn short_divide(a: u32, b: u32, r2: u32) -> Option<(u32, u32)> {
+    if (a | b) >> 31 != 0 || a >> 16 >= b {
+        return None;
+    }
+    let q = a / b;
+    Some((q, if a >> 1 >= b { q >> 1 } else { r2 }))
+}
+
+/// `NAME_LOOKUP(obj = r0, name = r1, out = r2)` as the generated code runs it, reading guest memory through `read`
+/// (address, size 1/2/4: the value zero-extended, None to give up), from registers `r` and the back-edge budget.
+/// None when the call must go to the generated function: the budget would run out inside it (a preemption point the
+/// hook cannot place), a division takes DIVIDE's long path, or `read` gave up.
+fn plan_lookup(r: &[u32; 16], budget: i32, read: &mut impl FnMut(u32, u32) -> Option<u32>) -> Option<Lookup> {
+    let back_edge = |n: &mut i32| {
+        *n += 1;
+        (*n < budget).then_some(())
+    };
+    let half = |v: u32| v as u16 as i16 as u32;
+    let (obj, mut p, mut n) = (r[0], r[1], 0);
+    // r7 (the hash compared) is never compared before an entry's is read into it, see below
+    // 0x4CE1C4: the name's hash, h = c ^ h * 131 over its signed chars
+    let mut h = 0u32;
+    if read(p, 1)? != 0 {
+        loop {
+            let ch = read(p, 1)? as u8 as i8 as u32;
+            let next = read(p.wrapping_add(1), 1)?;
+            p = p.wrapping_add(1);
+            h = ch ^ h.wrapping_mul(131);
+            if next == 0 {
+                break;
+            }
+            back_edge(&mut n)?;
+        }
+    }
+    // 0x4CE1EC: the table's length, (end - begin) / entry size
+    let o = read(obj, 4)?;
+    let (end, begin, size) = (read(o.wrapping_add(0x30), 4)?, read(o.wrapping_add(0x2C), 4)?, half(read(o.wrapping_add(0xA), 2)?));
+    let a = end.wrapping_sub(begin);
+    let (count, r2) = short_divide(a, size, end)?;
+    let (mut slot, mut found) = (None, false);
+    // 0x4CE210, a step per entry: the length again (the same reads and division: nothing writes guest memory
+    // meanwhile, so it is count again, with r2 as the first division left it), then entry i (value, hash); the hash
+    // compared is r7's until an entry is read, and every step reads one (i < count)
+    if count as i32 > 0 {
+        for i in 0..count {
+            let at = i.wrapping_mul(size).wrapping_add(begin).wrapping_add(o);
+            let hash = read(at.wrapping_add(4), 4)?;
+            slot = Some(read(at, 4)?);
+            if h == hash {
+                found = true;
+                break;
+            }
+            if i + 1 == count {
+                break;
+            }
+            back_edge(&mut n)?;
+        }
+    }
+    // the last division: a step's (r2 going in as the one before left it), or with no step the first (r2 = end)
+    let last = if count as i32 > 0 { (a, size, r2, true) } else { (a, size, end, false) };
+    Some(Lookup { found, slot, back_edges: n, last })
+}
+
+/// The generated function at a code.bin address (None when everything is interpreted, XR_INTERP_ALL), looked up once.
+fn generated(addr: u32, slot: &'static OnceLock<XrFn>) -> XrFn {
+    *slot.get_or_init(|| exec().lookup(addr))
+}
+
+/// `NAME_LOOKUP`, natively: every register, flag and byte of guest memory as the generated code leaves them, and the
+/// same back-edge budget paid, so the guest clock and every hash stay the same. `plan_lookup` works the call out
+/// first without writing anything; the call goes to the generated function itself when it gives up, when a read
+/// would touch the call's own stack frame (the function reads nothing there but what it wrote), when `out` lies in
+/// that frame, or when lr is not the call's return address. Then, in the function's order: the last DIVIDE call runs
+/// for real (the r2, r3 and flags the function leaves are its; the others' results are dead but for r2), the push, the
+/// last entry's value at [sp-56], the result at `out`.
+unsafe extern "C" fn name_lookup(c: *mut XrCpu) {
+    static ORIGINAL: OnceLock<XrFn> = OnceLock::new();
+    static DIV: OnceLock<XrFn> = OnceLock::new();
+    static BASE: OnceLock<usize> = OnceLock::new();
+    static LOGGED: AtomicBool = AtomicBool::new(false);
+    let (Some(original_fn), Some(divide)) = (generated(NAME_LOOKUP, &ORIGINAL), generated(DIVIDE, &DIV)) else {
+        let _hook = unsafe { InHook::new(c) };
+        let e = unsafe { entry(c) };
+        return unsafe { original(c, NAME_LOOKUP, e) };
+    };
+    let base = *BASE.get_or_init(|| unsafe { exec().st() }.sys.memory.base() as usize) as *mut u8;
+    let (r, budget, ret_lr) = unsafe { ((*c).r, (*c).budget, (*c).ret_lr) };
+    let (sp, out) = (r[13], r[2]);
+    // the frame: the 12 registers pushed and the 8 bytes below them
+    let (lo, hi) = ((sp as u64).saturating_sub(56), sp as u64);
+    let in_frame = |a: u32, size: u32| (a as u64) < hi && a as u64 + size as u64 > lo;
+    let mut read = |a: u32, size: u32| -> Option<u32> {
+        if in_frame(a, size) || a as u64 + size as u64 > 1 << 32 {
+            return None;
+        }
+        // safe bc guest memory is 4 GiB reserved at base; a page that faults does so as in the generated code
+        let p = unsafe { base.add(a as usize) };
+        Some(unsafe {
+            match size {
+                1 => p.read() as u32,
+                2 => (p as *const u16).read_unaligned() as u32,
+                _ => (p as *const u32).read_unaligned(),
+            }
+        })
+    };
+    let plan = if sp < 56 || in_frame(out, 4) || r[14] != ret_lr { None } else { plan_lookup(&r, budget, &mut read) };
+    let Some(plan) = plan else {
+        return unsafe { original_fn(c) };
+    };
+    let (a, b, r2, looped) = plan.last;
+    let ret = if looped { 0x004C_E22C } else { 0x004C_E204 };
+    let frame = sp - 56;
+    unsafe {
+        (*c).r[0] = a;
+        (*c).r[1] = b;
+        (*c).r[2] = r2;
+        (*c).r[13] = frame;
+        (*c).r[14] = ret;
+        (*c).ret_lr = ret;
+        (*c).ret_sp = frame;
+        divide(c);
+    }
+    // the short paths pay no back-edge and give a / b; anything else means the model is wrong, and the call can't be
+    // undone (the budget is spent, a preemption may have run another thread): stop rather than go on off the clock
+    let (q, left) = unsafe { ((*c).r[0], (*c).budget) };
+    if q != a / b || left != budget {
+        log::stop(
+            1,
+            &format!("name lookup hook: the division helper gave {q} for {a} / {b} with budget {budget} -> {left}; the hook's model of it is wrong"),
+        );
+    }
+    if !LOGGED.load(Ordering::Relaxed) && !LOGGED.swap(true, Ordering::Relaxed) {
+        log::log("name lookup: the native hook runs (code.bin 0x4CE1B4)");
+    }
+    let write = |a: u32, v: u32| unsafe { (base.add(a as usize) as *mut u32).write_unaligned(v) };
+    let pushed = [r[0], r[1], r[2], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[14]];
+    for (k, v) in pushed.into_iter().enumerate() {
+        write(sp - 48 + 4 * k as u32, v);
+    }
+    if let Some(v) = plan.slot {
+        write(frame, v);
+    }
+    let (r0, r1) = if plan.found {
+        // safe as the reads above: the frame is the guest's stack
+        write(out, unsafe { (base.add(frame as usize) as *const u32).read_unaligned() });
+        (0, out)
+    } else {
+        write(out, 0);
+        (0x13, 0)
+    };
+    unsafe {
+        (*c).r[0] = r0;
+        (*c).r[1] = r1;
+        (&mut (*c).r)[4..12].copy_from_slice(&r[4..12]);
+        (*c).r[13] = sp;
+        (*c).budget = budget - plan.back_edges;
+    }
+}
+
 unsafe extern "C" fn load(c: *mut XrCpu) {
     let _hook = unsafe { InHook::new(c) };
     let e = unsafe { entry(c) };
@@ -366,5 +559,58 @@ mod tests {
                 .collect();
             assert_eq!(listed, super::HOOKED, "{path}");
         }
+    }
+
+    /// `plan_lookup` on a made-up table: the entry found, the back-edges (the name's chars but one, the search's steps
+    /// but one), the last division's operands and the r2 it gets, and where it gives up
+    #[test]
+    fn name_lookup_plans_like_the_generated_code() {
+        use super::{plan_lookup, Lookup};
+        use std::collections::HashMap;
+        // obj 0x1000 -> table 0x2000: end at +0x30, begin at +0x2C (an offset from the table), entry size at +0xA;
+        // entry i (value, hash) at table + begin + i * size; the name at 0x3000
+        let table = |entries: &[(u32, u32)], size: u16| {
+            let mut m: HashMap<u32, u8> = HashMap::new();
+            let mut put = |a: u32, bytes: &[u8]| bytes.iter().enumerate().for_each(|(k, &b)| _ = m.insert(a + k as u32, b));
+            put(0x1000, &0x2000u32.to_le_bytes());
+            put(0x2000 + 0x2C, &0x100u32.to_le_bytes());
+            put(0x2000 + 0x30, &(0x100 + entries.len() as u32 * size as u32).to_le_bytes());
+            put(0x2000 + 0xA, &size.to_le_bytes());
+            for (i, (value, hash)) in entries.iter().enumerate() {
+                let at = 0x2100 + i as u32 * size as u32;
+                put(at, &value.to_le_bytes());
+                put(at + 4, &hash.to_le_bytes());
+            }
+            put(0x3000, b"ab\0");
+            m
+        };
+        let plan = |m: &HashMap<u32, u8>, budget| {
+            let mut read = |a: u32, size: u32| (0..size).rev().try_fold(0u32, |v, k| Some(v << 8 | *m.get(&(a + k))? as u32));
+            let mut r = [0u32; 16];
+            (r[0], r[1], r[2], r[7]) = (0x1000, 0x3000, 0x4000, 0xDEAD);
+            plan_lookup(&r, budget, &mut read)
+        };
+        let h = b"ab".iter().fold(0u32, |h, &c| c as i8 as u32 ^ h.wrapping_mul(131));
+        let four = table(&[(10, 1), (11, 2), (12, h), (13, 4)], 8);
+        // found at 2: 1 + 2 back-edges; 32 / 8 leaves r2 = 4 >> 1 for every later call
+        assert_eq!(plan(&four, 1024), Some(Lookup { found: true, slot: Some(12), back_edges: 3, last: (32, 8, 2, true) }));
+        // not found: 1 + 3 back-edges, the last entry read
+        let missing = table(&[(10, 1), (11, 2), (12, 3), (13, 4)], 8);
+        assert_eq!(plan(&missing, 1024), Some(Lookup { found: false, slot: Some(13), back_edges: 4, last: (32, 8, 2, true) }));
+        // a budget the call would run out of (a back-edge reaching 0 preempts), and one it wouldn't
+        assert_eq!(plan(&missing, 4), None);
+        assert!(plan(&missing, 5).is_some());
+        // one entry: 8 / 8 is decided at once and leaves r2 as it came in, the first call's being the table's end
+        let one = table(&[(10, 1)], 8);
+        assert_eq!(plan(&one, 1024), Some(Lookup { found: false, slot: Some(10), back_edges: 1, last: (8, 8, 0x108, true) }));
+        // an empty table: no search, the first call last; r7 as it came in is never compared
+        let empty = table(&[], 8);
+        assert_eq!(plan(&empty, 1024), Some(Lookup { found: false, slot: None, back_edges: 1, last: (0, 8, 0x100, false) }));
+        // DIVIDE's long paths go to the generated code: a zero size, a quotient of 2^16
+        assert_eq!(plan(&table(&[(10, 1)], 0), 1024), None);
+        assert_eq!(super::short_divide(0x10000, 1, 0), None);
+        assert_eq!(super::short_divide(0xFFFF, 1, 7), Some((0xFFFF, 0x7FFF)));
+        assert_eq!(super::short_divide(5, 6, 7), Some((0, 7)));
+        assert_eq!(super::short_divide(0x8000_0000, 0x8000_0000, 7), None, "a negative operand");
     }
 }

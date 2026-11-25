@@ -502,7 +502,7 @@ fn rgba(path: &std::path::Path) -> Vec<u8> {
 }
 
 /// A fresh data dir of its own under the temp dir (no saves or extdata; the shared one keeps its own, and tests running
-/// at the same time, in this process or another checkout's, never share one), holding a copy of
+/// at the same time, in this process or another worktree's, never share one), holding a copy of
 /// <XR_DATA>/build/x-usa-v0.2.0/xgame.dll; None (skip) without XR_DATA/XR_CCI. A test removes it once it passed.
 fn own_data(name: &str) -> Option<(std::path::PathBuf, String)> {
     let (Ok(data), Ok(cci)) = (std::env::var("XR_DATA"), std::env::var("XR_CCI")) else {
@@ -2134,5 +2134,208 @@ fn invite_join_hits_lockdown() {
     let _ = std::fs::remove_dir_all(&data);
     let Some((data, log)) = friends_run("friends_invite", says, false) else { return };
     assert!(log.contains("world: cannot join steam:90297831083063301: Start Steam to play online"), "{log}");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// Every file under `dir` (paths relative to it, sorted) and its bytes, `backups` folders left out (the game backs a
+/// character's saves up at each start, by design).
+#[cfg(feature = "mp-tests")]
+fn files(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if e.file_name() != "backups" {
+                    todo.push(p);
+                }
+            } else {
+                out.push((p.strip_prefix(dir).unwrap().to_path_buf(), std::fs::read(&p).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A lobby's host never changes the joiner's own characters: a hostile world answers the login (and every put) with the
+/// joiner's character renamed and newer, plus one the joiner never had. The joiner, playing that character, joins by
+/// room code; its characters.json and its character's saves stay byte for byte what they were.
+#[cfg(feature = "mp-tests")]
+#[test]
+fn a_hostile_lobby_host_cannot_touch_the_joiners_characters() {
+    use redex_proto::{Character, Decoder, Msg};
+    use std::io::{Read, Write};
+    let Some((data, cci)) = own_data("lobby_hostile") else { return };
+    let Some(id) = character_in(&data, CONTINUE_LOOK, "Calem", true, "a_hostile_lobby_host_cannot_touch_the_joiners_characters") else { return };
+    let mine = xr_frontend::start::characters::Store::load(&data).get(id).cloned().unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let hostile = vec![
+        Character { id, name: "Pwned".into(), look: mine.look.clone(), created: mine.created, changed: now + 60_000 },
+        Character { id: id ^ 0x5A5A, name: "Planted".into(), look: mine.look.clone(), created: now, changed: now },
+    ];
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let logins = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = logins.clone();
+    std::thread::spawn(move || {
+        for s in listener.incoming().flatten() {
+            let (list, seen) = (hostile.clone(), seen.clone());
+            std::thread::spawn(move || {
+                let mut s = s;
+                s.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+                let (mut d, mut b, mut last) = (Decoder::default(), [0u8; 4096], Instant::now());
+                loop {
+                    match s.read(&mut b) {
+                        Ok(0) => return,
+                        Ok(n) => d.push(&b[..n]),
+                        Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                        Err(_) => return,
+                    }
+                    while let Ok(Some(m)) = d.next() {
+                        let answer: Vec<Msg> = match m {
+                            Msg::Hello { .. } => {
+                                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                vec![Msg::Welcome { session: 1 }, Msg::Characters { list: list.clone() }]
+                            }
+                            Msg::CharacterPut { .. } => vec![Msg::Characters { list: list.clone() }],
+                            Msg::Ping(n) => vec![Msg::Pong(n)],
+                            _ => vec![],
+                        };
+                        for a in answer {
+                            if s.write_all(&a.encode()).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    if last.elapsed() > Duration::from_secs(1) {
+                        last = Instant::now();
+                        // a sign of life, and the list again
+                        if s.write_all(&Msg::Ping(0).encode()).and_then(|_| s.write_all(&Msg::Characters { list: list.clone() }.encode())).is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    let rooms = data.join("rooms");
+    std::fs::create_dir_all(&rooms).unwrap();
+    let code = redex_proto::room::new(0x05);
+    std::fs::write(rooms.join(&code), &addr).unwrap();
+    let before = (std::fs::read(data.join("characters.json")).unwrap(), files(&data.join("characters")));
+    let o = Command::new(env!("CARGO_BIN_EXE_redex"))
+        .arg("--cci").arg(&cci).arg("--build").arg(data.join("build/x-usa-v0.2.0"))
+        .args(["--headless", "--frames", "900", "--dev-id", "--character", &format!("{id:016x}"), "--lobby", &code])
+        .env("XR_FAKE_ROOMS", &rooms)
+        .output().unwrap();
+    let log = std::fs::read_to_string(data.join("logs/latest.log")).unwrap_or_else(|_| String::from_utf8_lossy(&o.stderr).into_owned());
+    assert_eq!(o.status.code(), Some(0), "{log}");
+    assert!(log.contains(&format!("lobby: room code {code} is {addr}")) && log.contains("world: logged in"), "{log}");
+    assert!(logins.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    assert_eq!(std::fs::read(data.join("characters.json")).unwrap(), before.0, "the host changed characters.json\n{log}");
+    assert!(files(&data.join("characters")) == before.1, "the host changed the character's saves");
+    assert!(!log.contains("newer copies kept"), "{log}");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// A panic on one of the lobby server's threads (a connection's here) ends that connection, not the host's game: the
+/// game plays on to its last frame and its lobby still lets players in.
+#[cfg(feature = "mp-tests")]
+#[test]
+fn a_lobby_server_thread_panic_keeps_the_game_running() {
+    let Some((data, cci)) = own_data("lobby_panic") else { return };
+    let rooms = data.join("rooms");
+    let mut game = Command::new(env!("CARGO_BIN_EXE_redex"))
+        .arg("--cci").arg(&cci).arg("--build").arg(data.join("build/x-usa-v0.2.0"))
+        .args(["--headless", "--realtime", "--dev-id", "--frames", "1500"])
+        .env("XR_MP_HOST", "60:4:code:Panic test")
+        .env("XR_FAKE_ROOMS", &rooms)
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn().unwrap();
+    let log = || std::fs::read_to_string(data.join("logs/latest.log")).unwrap_or_default();
+    let until = Instant::now() + Duration::from_secs(60);
+    let addr = loop {
+        if let Some(a) = std::fs::read_dir(&rooms).ok().and_then(|mut d| d.next()).and_then(|e| std::fs::read_to_string(e.ok()?.path()).ok()) {
+            break a.trim().to_owned();
+        }
+        if Instant::now() > until || game.try_wait().unwrap().is_some() {
+            let _ = game.kill();
+            panic!("the game never hosted\n{}", log());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    // a login that makes its connection thread panic (mp-tests, dev servers only)
+    {
+        use std::io::Write;
+        let mut s = std::net::TcpStream::connect(&addr).unwrap();
+        let hello = redex_proto::Msg::Hello { version: redex_proto::VERSION, auth: redex_proto::Auth::DevId(0x9A1C), name: "redex-test-panic".into(), game: redex_proto::GEN_X, title: redex_proto::TITLE_X, appearance: vec![] };
+        s.write_all(&hello.encode()).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    // the lobby still lets a player in, and the game plays on
+    let mut c = xr_net::Client::start(xr_net::Options::new(addr.clone(), redex_proto::Auth::DevId(0x6A57), redex_proto::TITLE_X, "After")).unwrap();
+    let t0 = Instant::now();
+    while !c.online && t0.elapsed() < Duration::from_secs(10) && game.try_wait().unwrap().is_none() {
+        c.frame(None);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(c.online, "the lobby took nobody after the panic\n{}", log());
+    drop(c);
+    let code = loop {
+        if let Some(s) = game.try_wait().unwrap() {
+            break s.code();
+        }
+        if t0.elapsed() > Duration::from_secs(90) {
+            let _ = game.kill();
+            panic!("the game did not end\n{}", log());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let log = log();
+    assert_eq!(code, Some(0), "the host's game ended on the server thread's panic\n{log}");
+    assert!(log.contains("redex-conn: panicked") && log.contains("ran 1500 frames"), "{log}");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// Host lobby goes through the same lockdown as a join: with a game mod on it is refused and offline play goes on; a
+/// bad room code at --lobby is caught before anything is asked; without the mod (and without Steam) it gets as far as
+/// asking for Steam.
+#[cfg(feature = "mp-tests")]
+#[test]
+fn hosting_hits_lockdown() {
+    let host = |name: &str, mods: bool| -> Option<(std::path::PathBuf, String)> {
+        let (data, cci) = own_data(name)?;
+        if mods {
+            let romfs = data.join("mods/0004000000055D00/romfs");
+            std::fs::create_dir_all(&romfs).unwrap();
+            std::fs::write(romfs.join("lobby-test.bin"), b"mod").unwrap();
+        }
+        let o = Command::new(env!("CARGO_BIN_EXE_redex"))
+            .arg("--cci").arg(&cci).arg("--build").arg(data.join("build/x-usa-v0.2.0"))
+            .args(["--headless", "--frames", "300"])
+            .env("XR_MP_HOST", "100:4:friends:Test")
+            .env("XR_NO_STEAM", "1")
+            .output().unwrap();
+        let log = std::fs::read_to_string(data.join("logs/latest.log")).unwrap_or_else(|_| String::from_utf8_lossy(&o.stderr).into_owned());
+        assert_eq!(o.status.code(), Some(0), "the run did not play on to its end\n{log}");
+        Some((data, log))
+    };
+    let Some((data, log)) = host("lobby_mod", true) else { return };
+    assert!(log.contains("lobby: not hosting: Turn off mods to play online"), "{log}");
+    assert!(!log.contains("lobby: starting") && log.contains("ran 300 frames"), "{log}");
+    let _ = std::fs::remove_dir_all(&data);
+    let Some((data, log)) = host("lobby_nosteam", false) else { return };
+    assert!(log.contains("lobby: not hosting: Start Steam to play online to host a lobby"), "{log}");
+    let _ = std::fs::remove_dir_all(&data);
+    // a typo in the code: refused at the command line, before the game starts
+    let (data, cci) = own_data("lobby_typo").unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_redex"))
+        .arg("--cci").arg(&cci).arg("--build").arg(data.join("build/x-usa-v0.2.0"))
+        .args(["--headless", "--frames", "10", "--lobby", "ABC-0EF"])
+        .output().unwrap();
+    assert_ne!(o.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&o.stderr).contains(redex_proto::room::BAD_CHAR), "{}", String::from_utf8_lossy(&o.stderr));
     let _ = std::fs::remove_dir_all(&data);
 }

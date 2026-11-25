@@ -71,6 +71,58 @@ impl TextureFormat {
     }
 }
 
+/// a level's texels, row by row, exactly as sample_texel gives each, appended to out
+/// a level of whole 8x8 tiles that its bytes cover is read in the order it lies in memory, each ETC1 block worked out
+/// once instead of once a texel, anything else goes texel by texel
+pub fn decode_level(data: &[u8], format: TextureFormat, width: u32, height: u32, out: &mut Vec<[u8; 4]>) {
+    let (w, h, bits) = (width as usize, height as usize, format.bits_per_pixel() as usize);
+    let whole = w.is_multiple_of(8) && h.is_multiple_of(8) && data.len() >= w * h * bits / 8 && !matches!(format, TextureFormat::Unknown(_));
+    if !whole {
+        out.extend((0..height).flat_map(|y| (0..width).map(move |x| (x, y))).map(|(x, y)| sample_texel(data, format, width, x, y)));
+        return;
+    }
+    let start = out.len();
+    out.resize(start + w * h, [0; 4]);
+    let texels = &mut out[start..];
+    // where in its tile each of a tile's 64 texels in memory goes
+    let mut spot = [(0usize, 0usize); 64];
+    for (x, y) in (0..8u32).flat_map(|y| (0..8u32).map(move |x| (x, y))) {
+        spot[crate::format::morton_interleave(x, y) as usize] = (x as usize, y as usize);
+    }
+    let columns = w / 8;
+    for tile in 0..columns * (h / 8) {
+        let (tile_x, tile_y) = (tile % columns * 8, tile / columns * 8);
+        match format {
+            TextureFormat::Etc1 | TextureFormat::Etc1A4 => {
+                let size = if format == TextureFormat::Etc1A4 { 16 } else { 8 };
+                for sub in 0..4 {
+                    let block = &data[(tile * 4 + sub) * size..][..size];
+                    let (alpha, color) = block.split_at(size - 8);
+                    let parts = etc1_parts(color);
+                    let (x0, y0) = (tile_x + sub % 2 * 4, tile_y + sub / 2 * 4);
+                    for (x, y) in (0..4u32).flat_map(|y| (0..4u32).map(move |x| (x, y))) {
+                        let rgb = etc1_pixel(&parts, x, y);
+                        let a = if alpha.is_empty() { 0xFF } else { decode_etc1a4_alpha(alpha, x, y) };
+                        texels[(y0 + y as usize) * w + x0 + x as usize] = [rgb[0], rgb[1], rgb[2], a];
+                    }
+                }
+            }
+            _ => {
+                for (m, &(x, y)) in spot.iter().enumerate() {
+                    let k = tile * 64 + m;
+                    texels[(tile_y + y) * w + tile_x + x] = if bits >= 8 {
+                        let bytes = bits / 8;
+                        decode_bytes(format, &data[k * bytes..k * bytes + bytes])
+                    } else {
+                        let byte = data[k / 2];
+                        decode_nibble(format, if k % 2 == 0 { byte & 0xF } else { byte >> 4 })
+                    };
+                }
+            }
+        }
+    }
+}
+
 /// reads one texel as straight RGBA8
 pub fn sample_texel(data: &[u8], format: TextureFormat, width: u32, x: u32, y: u32) -> [u8; 4] {
     match format {
@@ -211,6 +263,20 @@ fn sample_etc1(data: &[u8], format: TextureFormat, width: u32, x: u32, y: u32) -
 
 /// decodes one pixel of a plain 8 byte ETC1 block
 fn decode_etc1_block(block: &[u8], x: u32, y: u32) -> [u8; 3] {
+    etc1_pixel(&etc1_parts(block), x, y)
+}
+
+/// what all pixels of an ETC1 block share: its index planes, its two halves' base colors and tables, and its flip bit
+struct Etc1Parts {
+    low: u32,
+    base0: [u8; 3],
+    base1: [u8; 3],
+    table0: usize,
+    table1: usize,
+    flip: bool,
+}
+
+fn etc1_parts(block: &[u8]) -> Etc1Parts {
     // little endian, bc why the hell would it match the spec
     let word = u64::from_le_bytes(block.try_into().unwrap());
     let low = (word & 0xFFFF_FFFF) as u32;
@@ -251,7 +317,12 @@ fn decode_etc1_block(block: &[u8], x: u32, y: u32) -> [u8; 3] {
 
     let table0 = ((high >> 5) & 0x7) as usize;
     let table1 = ((high >> 2) & 0x7) as usize;
+    Etc1Parts { low, base0, base1, table0, table1, flip }
+}
 
+/// one pixel of an ETC1 block
+fn etc1_pixel(parts: &Etc1Parts, x: u32, y: u32) -> [u8; 3] {
+    let &Etc1Parts { low, base0, base1, table0, table1, flip } = parts;
     // which sub block this pixel belongs to depends on the flip bit,
     // an unflipped block splits into left/right halves, a flipped one into top/bottom
     let first_half = if flip { y < 2 } else { x < 2 };
@@ -314,6 +385,35 @@ const fn expand6(v: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// a whole level decodes to exactly the texels sample_texel gives one by one, in every format and size, with
+    /// bytes enough or too few
+    #[test]
+    fn levels_decode_like_their_texels() {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let bytes: Vec<u8> = (0..64 * 64 * 4)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed as u8
+            })
+            .collect();
+        for raw in 0..15 {
+            let format = TextureFormat::from_raw(raw);
+            for (width, height) in [(8, 8), (16, 8), (8, 32), (64, 16), (4, 4), (8, 4), (12, 8), (1, 1), (2, 16)] {
+                let need = (width * height * format.bits_per_pixel()).div_ceil(8) as usize;
+                for data in [&bytes[..need], &bytes[..need / 2], &bytes[..]] {
+                    let mut level = vec![[9; 4]];
+                    decode_level(data, format, width, height, &mut level);
+                    let one_by_one: Vec<[u8; 4]> = std::iter::once([9; 4])
+                        .chain((0..height).flat_map(|y| (0..width).map(move |x| sample_texel(data, format, width, x, y))))
+                        .collect();
+                    assert!(level == one_by_one, "{format:?} {width}x{height} from {} bytes", data.len());
+                }
+            }
+        }
+    }
 
     #[test]
     fn rgba8_round_trips() {

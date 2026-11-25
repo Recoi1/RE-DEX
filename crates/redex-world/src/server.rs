@@ -21,7 +21,13 @@ pub struct Config {
     pub heartbeat: Duration,
     /// No frame for this long (handshake included) drops the connection.
     pub timeout: Duration,
+    /// A connection that has not sent Hello by then is dropped.
+    pub hello_timeout: Duration,
     pub max_conns: usize,
+    /// Connections not logged in yet, all peers together (a lobby keeps a few for the handshake, not for strangers).
+    pub max_pending: usize,
+    /// Reports go to `<data>/reports.jsonl` (an in-game lobby has nobody to read them: none).
+    pub reports: bool,
     /// Keyed by the peer address as given by the transport. Future work: group IPv6 by /64.
     pub max_per_peer: usize,
     /// Frames of any kind per second before the connection is dropped (Pos itself is capped at 10 Hz in `World`).
@@ -40,6 +46,8 @@ pub struct Config {
     /// `--allow FILE`: only the SteamID64s in it log in with Steam (read at each login). Moderation does not
     /// exist yet, so main refuses `--p2p` without it: a public world is invite-only.
     pub allow: Option<PathBuf>,
+    /// An in-game lobby's door (`lobby::Door`): checked at every login, after the identity is verified.
+    pub door: Option<Arc<crate::lobby::Door>>,
     /// Account login (`Auth::WorldTicket`), each ticket checked with the account backend; without it every ticket is
     /// refused.
     #[cfg(feature = "central")]
@@ -58,7 +66,10 @@ impl Default for Config {
         Self {
             heartbeat: Duration::from_secs(2),
             timeout: Duration::from_secs(5),
+            hello_timeout: Duration::from_secs(5),
             max_conns: 256,
+            max_pending: usize::MAX,
+            reports: true,
             max_per_peer: 8,
             max_frames_per_sec: 60,
             dev: false,
@@ -67,6 +78,7 @@ impl Default for Config {
             max_logins_per_min: 3,
             data: PathBuf::from("redex-world-data"),
             allow: None,
+            door: None,
             #[cfg(feature = "central")]
             tickets: None,
             #[cfg(feature = "central")]
@@ -90,6 +102,8 @@ struct Shared {
     #[cfg_attr(not(feature = "steam"), allow(dead_code))] // the Steam login's
     logins: Mutex<Logins>,
     stop: AtomicBool,
+    /// connections not logged in yet (`Config::max_pending`)
+    pending: std::sync::atomic::AtomicUsize,
 }
 
 /// When each account logged in, over the last minute.
@@ -132,6 +146,18 @@ impl Drop for Slot {
     }
 }
 
+/// mp-tests: a dev login with this name makes its connection thread panic (tests that a host survives it).
+#[cfg(feature = "mp-tests")]
+pub const TEST_PANIC: &str = "redex-test-panic";
+
+/// A connection not logged in yet, counted in `Shared::pending` until it logs in or ends.
+struct Pending(Arc<Shared>);
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.0.pending.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// Removes the session from the world however `session` ends (a panic included), so no ghost stays.
 struct Gone<'a>(&'a Shared, u32);
 impl Drop for Gone<'_> {
@@ -153,6 +179,7 @@ impl Server {
             conns: Mutex::new(HashMap::new()),
             logins: Mutex::new(Logins::default()),
             stop: AtomicBool::new(false),
+            pending: std::sync::atomic::AtomicUsize::new(0),
         });
         let sh = shared.clone();
         let accept = thread::Builder::new()
@@ -178,6 +205,11 @@ impl Server {
         Server { accept: Some(accept), shared }
     }
 
+    /// Connections open now, logged in or not.
+    pub fn connections(&self) -> usize {
+        lock(&self.shared.conns).values().sum()
+    }
+
     /// Players currently logged in.
     pub fn players(&self) -> usize {
         lock(&self.shared.world).len()
@@ -190,6 +222,16 @@ impl Server {
 
     /// Stops accepting; connection threads send Bye and end on their next tick.
     pub fn stop(self) {}
+
+    /// Everyone logged in: (session, name, login key), by session.
+    pub fn list(&self) -> Vec<(u32, String, u128)> {
+        lock(&self.shared.world).list()
+    }
+
+    /// Ends a session from the server's side: it is sent `why` and leaves the world (`World::end`). Its login key.
+    pub fn end(&self, sid: u32, why: Msg) -> Option<u128> {
+        lock(&self.shared.world).end(sid, why)
+    }
 }
 
 impl Drop for Server {
@@ -203,11 +245,26 @@ impl Drop for Server {
 
 fn admit(sh: &Arc<Shared>, cfg: &Config, mut link: Box<dyn Link>) {
     let peer = link.peer();
+    // a lobby knows a Steam peer's account before Hello: the host always comes in, and whom the door turns away anyway
+    // never takes a slot (two free accounts could otherwise hold every handshake slot)
+    let early = match (&cfg.door, link.account()) {
+        (Some(d), Some(key)) => d.early(key),
+        _ => crate::lobby::Early::Ok,
+    };
+    if let crate::lobby::Early::Refuse((c, reason)) = early {
+        if link.refusable() {
+            let _ = link.send(&Msg::Refuse { code: c, reason: reason.into() });
+        }
+        return;
+    }
+    let host = early == crate::lobby::Early::Host;
     {
         let mut c = lock(&sh.conns);
         let total: usize = c.values().sum();
         let mine = c.entry(peer.clone()).or_insert(0);
-        if total >= cfg.max_conns || *mine >= cfg.max_per_peer {
+        // the host past the totals, never past its own account's cap (a reconnect loop in its game would be a bug)
+        let totals = total >= cfg.max_conns || sh.pending.load(Ordering::Relaxed) >= cfg.max_pending;
+        if *mine >= cfg.max_per_peer || !host && totals {
             if *mine == 0 {
                 c.remove(&peer);
             }
@@ -218,16 +275,18 @@ fn admit(sh: &Arc<Shared>, cfg: &Config, mut link: Box<dyn Link>) {
             return;
         }
         *mine += 1;
+        sh.pending.fetch_add(1, Ordering::Relaxed);
     }
+    let pending = Pending(sh.clone());
     // The cell lets us take the link back to send a Refuse if the thread cannot be spawned.
-    let cell = Arc::new(Mutex::new(Some((link, Slot(sh.clone(), peer)))));
+    let cell = Arc::new(Mutex::new(Some((link, Slot(sh.clone(), peer), pending))));
     let (sh, cfg, c2) = (sh.clone(), cfg.clone(), cell.clone());
     let spawned = thread::Builder::new().name("redex-conn".into()).spawn(move || {
-        let Some((link, _slot)) = lock(&c2).take() else { return };
-        let _ = connection(&sh, &cfg, link); // errors just end this connection
+        let Some((link, _slot, pending)) = lock(&c2).take() else { return };
+        let _ = connection(&sh, &cfg, link, pending); // errors just end this connection
     });
     if spawned.is_err() {
-        if let Some((mut link, _slot)) = lock(&cell).take().filter(|(l, _)| l.refusable()) {
+        if let Some((mut link, _slot, _pending)) = lock(&cell).take().filter(|(l, _, _)| l.refusable()) {
             let _ = link.send(&Msg::Refuse { code: code::FULL, reason: "server busy".into() });
         }
     }
@@ -429,19 +488,24 @@ fn refuse(link: &mut dyn Link, (code, reason): (u8, impl Into<String>)) -> io::R
     link.send(&Msg::Refuse { code, reason: reason.into() })
 }
 
-fn connection(sh: &Shared, cfg: &Config, mut link: Box<dyn Link>) -> io::Result<()> {
+fn connection(sh: &Shared, cfg: &Config, mut link: Box<dyn Link>, pending: Pending) -> io::Result<()> {
     let start = Instant::now();
     let hello = loop {
         match link.recv(Duration::from_millis(100)) {
             Ok(Recv::Msg(m @ Msg::Hello { .. })) => break m,
             Ok(Recv::Msg(_)) => return refuse(&mut *link, (code::MISUSE, "expected Hello first")),
             Ok(Recv::Closed) => return Ok(()),
-            Ok(Recv::Idle) if start.elapsed() > cfg.timeout => return refuse(&mut *link, (code::TIMEOUT, "timed out waiting for Hello")),
+            Ok(Recv::Idle) if start.elapsed() > cfg.hello_timeout.min(cfg.timeout) => return refuse(&mut *link, (code::TIMEOUT, "timed out waiting for Hello")),
             Ok(Recv::Idle) => {}
             Err(e) => return refuse(&mut *link, refusal(&e)),
         }
     };
     let Msg::Hello { auth, name, game, title, appearance, .. } = hello else { unreachable!() };
+    // the MP test harness: a server thread that panics (the game hosting it must play on)
+    #[cfg(feature = "mp-tests")]
+    if cfg.dev && name == TEST_PANIC {
+        panic!("a test login asked this connection's thread to panic");
+    }
     // the world's login key; its tag bits keep a SteamID, an account and a dev id from ever standing for each other
     // (world::player_id)
     // an account login's backend session, asked about again every `account_recheck`
@@ -496,9 +560,21 @@ fn connection(sh: &Shared, cfg: &Config, mut link: Box<dyn Link>) -> io::Result<
         }
     };
     let (tx, rx) = outbox();
-    let Some(sid) = lock(&sh.world).login(key, clean_name(&name), game, title, clean_appearance(appearance, game), tx) else {
-        return refuse(&mut *link, (code::TITLE, format!("title {title:016X} (generation {game}) is not supported")));
+    // the door (a lobby's: friends, removed players, its size) and the login under one lock, so two logins cannot both
+    // take the last seat
+    let login = {
+        let mut w = lock(&sh.world);
+        match cfg.door.as_ref().map(|d| d.check(key, w.list().iter().filter(|e| e.2 != d.host()).count())) {
+            Some(Err(r)) => Err(r),
+            _ => Ok(w.login(key, clean_name(&name), game, title, clean_appearance(appearance, game), tx)),
+        }
     };
+    let sid = match login {
+        Err(r) => return refuse(&mut *link, r),
+        Ok(Some(sid)) => sid,
+        Ok(None) => return refuse(&mut *link, (code::TITLE, format!("title {title:016X} (generation {game}) is not supported"))),
+    };
+    drop(pending);
     let _gone = Gone(sh, sid);
     link.set_live();
     session(sh, cfg, &mut *link, sid, key, game, &rx, steam.as_ref(), backend_session)
@@ -617,7 +693,7 @@ fn session(sh: &Shared, cfg: &Config, link: &mut dyn Link, sid: u32, key: u128, 
                     }
                     Msg::Report { session, who, reason, note } => {
                         let line = lock(&sh.world).report(sid, session, who, reason, &clean_text(&note, NOTE_CHARS), now);
-                        if let Some(l) = line {
+                        if let Some(l) = line.filter(|_| cfg.reports) {
                             write_report(&cfg.data, &l, REPORTS_MAX);
                         }
                         None

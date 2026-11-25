@@ -3,6 +3,7 @@
 //! Features: `steam` (default: Steam login and P2P relays, community worlds) and `central` (TCP + TLS and account world
 //! tickets checked with the account backend; builds without Steam).
 pub mod accounts;
+pub mod lobby;
 pub mod server;
 #[cfg(feature = "steam")]
 pub mod steam;

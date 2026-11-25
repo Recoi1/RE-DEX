@@ -878,6 +878,14 @@ impl Presenter for VulkanPresenter {
             self.defer(overlay);
             return Ok(());
         }
+        // pictures a later one was drawn over since (the game two pictures ahead): showing them would show that one out
+        // of turn, so the caller takes the newest instead; one drawn over between here and the submit still gets waited
+        // for below
+        let gpus = [&top, &bottom, &right].map(|screen| screen.gpu);
+        if self.shared.as_deref().is_some_and(|shared| shared.two_queues() && shared.stale(gpus.iter().flatten())) {
+            self.defer(overlay);
+            return Err(PresentError::Stale);
+        }
 
         let frame = self.frame;
         let fence = self.in_flight[frame];
@@ -953,8 +961,14 @@ impl Presenter for VulkanPresenter {
         // rewrite gets submitted between reading `rewritten` and this submit (`shown` tells it about this one)
         let two = self.shared.as_deref().filter(|shared| shared.two_queues());
         let renderer = two.map(SharedDevice::lock_queue);
-        let rewritten = two.map_or(0, |shared| shared.rewritten.load(std::sync::atomic::Ordering::Acquire));
-        let drawn = sources.iter().filter_map(|source| if let Source::Gpu(gpu) = source { Some(gpu.drawn) } else { None }).max().unwrap_or(0);
+        let gpus = || sources.iter().filter_map(|source| if let Source::Gpu(gpu) = source { Some(gpu) } else { None });
+        // the last rewrite of the images this present reads, not of every image (the next picture's, in the other
+        // slot, would keep it waiting for a whole batch)
+        let rewritten = two.map_or(0, |shared| {
+            let rewritten = shared.rewritten.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            gpus().filter_map(|gpu| rewritten.get(&ash::vk::Handle::as_raw(gpu.view)).copied()).max().unwrap_or(0)
+        });
+        let drawn = gpus().map(|gpu| gpu.drawn).max().unwrap_or(0);
         let drawn = if drawn > 0 { drawn.max(rewritten) } else { 0 };
         let shown = two.map_or(0, |shared| shared.shown_value.load(std::sync::atomic::Ordering::Relaxed) + 1);
         let (waits, wait_values, stages) = match two {

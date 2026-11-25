@@ -104,7 +104,7 @@ impl Inbetweens {
             crate::log::log(&format!("XR_INBETWEENS: frame {n}'s picture"));
         }
         // a picture shown w/o pictures in between: its own alone (K = 1)
-        let motion = s.motion().unwrap_or(xr_hle::Motion { picture: 0, gap: 0, steps: 1 });
+        let motion = s.motion().unwrap_or(xr_hle::Motion { picture: 0, gap: 0, steps: 1, times: None });
         let pictures: Vec<Option<xr_hle::Screen>> = (0..motion.steps - 1).map(Some).chain([None]).map(|k| s.upright_screen(Screen::Top, k)).collect();
         // the bottom screen as the window shows it w/ each: its own picture in between where it has one, else its own
         let own: Vec<Option<usize>> = (0..motion.steps - 1).map(|k| s.gpu_between(Screen::Bottom, false, k).map(|_| k)).collect();

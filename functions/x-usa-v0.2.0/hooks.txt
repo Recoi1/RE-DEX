@@ -3,3 +3,4 @@
 0x00433B20  # 1: the field save (writes FieldMoveModelSave): xr-net sweeps the puppets around it
 0x003D41D8  # 2: move-model Create: with the pool full xr-net deletes a puppet first (a full pool hangs the game)
 0x003D6DF0  # 3: the zone NPC loader (from code.bin 0x3B8B88): puppets wait for it, so they allocate after the zone's NPCs
+0x004CE1B4  # 4: a name's hash looked up in a table (Amie's hot spot): done natively, clock-exact (xr-runtime hooks.rs name_lookup)

@@ -30,6 +30,9 @@ pub use renderer::{DrawCall, Renderer, RendererKind, SoftwareRenderer};
 #[cfg(feature = "vulkan")]
 pub use device::SharedDevice;
 
+/// the most twins a surface gets, frame interpolation's K-1 pictures in between at K = 8 (a 30 fps title on 240 Hz)
+pub const MAX_TWINS: usize = 7;
+
 /// how the GPU reaches guest memory
 pub trait GpuMemory {
     fn read(&mut self, addr: u32, out: &mut [u8]);
@@ -192,6 +195,8 @@ pub struct Gpu {
     /// in between is drawn at t = (k + 1)/K (see set_twins); ZAKURO_TWIN_ENDPOINT=1 draws the last at t = 1 (a test)
     steps: usize,
     endpoint: bool,
+    /// the twins' t's when they go at the display's vblanks instead: twin k at first + k * step (see set_twin_times)
+    times: Option<(f32, f32)>,
     /// the copy of the registers and shader units that walks each command list ahead of the real walk, see scout
     scout: Option<Box<Gpu>>,
     /// is this that copy
@@ -235,6 +240,7 @@ impl Gpu {
             interpolation: None,
             steps: 1,
             endpoint: false,
+            times: None,
             scout: None,
             scouting: false,
             ahead: std::collections::VecDeque::new(),
@@ -649,15 +655,20 @@ impl Gpu {
     /// draws on the host's GPU from now on instead of in software, and says which GPU that is
     /// scale is how many times the console's res it draws at, for sharper pictures
     /// on the device of a Vulkan presenter (when it gives one) the screens get shown straight from the images drawn
-    /// the compiled pipelines are kept for the next time the game w/ the given title id runs
+    /// the compiled pipelines and translated programs are kept for the next time the game w/ the given title id runs,
+    /// in cache_dir when given, otherwise in the system's place for caches
     #[cfg(feature = "vulkan")]
     pub fn enable_hardware_renderer(
         &mut self,
         scale: u32,
         device: Option<std::sync::Arc<SharedDevice>>,
         title: Option<u64>,
+        cache_dir: Option<&std::path::Path>,
     ) -> Result<String, String> {
-        let kept = title.and_then(raster::hardware::pipeline_cache);
+        let kept = title.and_then(|title| match cache_dir {
+            Some(dir) => Some(dir.join(format!("{title:016X}.bin"))),
+            None => raster::hardware::pipeline_cache(title),
+        });
         let mut hardware = match device {
             Some(device) => raster::hardware::Hardware::with_device(device, true, kept)?,
             None => raster::hardware::Hardware::with_device(std::sync::Arc::new(raster::hardware::own_device()?), false, kept)?,
@@ -668,6 +679,15 @@ impl Gpu {
         let name = format!("{} at {scale}x{shaded}{direct}", hardware.name());
         self.resources.hardware = Some(hardware);
         Ok(name)
+    }
+
+    /// keeps the pipelines compiled and programs translated so far for the next run now, for a run about to end
+    /// w/o dropping this
+    pub fn save_caches(&self) {
+        #[cfg(feature = "vulkan")]
+        if let Some(hardware) = &self.resources.hardware {
+            hardware.save_caches();
+        }
     }
 
     /// draws the texture pack's pictures in place of the textures they replace, or no pack's
@@ -768,11 +788,35 @@ impl Gpu {
         self.steps
     }
 
-    /// where twin k (from 0) is between the picture b4 and the title's, see steps
+    /// draws the twins from the next draw on at t = first + k * step instead of evenly (none: evenly), so each goes
+    /// up at a vblank of its own (the frontend's Smooth motion picks them for the display's vblanks); w/ set_twins
+    pub fn set_twin_times(&mut self, times: Option<(f32, f32)>) {
+        self.times = times;
+    }
+
+    /// keeps one batch at a time on the GPU while it draws pictures in between, so a presenter sharing it isn't queued
+    /// behind several (its presents came a vblank late), or lets the GPU run behind as usual (the game's refreshes are
+    /// what's slow); as usual at first
+    pub fn set_one_in_flight(&mut self, one: bool) {
+        #[cfg(feature = "vulkan")]
+        if let Some(hardware) = self.resources.hardware.as_mut() {
+            hardware.set_one_in_flight(one);
+        }
+        #[cfg(not(feature = "vulkan"))]
+        let _ = one;
+    }
+
+    /// the twins' t's the frame being drawn has, see set_twin_times
+    pub fn twin_times(&self) -> Option<(f32, f32)> {
+        self.times
+    }
+
+    /// where twin k (from 0) is between the picture b4 and the title's, see steps and set_twin_times
     fn twin_t(&self, k: usize) -> f32 {
-        match self.endpoint {
-            true => (k + 1) as f32 / self.twins().max(1) as f32,
-            false => (k + 1) as f32 / self.steps.max(2) as f32,
+        match (self.times, self.endpoint) {
+            (Some((first, step)), _) => first + k as f32 * step,
+            (None, true) => (k + 1) as f32 / self.twins().max(1) as f32,
+            (None, false) => (k + 1) as f32 / self.steps.max(2) as f32,
         }
     }
 

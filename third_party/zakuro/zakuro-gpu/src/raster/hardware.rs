@@ -50,8 +50,7 @@ const UPRIGHT_SPIRV: &[u8] = include_bytes!("../../shaders/upright.comp.spv");
 /// upright.comp built w/ TO_IMAGE, for a presenter sharing the device
 const UPRIGHT_IMAGE_SPIRV: &[u8] = include_bytes!("../../shaders/upright_image.comp.spv");
 
-/// the most twins a surface gets, frame interpolation's K-1 pictures in between at K = 8 (a 30 fps title on 240 Hz)
-pub(crate) const MAX_TWINS: usize = 7;
+pub(crate) use crate::MAX_TWINS;
 
 const COLOR_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
 const DEPTH_FORMAT: vk::Format = vk::Format::D24_UNORM_S8_UINT;
@@ -464,8 +463,18 @@ struct Surface {
     /// memory, plus a copy of the scaled image for showing it
     native: Option<Image>,
     screen: Option<Capture>,
-    /// the picture screen would copy out, kept on the GPU instead when the presenter shares the device
-    upright: Option<Upright>,
+    /// the picture screen would copy out, kept on the GPU instead when the presenter shares the device, in two slots:
+    /// a new picture goes into the other one (see slot), so the window can go on showing the last one meanwhile
+    upright: [Option<Upright>; 2],
+    /// the slot the newest picture (and its pictures in between) is in; pictures alternate while there are pictures in
+    /// between or a second slot was made
+    slot: usize,
+    /// the frame (Hardware::frames) a picture last went into each slot: the second goes once it's twins_idle frames old
+    /// and no longer the newest (see free_twins)
+    slot_at: [u64; 2],
+    /// no memory was left for the second slot: one, as before (a present then waits for a rewrite of what it reads),
+    /// till the in-between pictures' memory has room for it again (see raise_twins)
+    single: bool,
     /// counts the changes to the image, for the textures copied from it
     generation: u64,
     /// the buffer as each of frame interpolation's pictures in between has it (twin k, from 0), kept made for next time
@@ -475,9 +484,9 @@ struct Surface {
     twinned: bool,
     /// counts the changes to the twins, as generation does the image's
     twin_generation: u64,
-    /// the twins turned upright, as upright has the image; each surface a screen shows has its own, and titles show two
-    /// buffers in turn, so a frame's pictures in between stay while the next frame's get drawn
-    twin_upright: Vec<Upright>,
+    /// the twins turned upright, as upright has the image, per slot: a frame's pictures in between stay while the next
+    /// frame's get drawn, also where a title shows one buffer (X's top screen)
+    twin_upright: [Vec<Upright>; 2],
     /// the frame (Hardware::frames) the twins were last made, drawn into or read in: twins unused for a while go (see
     /// free_twins)
     twin_used: u64,
@@ -635,7 +644,7 @@ impl Surface {
         for capture in [&mut self.capture, &mut self.screen].into_iter().flatten() {
             capture.current = false;
         }
-        if let Some(upright) = &mut self.upright {
+        for upright in self.upright.iter_mut().flatten() {
             upright.current = false;
         }
     }
@@ -653,6 +662,16 @@ impl Surface {
     /// something was drawn into the twin
     fn twin_changed(&mut self) {
         self.twin_generation += 1;
+    }
+
+    /// the image the picture a batch drew is upright in (or its in between one k), in whichever slot, none once a
+    /// later picture took that slot (the newest first, two pictures can share a batch)
+    fn upright_of(&self, batch: u64, twin: Option<usize>) -> Option<&Upright> {
+        let mut slots = [self.slot, 1 - self.slot].into_iter().map(|slot| match twin {
+            Some(k) => self.twin_upright[slot].get(k),
+            None => self.upright[slot].as_ref(),
+        });
+        slots.find_map(|upright| upright.filter(|upright| upright.batch == batch))
     }
 }
 
@@ -704,41 +723,273 @@ pub(crate) fn pipeline_cache(title: u64) -> Option<std::path::PathBuf> {
     Some(dir.join("pipelines").join(format!("{title:016X}.bin")))
 }
 
-/// the pipelines kept for a game, none when there are none or they grew past MOST_PIPELINE_BYTES, which then go
-fn read_pipeline_cache(path: &std::path::Path) -> Option<Vec<u8>> {
-    let size = std::fs::metadata(path).ok()?.len();
-    if size > MOST_PIPELINE_BYTES {
-        log::info!("the {} MB of pipelines in {} are compiled again", size >> 20, path.display());
-        let _ = std::fs::remove_file(path);
-        return None;
-    }
-    std::fs::read(path).ok()
+/// what's kept on disk between runs: the pipelines compiled and the programs translated (their SPIR-V, by their GLSL),
+/// each file sealed w/ what it was made for, so one for another GPU, driver or build, or a damaged one, is left unread
+pub(crate) struct Disk {
+    pipelines: std::path::PathBuf,
+    programs: std::path::PathBuf,
+    /// the GPU and its driver, the pipelines are theirs
+    device: u64,
+    /// the build, a newer one may translate a program into other SPIR-V; none when the exe can't tell its build apart
+    /// (its size and time unreadable), then the programs are kept in memory only
+    build: Option<u64>,
+    /// the SPIR-V of the programs translated, by their GLSL, and has any come in since the file was written
+    spirv: Mutex<(HashMap<String, Vec<u32>>, bool)>,
+    /// a save failed and said so: later failures (a read-only folder, every minute) go to the debug log
+    warned: std::sync::atomic::AtomicBool,
 }
 
-/// keeps the pipelines compiled so far for the next run, via a file of its own, so a run killed halfway leaves the last one whole
-fn save_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache, path: &std::path::Path) {
-    // safe bc the cache is the device's, and taking its data needs nobody else to keep off it
-    let data = match unsafe { device.get_pipeline_cache_data(cache) } {
-        Ok(data) => data,
-        Err(error) => {
-            log::warn!("could not read the pipeline cache, {error}");
-            return;
+/// what a sealed file starts with, then its key, when it was taken (ns since 1970), its body's hash and the body
+const SEALED: &[u8; 8] = b"ZKSEAL02";
+const SEAL_HEAD: usize = 32;
+
+fn fnv(parts: &[&[u8]]) -> u64 {
+    let mut hash = 0xCBF2_9CE4_8422_2325u64;
+    for &byte in parts.iter().flat_map(|part| part.iter()) {
+        hash = (hash ^ byte as u64).wrapping_mul(0x0100_0000_01B3);
+    }
+    hash
+}
+
+/// now, as a sealed file says when it was taken
+fn now_ns() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_nanos() as u64)
+}
+
+fn seal(key: u64, taken: u64, body: &[u8]) -> Vec<u8> {
+    [SEALED.as_slice(), &key.to_le_bytes(), &taken.to_le_bytes(), &fnv(&[body]).to_le_bytes(), body].concat()
+}
+
+/// the body of a sealed file, when it's whole and was made for the key
+fn unseal(bytes: &[u8], key: u64) -> Option<&[u8]> {
+    let (head, body) = bytes.split_at_checked(SEAL_HEAD)?;
+    let word = |at: usize| u64::from_le_bytes(head[at..at + 8].try_into().unwrap());
+    (head[..8] == SEALED[..] && word(8) == key && word(24) == fnv(&[body])).then_some(body)
+}
+
+/// when the sealed file at path was taken, from its head alone; none when there's no such file
+fn sealed_at(path: &std::path::Path) -> Option<u64> {
+    use std::io::Read;
+    let mut head = [0; SEAL_HEAD];
+    std::fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
+    (head[..8] == SEALED[..]).then(|| u64::from_le_bytes(head[16..24].try_into().unwrap()))
+}
+
+/// how old a partial file or a lock is before it counts as left by a run that died
+const STALE: std::time::Duration = std::time::Duration::from_secs(600);
+/// a save holds its lock for a moment; one this old was left by a run that died holding it
+const STALE_LOCK: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn older_than(path: &std::path::Path, age: std::time::Duration) -> bool {
+    let modified = std::fs::metadata(path).and_then(|m| m.modified());
+    modified.is_ok_and(|t| t.elapsed().is_ok_and(|elapsed| elapsed > age))
+}
+
+/// what keeping a file came to
+#[derive(Debug, PartialEq)]
+enum Kept {
+    Written,
+    /// the file there was taken later (another process saved meanwhile), and stays
+    NewerThere,
+    /// another process is saving it right now: the next save tries again
+    Busy,
+}
+
+/// keeps a sealed file taken at `taken`, unless the one there was taken later: written to a file of its own first and
+/// renamed, so a run killed halfway leaves a whole one; saves in this process wait for each other, and across processes
+/// `<file>.lock` (made only if missing) keeps the check and the rename together
+fn keep_file(path: &std::path::Path, key: u64, taken: u64, body: &[u8]) -> std::io::Result<Kept> {
+    static SAVING: Mutex<()> = Mutex::new(());
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let _saving = SAVING.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut lock = path.as_os_str().to_owned();
+    lock.push(".lock");
+    let lock = std::path::PathBuf::from(lock);
+    let take = || std::fs::OpenOptions::new().write(true).create_new(true).open(&lock);
+    let held = match take() {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && older_than(&lock, STALE_LOCK) => {
+            let _ = std::fs::remove_file(&lock);
+            take()
         }
+        other => other,
     };
-    let partial = path.with_extension(format!("{}.partial", std::process::id()));
-    let size = data.len();
-    let written = path
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&partial, data))
-        .and_then(|()| std::fs::rename(&partial, path));
-    match written {
-        Ok(()) => log::debug!(target: "zakuro_gpu::pipelines", "kept {} KB of pipelines in {}", size / 1024, path.display()),
-        Err(error) => {
-            log::warn!("could not save the pipeline cache to {}, {error}", path.display());
+    match held {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(Kept::Busy),
+        Err(error) => return Err(error),
+    }
+    let kept = (|| {
+        if sealed_at(path).is_some_and(|there| there > taken) {
+            return Ok(Kept::NewerThere);
+        }
+        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let partial = path.with_extension(format!("{}-{n}.partial", std::process::id()));
+        let written = std::fs::write(&partial, seal(key, taken, body)).and_then(|()| std::fs::rename(&partial, path));
+        if written.is_err() {
             let _ = std::fs::remove_file(&partial);
         }
+        written.map(|()| Kept::Written)
+    })();
+    let _ = std::fs::remove_file(&lock);
+    kept
+}
+
+/// removes the partial files of the cache files at path that a run which died while saving left, long enough ago
+/// that no one can still be writing them
+fn sweep_partials(path: &std::path::Path) {
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&format!("{stem}.")) && name.ends_with(".partial") && older_than(&entry.path(), STALE) {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
+}
+
+impl Disk {
+    /// pipelines kept in the file given, the programs next to it, for this GPU and driver
+    fn new(pipelines: std::path::PathBuf, properties: &vk::PhysicalDeviceProperties) -> Disk {
+        let ids = [properties.vendor_id, properties.device_id, properties.driver_version].map(u32::to_le_bytes);
+        let device = fnv(&[&ids[0], &ids[1], &ids[2], &properties.pipeline_cache_uuid]);
+        // the running exe's size and time: every build has its own, a cache never outlives the build that made it
+        let exe = std::env::current_exe().and_then(std::fs::metadata).ok();
+        let modified = exe.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+        let stamp = exe.zip(modified.filter(|t| !t.is_zero())).map(|(m, t)| (m.len(), t.as_nanos()));
+        if stamp.is_none() {
+            log::info!("the exe's size and time can't be read, so translated programs are kept for this run only");
+        }
+        let build = stamp.map(|stamp| fnv(&[env!("CARGO_PKG_VERSION").as_bytes(), format!("{stamp:?}").as_bytes()]));
+        Disk::keyed(pipelines, device, build)
+    }
+
+    fn keyed(pipelines: std::path::PathBuf, device: u64, build: Option<u64>) -> Disk {
+        sweep_partials(&pipelines);
+        let programs = pipelines.with_extension("spirv");
+        let spirv = Mutex::new((HashMap::new(), false));
+        let disk = Disk { pipelines, programs, device, build, spirv, warned: std::sync::atomic::AtomicBool::new(false) };
+        let read = build.and_then(|build| disk.read(&disk.programs, build)).and_then(|body| parse_programs(&body));
+        match read {
+            Some(spirv) => {
+                log::debug!(target: "zakuro_gpu::programs", "{} translated programs read from {}", spirv.len(), disk.programs.display());
+                disk.spirv.lock().unwrap_or_else(PoisonError::into_inner).0 = spirv;
+            }
+            None if build.is_some() && disk.programs.exists() => {
+                log::info!("the programs kept in {} are for another build, translating them again", disk.programs.display())
+            }
+            None => {}
+        }
+        disk
+    }
+
+    /// a save that failed: the first one is a warning, the rest (a read-only folder fails every minute) debug lines
+    fn failed(&self, what: &str) {
+        if self.warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            log::debug!(target: "zakuro_gpu::pipelines", "{what}");
+        } else {
+            log::warn!("{what} (later failures go to the debug log)");
+        }
+    }
+
+    /// a sealed file's body, none when there's none, it's for something else, it's damaged or it grew past MOST_PIPELINE_BYTES
+    fn read(&self, path: &std::path::Path, key: u64) -> Option<Vec<u8>> {
+        let size = std::fs::metadata(path).ok()?.len();
+        if size > MOST_PIPELINE_BYTES {
+            log::info!("the {} MB in {} are made again", size >> 20, path.display());
+            let _ = std::fs::remove_file(path);
+            return None;
+        }
+        let bytes = std::fs::read(path).ok()?;
+        unseal(&bytes, key).map(<[u8]>::to_vec)
+    }
+
+    /// the pipelines kept, for the device's cache to start from
+    fn pipelines(&self) -> Option<Vec<u8>> {
+        let body = self.read(&self.pipelines, self.device);
+        if body.is_none() && self.pipelines.exists() {
+            log::info!("the pipelines kept in {} are for another GPU or driver, or damaged, compiling them again", self.pipelines.display());
+        }
+        body
+    }
+
+    /// the SPIR-V translated from a program's GLSL b4
+    fn spirv(&self, source: &str) -> Option<Vec<u32>> {
+        self.spirv.lock().unwrap_or_else(PoisonError::into_inner).0.get(source).cloned()
+    }
+
+    fn translated(&self, source: &str, words: &[u32]) {
+        let mut spirv = self.spirv.lock().unwrap_or_else(PoisonError::into_inner);
+        spirv.0.insert(source.to_owned(), words.to_vec());
+        spirv.1 = true;
+    }
+
+    /// keeps the pipelines compiled and the programs translated so far for the next run
+    fn save(&self, device: &ash::Device, cache: vk::PipelineCache) {
+        let taken = now_ns();
+        // safe bc the cache is the device's, and taking its data needs nobody else to keep off it
+        match unsafe { device.get_pipeline_cache_data(cache) } {
+            Ok(data) => match keep_file(&self.pipelines, self.device, taken, &data) {
+                Ok(kept) => log::debug!(target: "zakuro_gpu::pipelines", "{} KB of pipelines in {}: {kept:?}", data.len() / 1024, self.pipelines.display()),
+                Err(error) => self.failed(&format!("could not save the pipeline cache to {}, {error}", self.pipelines.display())),
+            },
+            Err(error) => self.failed(&format!("could not read the pipeline cache, {error}")),
+        }
+        self.save_programs();
+    }
+
+    /// keeps the programs translated so far, when any came in since the last time; one that couldn't be written (or
+    /// another process was writing) is tried again at the next save
+    fn save_programs(&self) {
+        let Some(build) = self.build else { return };
+        let (taken, body) = {
+            let mut spirv = self.spirv.lock().unwrap_or_else(PoisonError::into_inner);
+            if !std::mem::take(&mut spirv.1) {
+                return;
+            }
+            (now_ns(), programs_bytes(&spirv.0))
+        };
+        let kept = keep_file(&self.programs, build, taken, &body);
+        if !matches!(kept, Ok(Kept::Written | Kept::NewerThere)) {
+            self.spirv.lock().unwrap_or_else(PoisonError::into_inner).1 = true;
+        }
+        if let Err(error) = kept {
+            self.failed(&format!("could not save the translated programs to {}, {error}", self.programs.display()));
+        }
+    }
+}
+
+/// the programs' file body: per program its GLSL's length and bytes, then its SPIR-V's words' count and words
+fn programs_bytes(spirv: &HashMap<String, Vec<u32>>) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (source, words) in spirv {
+        out.extend((source.len() as u32).to_le_bytes());
+        out.extend(source.as_bytes());
+        out.extend((words.len() as u32).to_le_bytes());
+        out.extend(words.iter().flat_map(|word| word.to_le_bytes()));
+    }
+    out
+}
+
+fn parse_programs(mut body: &[u8]) -> Option<HashMap<String, Vec<u32>>> {
+    fn take<'a>(body: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
+        let (part, rest) = body.split_at_checked(n)?;
+        *body = rest;
+        Some(part)
+    }
+    let word = |body: &mut &[u8]| take(body, 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
+    let mut spirv = HashMap::new();
+    while !body.is_empty() {
+        let len = word(&mut body)?;
+        let source = String::from_utf8(take(&mut body, len)?.to_vec()).ok()?;
+        let count = word(&mut body)?;
+        let words = take(&mut body, count.checked_mul(4)?)?.chunks_exact(4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect();
+        spirv.insert(source, words);
+    }
+    Some(spirv)
 }
 
 /// how long the compiler thread waits between keeping what it compiled, a run that ends badly loses no more than that
@@ -787,8 +1038,9 @@ fn pixel_offset(tiled: bool, x: u32, y: u32, width: u32, bpp: u32) -> usize {
 
 /// a screen's newest picture turned upright into an image that a presenter sharing the device draws straight from,
 /// plus the batch that drew it
-/// one is enough, every batch starts w/ a barrier that waits for the presents submitted b4 it,
-/// so no picture gets drawn over while one shows it
+/// a batch that writes one waits for the presents submitted b4 it, so none gets drawn over while a present reads it;
+/// a present made later from an older set waits for the rewrite of what it reads (SharedDevice::rewritten), which the
+/// two slots (Surface::slot) keep rare
 struct Upright {
     image: Image,
     batch: u64,
@@ -1192,7 +1444,7 @@ impl Compiler {
     fn start(
         device: ash::Device,
         cache: vk::PipelineCache,
-        kept: Option<Arc<std::path::Path>>,
+        disk: Option<Arc<Disk>>,
         layout: vk::PipelineLayout,
         fragments: [vk::ShaderModule; 3],
         dynamic: Dynamic,
@@ -1211,10 +1463,10 @@ impl Compiler {
         let count = thread::available_parallelism().map_or(1, |cores| cores.get().saturating_sub(2).clamp(1, 3));
         let threads = (0..count)
             .map_while(|_| {
-                let (jobs, sent, device, kept) = (queue.clone(), sent.clone(), device.clone(), kept.clone());
+                let (jobs, sent, device, disk) = (queue.clone(), sent.clone(), device.clone(), disk.clone());
                 thread::Builder::new()
                     .name("shader compiler".into())
-                    .spawn(move || compile(&jobs, &sent, &device, cache, kept.as_deref(), layout, fragments, dynamic, depth_format))
+                    .spawn(move || compile(&jobs, &sent, &device, cache, disk.as_deref(), layout, fragments, dynamic, depth_format))
                     .ok()
             })
             .collect();
@@ -1276,7 +1528,7 @@ fn compile(
     sent: &mpsc::Sender<Made>,
     device: &ash::Device,
     cache: vk::PipelineCache,
-    kept: Option<&std::path::Path>,
+    disk: Option<&Disk>,
     layout: vk::PipelineLayout,
     fragments: [vk::ShaderModule; 3],
     dynamic: Dynamic,
@@ -1303,15 +1555,15 @@ fn compile(
                 // the others find nothing to keep meanwhile
                 (waiting.compiled, waiting.saved) = (0, std::time::Instant::now());
                 drop(waiting);
-                if let Some(path) = kept {
-                    save_pipeline_cache(device, cache, path);
+                if let Some(disk) = disk {
+                    disk.save(device, cache);
                 }
                 waiting = lock();
             }
         };
         drop(waiting);
         let compiles = matches!(job, Job::Compile(..));
-        let made = work(job, device, cache, layout, fragments, dynamic, depth_format);
+        let made = work(job, device, cache, disk, layout, fragments, dynamic, depth_format);
         lock().compiled += compiles as usize;
         if sent.send(made).is_err() {
             return;
@@ -1320,10 +1572,12 @@ fn compile(
 }
 
 /// a job done, on the compiler thread or, when waiting for it, on the caller's
+#[allow(clippy::too_many_arguments)]
 fn work(
     job: Job,
     device: &ash::Device,
     cache: vk::PipelineCache,
+    disk: Option<&Disk>,
     layout: vk::PipelineLayout,
     fragments: [vk::ShaderModule; 3],
     dynamic: Dynamic,
@@ -1335,7 +1589,17 @@ fn work(
             // a panic is a bug in the translation, the interpreter can cover for it
             let source = std::panic::catch_unwind(|| glsl::translate(&program, key.1, &key.2))
                 .unwrap_or_else(|_| Err("the translation panicked".to_owned()));
-            let made = source.and_then(|source| Ok((glsl::compile(&source)?, source)));
+            // the GLSL compiled b4 (by this build) gives the same SPIR-V, the compile is what takes the time
+            let made = source.and_then(|source| match disk.and_then(|disk| disk.spirv(&source)) {
+                Some(words) => Ok((words, source)),
+                None => {
+                    let words = glsl::compile(&source)?;
+                    if let Some(disk) = disk {
+                        disk.translated(&source, &words);
+                    }
+                    Ok((words, source))
+                }
+            });
             match &made {
                 Ok(_) => log::debug!(
                     target: "zakuro_gpu::programs",
@@ -1662,16 +1926,23 @@ pub struct Hardware {
     barriers: u64,
     /// was anything that writes memory recorded since the last barrier, w/o that another one adds nothing
     unfenced: bool,
-    /// the batch turns a picture upright for the presenter, which may still read the image from an earlier present
+    /// the batch turns a picture upright for the presenter, which may still read the image from an earlier present, and
+    /// the images it does that in (their views)
     upright_written: bool,
+    rewrites: Vec<vk::ImageView>,
+    /// one batch at a time on the GPU while it draws pictures in between (see submit)
+    one_in_flight: bool,
+    /// the batches that waited for presents (`shown`), for a test
+    #[cfg(test)]
+    shown_waits: u64,
     /// the draws recorded in the batch (see MOST_DRAWS)
     batch_draws: u32,
     renderings: u64,
     draws: u64,
     /// the pipelines compiled b4, kept on disk between runs, so a combination of fragment stages seen once doesn't stall again
     pipeline_cache: vk::PipelineCache,
-    /// the file they are kept in, none for nowhere
-    kept_pipelines: Option<Arc<std::path::Path>>,
+    /// where they and the programs translated are kept, none for nowhere
+    disk: Option<Arc<Disk>>,
 }
 
 impl Hardware {
@@ -1682,13 +1953,13 @@ impl Hardware {
     }
 
     /// draws w/ a device made by render_device, the presenter may share it, and then shows screens straight from the GPU when direct
-    /// the pipelines it compiles are kept in the file given
+    /// the pipelines it compiles are kept in the file given, the programs it translates next to it
     pub fn with_device(shared: Arc<SharedDevice>, direct: bool, kept_pipelines: Option<std::path::PathBuf>) -> Result<Hardware, String> {
-        let kept_pipelines: Option<Arc<std::path::Path>> = kept_pipelines.map(Into::into);
         let (instance, device, physical, family) = (shared.instance.clone(), shared.device.clone(), shared.physical, shared.family);
         let (logic_ops, statistics, dynamic) = (shared.logic_ops, shared.statistics, shared.dynamic);
         // safe bc the physical device came from this instance
         let properties = unsafe { instance.get_physical_device_properties(physical) };
+        let disk = kept_pipelines.map(|path| Arc::new(Disk::new(path, &properties)));
         let name = properties.device_name_as_c_str().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let push = ash::khr::push_descriptor::Device::new(&instance, &device);
 
@@ -1789,12 +2060,12 @@ impl Hardware {
             }
             let timestamps = instance.get_physical_device_queue_family_properties(physical)[family as usize].timestamp_valid_bits > 0;
             // the driver checks the data is for this GPU and ignores it if not
-            let saved = kept_pipelines.as_deref().and_then(read_pipeline_cache).unwrap_or_default();
+            let saved = disk.as_deref().and_then(Disk::pipelines).unwrap_or_default();
             let pipeline_cache = device
                 .create_pipeline_cache(&vk::PipelineCacheCreateInfo::default().initial_data(&saved), None)
                 .or_else(|_| device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None))
                 .map_err(vk_error("create a pipeline cache"))?;
-            let compiler = Compiler::start(device.clone(), pipeline_cache, kept_pipelines.clone(), layout, [fragment_shader, depth_fragment_shader, flip_shader], dynamic, depth_format);
+            let compiler = Compiler::start(device.clone(), pipeline_cache, disk.clone(), layout, [fragment_shader, depth_fragment_shader, flip_shader], dynamic, depth_format);
             let blend_state = dynamic.blend.then(|| ash::ext::extended_dynamic_state3::Device::new(&instance, &device));
             let logic_op_state = dynamic.logic_op.then(|| ash::ext::extended_dynamic_state2::Device::new(&instance, &device));
             let mut hardware = Hardware {
@@ -1936,11 +2207,15 @@ impl Hardware {
                 barriers: 0,
                 unfenced: true,
                 upright_written: false,
+                rewrites: Vec::new(),
+                one_in_flight: false,
+                #[cfg(test)]
+                shown_waits: 0,
                 batch_draws: 0,
                 renderings: 0,
                 draws: 0,
                 pipeline_cache,
-                kept_pipelines,
+                disk,
             };
             let ring_usage = vk::BufferUsageFlags::VERTEX_BUFFER
                 | vk::BufferUsageFlags::INDEX_BUFFER
@@ -2551,12 +2826,15 @@ impl Hardware {
                     capture: None,
                     native,
                     screen: None,
-                    upright: None,
+                    upright: [None, None],
+                    slot: 1,
+                    single: false,
+                    slot_at: [0; 2],
                     generation: 0,
                     twin: Vec::new(),
                     twinned: false,
                     twin_generation: 0,
-                    twin_upright: Vec::new(),
+                    twin_upright: [Vec::new(), Vec::new()],
                     twin_used: 0,
                 });
                 self.surfaces.len() - 1
@@ -2664,10 +2942,16 @@ impl Hardware {
     fn free_twins(&mut self) {
         let (cap, idle, batch) = (self.twin_cap, self.twins_idle, self.frames);
         let late = self.twins_retired.is_some_and(|at| batch.saturating_sub(at) >= idle);
-        let has = |surface: &Surface| !surface.twin_upright.is_empty() || !surface.twin.is_empty();
+        let has = |surface: &Surface| surface.twin_upright.iter().any(|slot| !slot.is_empty()) || !surface.twin.is_empty();
         let unused = |surface: &Surface| has(surface) && batch.saturating_sub(surface.twin_used) >= idle;
-        let past = |surface: &Surface| surface.twin.len() > cap || (late && surface.twin_upright.len() > cap);
-        if !self.surfaces.iter().any(|surface| unused(surface) || past(surface)) && self.twin_copies.len() <= cap {
+        let past = |surface: &Surface| surface.twin.len() > cap || (late && surface.twin_upright.iter().any(|slot| slot.len() > cap));
+        // the second slot, once the newest picture is in the first and the second's is twins_idle frames old (Smooth
+        // motion off, one slot left, or no pictures there for a while): no picture the window still shows is in it
+        let spare = |surface: &Surface| {
+            let held = surface.upright[1].is_some() || !surface.twin_upright[1].is_empty();
+            held && surface.slot == 0 && batch.saturating_sub(surface.slot_at[1]) >= idle
+        };
+        if !self.surfaces.iter().any(|surface| unused(surface) || past(surface) || spare(surface)) && self.twin_copies.len() <= cap {
             if late {
                 self.twins_retired = None;
             }
@@ -2689,9 +2973,22 @@ impl Hardware {
                 surface.untwin();
             }
             gone.extend(surface.twin.drain(keep.min(surface.twin.len())..).map(|image| (image, bytes)));
-            gone.extend(surface.twin_upright.drain(keep_upright.min(surface.twin_upright.len())..).map(|upright| (upright.image, bytes)));
+            if spare(surface) {
+                gone.extend(surface.upright[1].take().map(|upright| (upright.image, bytes)));
+                gone.extend(surface.twin_upright[1].drain(..).map(|upright| (upright.image, bytes)));
+            }
+            for slot in &mut surface.twin_upright {
+                gone.extend(slot.drain(keep_upright.min(slot.len())..).map(|upright| (upright.image, bytes)));
+            }
         }
         let copies: Vec<Copied> = self.twin_copies.drain(cap.min(self.twin_copies.len())..).flat_map(|copies| copies.into_values()).collect();
+        {
+            // the rewrites of images gone mean nothing for a present (a view made later may get the same handle)
+            let mut rewritten = self._shared.rewritten.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (image, _) in &gone {
+                rewritten.remove(&vk::Handle::as_raw(image.view));
+            }
+        }
         for (image, bytes) in gone {
             self.destroy_image(&image);
             self.twin_bytes -= bytes;
@@ -2707,7 +3004,16 @@ impl Hardware {
     /// the VRAM guard's way back up, b4 a frame: once the twins would fit w/ one more each (what they take grows w/ K)
     /// in 90% of the memory they may, and the cap has stood twins_idle frames for each time the guard tripped, one more
     /// picture in between (so a scene that doesn't fit at the higher K doesn't flap, and one that's gone gets it back)
+    /// and a surface left w/ one slot gets two again once its second slot (the picture and K-1 in between) would fit
+    /// in 90% of the memory as well
     fn raise_twins(&mut self) {
+        let (scale, twins, used, budget) = (self.scale, self.twins as u64, self.twin_bytes, self.twin_budget);
+        for surface in self.surfaces.iter_mut().filter(|surface| surface.single && surface.upright[1].is_none() && surface.twin_upright[1].is_empty()) {
+            let bytes = u64::from(surface.width * scale) * u64::from(surface.height * scale) * 4;
+            if (used + bytes * (twins + 1)) * 10 < budget * 9 {
+                surface.single = false;
+            }
+        }
         let waited = self.frames.saturating_sub(self.cap_at) >= self.twins_idle * self.twin_trips.min(16);
         let cap = self.twin_cap as u64;
         let fits = self.twin_bytes * (cap + 1) / cap.max(1) * 10 < self.twin_budget * 9;
@@ -2737,6 +3043,24 @@ impl Hardware {
     #[cfg(test)]
     pub(crate) fn set_twins_idle(&mut self, frames: u64) {
         self.twins_idle = frames;
+    }
+
+    /// the batches on the GPU, the batches that waited for presents, and the device, for tests of the sync
+    #[cfg(test)]
+    pub(crate) fn sync_state(&self) -> (usize, u64, &SharedDevice) {
+        (self.in_flight.len(), self.shown_waits, &self._shared)
+    }
+
+    /// hands an empty batch to the GPU, for tests of the batches in flight
+    #[cfg(test)]
+    pub(crate) fn submit_empty(&mut self) -> Result<(), String> {
+        self.begin()?;
+        self.submit()
+    }
+
+    /// one batch at a time on the GPU while it draws pictures in between, or as many as IN_FLIGHT (see submit)
+    pub(crate) fn set_one_in_flight(&mut self, one: bool) {
+        self.one_in_flight = one;
     }
 
     /// what the twins take of the GPU's memory, what they may, and the most there may be now (the VRAM guard's cap)
@@ -3622,8 +3946,16 @@ impl Hardware {
                 None => return,
             },
         };
-        let made = work(job, &self.device, self.pipeline_cache, self.layout, self.fragment_modules(), self.dynamic, self.depth_format);
+        let made = work(job, &self.device, self.pipeline_cache, self.disk.as_deref(), self.layout, self.fragment_modules(), self.dynamic, self.depth_format);
         self.take(made);
+    }
+
+    /// keeps the pipelines and programs made so far on disk now, for a run that ends w/o dropping this (the compiler
+    /// threads only keep them now and then, and runs waiting for their shaders make them all here)
+    pub(crate) fn save_caches(&self) {
+        if let Some(disk) = &self.disk {
+            disk.save(&self.device, self.pipeline_cache);
+        }
     }
 
     /// takes in what the compiler made since last time
@@ -5062,33 +5394,64 @@ impl Hardware {
 
     /// records a surface turned upright into the image a presenter sharing the device draws it from, or its twin k into
     /// the twin's (made in order of k; no room for it lowers twins to k)
+    /// a new picture (twin none) goes into the other slot, its twins after it into the same; the second slot's images
+    /// count as twins' memory, and no room for one leaves the surface w/ one slot instead of lowering twins
     /// the batch's first barrier waits for the presents submitted b4, which may still read the image
     fn upright_image(&mut self, index: usize, twin: Option<usize>) -> Result<(), String> {
         self.mark(Work::Capture, false);
         // a row of the surface is a column of the screen
         let (width, height) = (self.surfaces[index].height * self.scale, self.surfaces[index].width * self.scale);
-        let made = match twin {
-            Some(k) => self.surfaces[index].twin_upright.len() > k,
-            None => self.surfaces[index].upright.is_some(),
+        let frames = self.frames;
+        let surface = &mut self.surfaces[index];
+        match twin {
+            // w/o pictures in between (Smooth motion off) one slot does, the second goes w/ free_twins
+            None => {
+                surface.slot = if !surface.single && self.twins > 0 { 1 - surface.slot } else { 0 };
+                surface.slot_at[surface.slot] = frames;
+            }
+            // one in between this picture couldn't get: none after it either, they'd take its place
+            Some(k) if surface.twin_upright[surface.slot].len() < k => return Ok(()),
+            Some(_) => {}
+        }
+        let mut slot = self.surfaces[index].slot;
+        let made = |surface: &Surface, slot: usize| match twin {
+            Some(k) => surface.twin_upright[slot].len() > k,
+            None => surface.upright[slot].is_some(),
         };
-        if !made {
+        if !made(&self.surfaces[index], slot) {
             let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED;
             self.end_rendering();
-            match twin {
-                Some(k) => match self.twin_image(width, height, COLOR_FORMAT, usage, vk::ImageAspectFlags::COLOR) {
-                    Ok(image) => {
-                        debug_assert_eq!(self.surfaces[index].twin_upright.len(), k);
-                        self.surfaces[index].twin_upright.push(Upright { image, batch: 0, current: false });
-                    }
-                    Err(error) => {
-                        self.lower_twins(if k > 0 { k } else { self.twins.saturating_sub(1) }, &error);
+            let image = match (twin, slot) {
+                (None, 0) => self.image(width, height, COLOR_FORMAT, usage, vk::ImageAspectFlags::COLOR),
+                _ => self.twin_image(width, height, COLOR_FORMAT, usage, vk::ImageAspectFlags::COLOR),
+            };
+            match (image, twin) {
+                (Ok(image), Some(k)) => {
+                    debug_assert_eq!(self.surfaces[index].twin_upright[slot].len(), k);
+                    self.surfaces[index].twin_upright[slot].push(Upright { image, batch: 0, current: false });
+                }
+                (Ok(image), None) => self.surfaces[index].upright[slot] = Some(Upright { image, batch: 0, current: false }),
+                (Err(error), _) if slot == 1 => {
+                    log::warn!("frame interpolation: one slot for a screen's pictures from now on, {error}");
+                    let surface = &mut self.surfaces[index];
+                    surface.single = true;
+                    if twin.is_some() {
+                        // this picture goes w/o its later pictures in between, the next into slot 0
                         return Ok(());
                     }
-                },
-                None => {
-                    let image = self.image(width, height, COLOR_FORMAT, usage, vk::ImageAspectFlags::COLOR)?;
-                    self.surfaces[index].upright = Some(Upright { image, batch: 0, current: false });
+                    surface.slot = 0;
+                    surface.slot_at[0] = frames;
+                    slot = 0;
+                    if !made(&*surface, 0) {
+                        let image = self.image(width, height, COLOR_FORMAT, usage, vk::ImageAspectFlags::COLOR)?;
+                        self.surfaces[index].upright[0] = Some(Upright { image, batch: 0, current: false });
+                    }
                 }
+                (Err(error), Some(k)) => {
+                    self.lower_twins(if k > 0 { k } else { self.twins.saturating_sub(1) }, &error);
+                    return Ok(());
+                }
+                (Err(error), None) => return Err(error),
             }
         }
         let (layout, pipeline) = self.upright_image_pipeline()?;
@@ -5100,13 +5463,14 @@ impl Hardware {
         let from = self.surface_view(index, twin);
         let surface = &mut self.surfaces[index];
         let upright = match twin {
-            Some(k) => surface.twin_upright.get_mut(k),
-            None => surface.upright.as_mut(),
+            Some(k) => surface.twin_upright[slot].get_mut(k),
+            None => surface.upright[slot].as_mut(),
         };
         let Some(upright) = upright else { unreachable!("made above") };
         upright.batch = batch;
         upright.current = true;
         self.upright_written = true;
+        self.rewrites.push(upright.image.view);
         let source = [vk::DescriptorImageInfo::default().image_view(from).image_layout(vk::ImageLayout::GENERAL)];
         let target = [vk::DescriptorImageInfo::default().image_view(upright.image.view).image_layout(vk::ImageLayout::GENERAL)];
         let writes = [
@@ -5141,9 +5505,11 @@ impl Hardware {
     pub(crate) fn upright_pixels(&mut self, screen: ScreenRef, twin: Option<usize>) -> Result<(Vec<u8>, u32), String> {
         let (row_pixels, rows) = screen.size;
         let index = self.surfaces.iter().position(|s| s.addr == screen.addr && s.width == row_pixels && s.height == rows).ok_or("no surface")?;
+        let s = &self.surfaces[index];
         let upright = match twin {
-            Some(k) => self.surfaces[index].twin_upright.get(k).filter(|upright| upright.batch == screen.batch),
-            None => self.surfaces[index].upright.as_ref(),
+            Some(_) => s.upright_of(screen.batch, twin),
+            // the newest when the screen's picture is gone
+            None => s.upright_of(screen.batch, None).or(s.upright[s.slot].as_ref()),
         };
         let image = upright.ok_or("nothing upright")?.image.image;
         let (width, height) = (rows * self.scale, row_pixels * self.scale);
@@ -5209,11 +5575,7 @@ impl Hardware {
             s.addr == screen.addr && s.width == row_pixels && s.height == rows && s.kind == Kind::Color(screen.format) && !s.tiled
         });
         let Some(index) = found else { return Ok(None) };
-        let upright = match twin {
-            Some(k) => self.surfaces[index].twin_upright.get(k),
-            None => self.surfaces[index].upright.as_ref(),
-        };
-        let Some(upright) = upright.filter(|upright| upright.batch == screen.batch) else {
+        let Some(upright) = self.surfaces[index].upright_of(screen.batch, twin) else {
             return Ok(None);
         };
         let view = upright.image.view;
@@ -5259,7 +5621,7 @@ impl Hardware {
             return None;
         }
         let (surface, size) = (s.addr, (s.width, s.height));
-        let batch = match &mut s.upright {
+        let batch = match &mut s.upright[s.slot] {
             Some(upright) => upright.current.then_some(upright.batch)?,
             None => {
                 let screen = s.screen.as_mut().filter(|screen| screen.current)?;
@@ -5460,6 +5822,13 @@ impl Hardware {
             unsafe { self.device.cmd_end_query(self.commands, pool, 0) };
         }
         self.retire_finished()?;
+        // while it draws pictures in between (a frame's draws K times over) and the frontend asks (set_one_in_flight),
+        // one batch at a time on the GPU: the presenter's queue shares the GPU's graphics ring, and its little work queued
+        // behind three such batches missed its vblank (8x: a third of the presents late at K 8, 9% at K 2; 3% and 0.1%
+        // w/ one). Not when the game's refreshes are what's slow (the CPU and GPU then work side by side)
+        while self.one_in_flight && self.twins > 0 && !self.in_flight.is_empty() {
+            self.block(Wait::Room)?;
+        }
         if self.free.is_empty() {
             self.block(Wait::Room)?;
         }
@@ -5486,8 +5855,13 @@ impl Hardware {
                 false => submit,
             };
             self.device.queue_submit(self.queue, &[submit], self.fence).map_err(vk_error("submit"))?;
+            #[cfg(test)]
+            {
+                self.shown_waits += waits.len() as u64;
+            }
             if self.upright_written {
-                shared.rewritten.store(self.batch + 1, std::sync::atomic::Ordering::Release);
+                let mut rewritten = shared.rewritten.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                rewritten.extend(self.rewrites.drain(..).map(|view| (vk::Handle::as_raw(view), self.batch + 1)));
             }
             self.upright_written = false;
             self.batch_draws = 0;
@@ -5902,9 +6276,7 @@ impl Drop for Hardware {
                 let _queues = self._shared.lock_all();
                 self.device.device_wait_idle()
             };
-            if let Some(path) = &self.kept_pipelines {
-                save_pipeline_cache(&self.device, self.pipeline_cache, path);
-            }
+            self.save_caches();
             self.device.destroy_pipeline_cache(self.pipeline_cache, None);
             for texture in self.textures.values() {
                 self.destroy_image(&texture.image);
@@ -5920,7 +6292,7 @@ impl Drop for Hardware {
             }
             for surface in &self.surfaces {
                 self.destroy_image(&surface.image);
-                let uprights = surface.upright.iter().chain(&surface.twin_upright).map(|upright| &upright.image);
+                let uprights = surface.upright.iter().flatten().chain(surface.twin_upright.iter().flatten()).map(|upright| &upright.image);
                 for image in surface.native.iter().chain(&surface.twin).chain(uprights) {
                     self.destroy_image(image);
                 }
@@ -6281,6 +6653,105 @@ fn pick(instance: &ash::Instance) -> Result<(vk::PhysicalDevice, u32), String> {
 mod tests {
     use super::*;
 
+    /// a sealed file gives back its body only whole and for its own key; the programs' body reads back as written,
+    /// and a cut one reads as nothing
+    #[test]
+    fn kept_files_read_back_only_whole_and_for_their_key() {
+        let spirv = HashMap::from([("void main() {}".to_owned(), vec![0x0723_0203, 1, 2]), (String::new(), vec![])]);
+        let body = programs_bytes(&spirv);
+        let sealed = seal(7, 5, &body);
+        assert_eq!(unseal(&sealed, 7), Some(body.as_slice()));
+        assert_eq!(unseal(&sealed, 8), None, "another key");
+        for at in [0, 9, 25, sealed.len() - 1] {
+            let mut bad = sealed.clone();
+            bad[at] ^= 1;
+            assert_eq!(unseal(&bad, 7), None, "a flipped bit at {at}");
+        }
+        assert_eq!(unseal(&sealed[..sealed.len() - 1], 7), None, "cut short");
+        assert_eq!(unseal(&sealed[..10], 7), None);
+        assert_eq!(parse_programs(&body), Some(spirv));
+        assert_eq!(parse_programs(&body[..body.len() - 2]), None);
+        assert_eq!(parse_programs(&[0xFF, 0xFF, 0xFF, 0xFF]), None);
+    }
+
+    /// a folder of its own for a test's cache files
+    fn cache_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("zakuro-cache-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn age(path: &std::path::Path, seconds: u64) {
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(seconds)).unwrap();
+    }
+
+    /// a file taken earlier never replaces one taken later; another process's lock makes a save wait for the next,
+    /// unless the lock was left long ago
+    #[test]
+    fn kept_files_keep_the_newest_and_respect_a_live_lock() {
+        let dir = cache_dir("newest");
+        let path = dir.join("T.spirv");
+        assert_eq!(keep_file(&path, 1, 200, b"two").unwrap(), Kept::Written);
+        assert_eq!(keep_file(&path, 1, 100, b"one").unwrap(), Kept::NewerThere);
+        assert_eq!(unseal(&std::fs::read(&path).unwrap(), 1), Some(&b"two"[..]));
+        assert_eq!(keep_file(&path, 1, 300, b"three").unwrap(), Kept::Written);
+        assert_eq!(sealed_at(&path), Some(300));
+        let lock = dir.join("T.spirv.lock");
+        std::fs::write(&lock, b"").unwrap();
+        assert_eq!(keep_file(&path, 1, 400, b"four").unwrap(), Kept::Busy);
+        assert_eq!(sealed_at(&path), Some(300));
+        age(&lock, 60);
+        assert_eq!(keep_file(&path, 1, 400, b"four").unwrap(), Kept::Written);
+        assert!(!lock.exists(), "the lock goes with the save");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, ["T.spirv"], "no partial files left");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// a run that died while saving left partial files: the next run removes those old enough, never a fresh one
+    /// (another process may be writing it) nor anyone else's files
+    #[test]
+    fn old_partial_files_are_swept() {
+        let dir = cache_dir("sweep");
+        for name in ["T.1-0.partial", "T.2-0.partial", "U.1-0.partial", "T.bin"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        age(&dir.join("T.1-0.partial"), 3600);
+        age(&dir.join("U.1-0.partial"), 3600);
+        let _disk = Disk::keyed(dir.join("T.bin"), 1, Some(2));
+        let mut left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        left.sort();
+        assert_eq!(left, ["T.2-0.partial", "T.bin", "U.1-0.partial"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// programs that couldn't be written are written at the next save; with no build key they're never written or read
+    #[test]
+    fn programs_saves_retry_and_need_a_build_key() {
+        let dir = cache_dir("retry");
+        let disk = Disk::keyed(dir.join("T.bin"), 1, Some(2));
+        disk.translated("void main() {}", &[1, 2, 3]);
+        // a folder where the file goes: the rename fails
+        std::fs::create_dir_all(dir.join("T.spirv")).unwrap();
+        disk.save_programs();
+        assert!(disk.spirv.lock().unwrap().1, "still to be saved");
+        assert!(disk.warned.load(std::sync::atomic::Ordering::Relaxed), "said once");
+        std::fs::remove_dir_all(dir.join("T.spirv")).unwrap();
+        disk.save_programs();
+        assert!(!disk.spirv.lock().unwrap().1);
+        assert_eq!(Disk::keyed(dir.join("T.bin"), 1, Some(2)).spirv("void main() {}"), Some(vec![1, 2, 3]));
+        assert_eq!(Disk::keyed(dir.join("T.bin"), 1, Some(3)).spirv("void main() {}"), None, "another build");
+        let unkeyed = Disk::keyed(dir.join("T.bin"), 1, None);
+        assert_eq!(unkeyed.spirv("void main() {}"), None, "not read without a key");
+        std::fs::remove_file(dir.join("T.spirv")).unwrap();
+        unkeyed.translated("void main() {}", &[4]);
+        unkeyed.save_programs();
+        assert!(!dir.join("T.spirv").exists(), "not written without a key");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// tables apart in any one entry, in its value or its step, by any one bit, never share a hash, and the same entries always do
     #[test]
     fn tables_apart_in_an_entry_hash_apart() {
@@ -6359,12 +6830,15 @@ mod tests {
                 capture: None,
                 native: None,
                 screen: None,
-                upright: None,
+                upright: [None, None],
+                slot: 1,
+                single: false,
+                slot_at: [0; 2],
                 generation: 0,
                 twin: Vec::new(),
                 twinned: false,
                 twin_generation: 0,
-                twin_upright: Vec::new(),
+                twin_upright: [Vec::new(), Vec::new()],
                 twin_used: 0,
             };
             let (size, bpp, row) = (surface.size() as usize, kind.bytes() as usize, surface.row_bytes() as usize);

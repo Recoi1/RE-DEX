@@ -17,6 +17,44 @@ use steamworks::{AuthTicket, CallbackResult, Client, SteamId};
 pub const APP_ID: u32 = 480;
 /// What the player is told when Steam is not there.
 pub const START_STEAM: &str = "Start Steam to play online";
+/// A room code no open lobby has.
+pub const NO_ROOM: &str = "No open lobby has that code (it may have closed)";
+/// A room code that names more than one world (someone copied it): nothing is joined.
+pub const AMBIGUOUS: &str = "That code is ambiguous: ask your friend to host again for a new code";
+
+/// What `find_room` makes of Steam's search results for `want`: each lobby's (`code`, `world`, members). Only a
+/// lobby with its host alone in it counts (others filling it, or taking it over when the host leaves, would hide or
+/// redirect the code): a member count of 1, or 0, which Steam may report for a lobby we are not in; more is ignored.
+/// Only a `steam:<id>` world counts; two different worlds under one code are refused, not guessed.
+pub fn choose_room(want: &str, found: &[(Option<String>, Option<String>, usize)]) -> Result<String, String> {
+    let mut worlds: Vec<(&String, usize)> = found
+        .iter()
+        .filter(|(code, world, members)| code.as_deref() == Some(want) && *members <= 1 && world.as_deref().is_some_and(redex_proto::steam_world))
+        .filter_map(|(_, world, members)| Some((world.as_ref()?, *members)))
+        .collect();
+    worlds.sort();
+    worlds.dedup_by(|a, b| a.0 == b.0);
+    match worlds[..] {
+        [] => Err(NO_ROOM.into()),
+        [(w, members)] => {
+            // which case Steam gave: 1 (the host alone), or 0 (no count for a lobby we are not in)
+            log::info!("lobby: room code {want}: its lobby reports {members} member(s){}", if members == 0 { " (Steam gives no count for a lobby we are not in: taken as the host alone)" } else { "" });
+            Ok(w.clone())
+        }
+        _ => Err(AMBIGUOUS.into()),
+    }
+}
+
+/// The Steam lobby a room code is published in (`Steam::open_room`).
+pub struct Room {
+    /// the lobby's id once Steam made it, or why not
+    pub answer: Answer<u64>,
+    /// closed before Steam's answer came: the answer's lobby is left as soon as it is made
+    closed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// An answer Steam gives later (filled in as its callbacks run): None until then.
+pub type Answer<T> = Arc<Mutex<Option<Result<T, String>>>>;
 
 #[derive(Clone)]
 pub struct Steam {
@@ -218,6 +256,85 @@ impl Steam {
         Ok(ServerQuery { request, found, inbox: self.inbox.clone() })
     }
 
+    /// Opens the Steam lobby a room code names (redex_proto::room): a public Steam lobby, alone in it, whose data says
+    /// `redex` (the protocol), `code`, `world` (the host's `steam:<id>`) and `name`, so `find_room` finds it by code from
+    /// anywhere with no server of ours. Public because only public lobbies can be searched; the in-game lists never show
+    /// it (it is found by its code only). The answer (the lobby's id, for `close_room`) comes in as Steam's callbacks run.
+    pub fn open_room(&self, code: &str, world: &str, name: &str, max: u8) -> Room {
+        let answer: Answer<u64> = Arc::default();
+        let closed = Arc::<std::sync::atomic::AtomicBool>::default();
+        let (a, client, gone) = (answer.clone(), self.client.clone(), closed.clone());
+        let data: Vec<(&'static str, String)> = vec![("redex", redex_proto::VERSION.to_string()), ("code", code.into()), ("world", world.into()), ("name", name.into())];
+        let _no_callbacks_meanwhile = self.inbox.lock();
+        // the host alone is a member: never full, so a search with Steam's default filters still finds it
+        self.client.matchmaking().create_lobby(steamworks::LobbyType::Public, u32::from(max.max(2)), move |r| {
+            let mm = client.matchmaking();
+            let r = r.map_err(|e| format!("Steam did not make the room's lobby: {e}")).and_then(|id| {
+                if gone.load(std::sync::atomic::Ordering::Acquire) {
+                    mm.leave_lobby(id);
+                    return Err("the lobby closed before Steam made its room".into());
+                }
+                let all = data.iter().all(|(k, v)| mm.set_lobby_data(id, k, v));
+                if all {
+                    Ok(id.raw())
+                } else {
+                    mm.leave_lobby(id);
+                    Err("Steam did not take the room's data".into())
+                }
+            });
+            if let Ok(mut a) = a.lock() {
+                *a = Some(r);
+            }
+        });
+        Room { answer, closed }
+    }
+
+    /// Ends a room `open_room` made, now or (Steam not done yet) as soon as Steam makes it.
+    pub fn close_room(&self, room: &Room) {
+        room.closed.store(true, std::sync::atomic::Ordering::Release);
+        let _no_callbacks_meanwhile = self.inbox.lock();
+        if let Some(Ok(lobby)) = room.answer.lock().ok().and_then(|a| a.clone()) {
+            self.client.matchmaking().leave_lobby(steamworks::LobbyId::from_raw(lobby));
+        }
+    }
+
+    /// Finds the room with this code (already parsed): Ok(the host's `steam:<id>`), or why not.
+    pub fn find_room(&self, code: &str) -> Answer<String> {
+        use steamworks::{DistanceFilter, LobbyKey, StringFilter, StringFilterKind::Equal};
+        let answer: Answer<String> = Arc::default();
+        let (a, client, want) = (answer.clone(), self.client.clone(), code.to_owned());
+        let version = redex_proto::VERSION.to_string();
+        // the filters hold for the next request only: nobody else asks between them (the lock)
+        let _no_callbacks_meanwhile = self.inbox.lock();
+        let mm = self.client.matchmaking();
+        mm.add_request_lobby_list_string_filter(StringFilter(LobbyKey::new("redex"), &version, Equal));
+        mm.add_request_lobby_list_string_filter(StringFilter(LobbyKey::new("code"), code, Equal));
+        mm.set_request_lobby_list_distance_filter(DistanceFilter::Worldwide);
+        mm.request_lobby_list(move |r| {
+            let mm = client.matchmaking();
+            let r = match r {
+                Err(e) => Err(format!("Steam's lobby search failed: {e}")),
+                // Steam filtered already; checked again (anyone can make an app-480 lobby with any data)
+                Ok(ids) => {
+                    let found: Vec<_> = ids.into_iter().map(|id| (mm.lobby_data(id, "code"), mm.lobby_data(id, "world"), mm.lobby_member_count(id))).collect();
+                    // what Steam says of lobbies we are not in: a member count of 0 there would hide every code (checked
+                    // on real Steam from this line)
+                    log::info!("lobby: Steam lists {} lobby(ies) for room code {want}, member counts {:?}", found.len(), found.iter().map(|f| f.2).collect::<Vec<_>>());
+                    choose_room(&want, &found)
+                }
+            };
+            if let Ok(mut a) = a.lock() {
+                *a = Some(r);
+            }
+        });
+        answer
+    }
+
+    /// The SteamID64s of this account's Steam friends.
+    pub fn friend_ids(&self) -> Vec<u64> {
+        self.client.friends().get_friends(steamworks::FriendFlags::IMMEDIATE).iter().map(|f| f.id().raw()).collect()
+    }
+
     pub fn client(&self) -> &Client {
         &self.client
     }
@@ -333,6 +450,32 @@ mod tests {
     fn a_server_name_is_cleaned_like_a_player_name() {
         assert_eq!(shown_name("My\u{202E}world\n\u{200B}!"), "Myworld!");
         assert_eq!(shown_name(&"x".repeat(100)).chars().count(), 63);
+    }
+
+    /// The code's lobby counts only with its host alone in it and a steam: world; one world under the code joins it,
+    /// two refuse (a copied code), none is not found.
+    #[test]
+    fn a_room_code_resolves_to_one_hosts_world_only() {
+        let s = |v: &str| Some(v.to_owned());
+        let host = (s("K7MQ2X"), s("steam:900"), 1);
+        assert_eq!(choose_room("K7MQ2X", &[host.clone()]), Ok("steam:900".into()));
+        // another code, a filled-up lobby, a lobby taken over by its other member, a non-steam world: none counts
+        let others = [(s("AAAAAA"), s("steam:1"), 1), (s("K7MQ2X"), s("steam:900"), 3), (s("K7MQ2X"), s("127.0.0.1:7777"), 1), (s("K7MQ2X"), None, 1), (None, s("steam:2"), 1)];
+        assert_eq!(choose_room("K7MQ2X", &others), Err(NO_ROOM.into()));
+        let mut with = others.to_vec();
+        with.push(host.clone());
+        assert_eq!(choose_room("K7MQ2X", &with), Ok("steam:900".into()), "the host's own lobby among the noise");
+        // a squatter's lobby with the same code: refused, not guessed (in either order)
+        let squat = (s("K7MQ2X"), s("steam:666"), 1);
+        assert_eq!(choose_room("K7MQ2X", &[host.clone(), squat.clone()]), Err(AMBIGUOUS.into()));
+        assert_eq!(choose_room("K7MQ2X", &[squat, host.clone()]), Err(AMBIGUOUS.into()));
+        // Steam may report 0 members for a lobby we are not in: still the host's alone; 2 or more is not
+        let unjoined = (s("K7MQ2X"), s("steam:901"), 0);
+        assert_eq!(choose_room("K7MQ2X", &[unjoined.clone()]), Ok("steam:901".into()), "a count of 0 resolves");
+        assert_eq!(choose_room("K7MQ2X", &[(s("K7MQ2X"), s("steam:902"), 2)]), Err(NO_ROOM.into()), "a count of 2 is ignored");
+        assert_eq!(choose_room("K7MQ2X", &[unjoined, host.clone()]), Err(AMBIGUOUS.into()), "two worlds, counts 0 and 1");
+        // the same world twice (Steam listing it twice) is one
+        assert_eq!(choose_room("K7MQ2X", &[host.clone(), host]), Ok("steam:900".into()));
     }
 
     #[test]

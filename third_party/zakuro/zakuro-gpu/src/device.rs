@@ -27,9 +27,10 @@ pub struct SharedDevice {
     pub(crate) drawn: vk::Semaphore,
     pub(crate) shown: vk::Semaphore,
     pub(crate) shown_value: std::sync::atomic::AtomicU64,
-    /// the `drawn` value of the last batch that turned a picture upright again: a present waits for it too, so one made
-    /// from a set picked b4 the rewrite doesn't read the image while it's written (both under queue_lock)
-    pub(crate) rewritten: std::sync::atomic::AtomicU64,
+    /// per image a picture was turned upright into (by its view), the `drawn` value of the last batch that did: a
+    /// present reading that image waits for it too, so one made from a set picked b4 a rewrite doesn't read the image
+    /// while it's written; presents of other images (the other slot) don't wait for it (both under queue_lock)
+    pub(crate) rewritten: std::sync::Mutex<std::collections::HashMap<u64, u64>>,
     /// does the device do logic ops, and count pipeline statistics
     pub(crate) logic_ops: bool,
     pub(crate) statistics: bool,
@@ -38,6 +39,14 @@ pub struct SharedDevice {
 }
 
 impl SharedDevice {
+    /// were any of these pictures drawn over since, a later picture turned upright into their image: a present of them
+    /// would show that one in their place (or wait for it). One drawn over right after this is asked is caught by the
+    /// present's wait for its rewrite
+    pub(crate) fn stale<'a>(&self, screens: impl IntoIterator<Item = &'a crate::GpuScreen>) -> bool {
+        let rewritten = self.rewritten.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        screens.into_iter().any(|screen| rewritten.get(&ash::vk::Handle::as_raw(screen.view)).is_some_and(|&at| at > screen.drawn))
+    }
+
     /// the renderer's queue to oneself while the guard lives
     pub(crate) fn lock_queue(&self) -> std::sync::MutexGuard<'_, ()> {
         self.queue_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner)

@@ -44,12 +44,43 @@ struct State {
     on: bool,
 }
 
+/// Steam keeps one game server per process: dropping a `steamworks::Server` handle's last copy shuts down whichever game
+/// server is up then (`SteamGameServer_Shutdown` is global). So one `Steam` at a time, and every handle to its game
+/// server (listen socket, connections) goes through an `Arc<Steam>`: the slot is freed only after the last of them.
+static GAME_SERVER: AtomicBool = AtomicBool::new(false);
+
+/// Why a second game server is not started while one still runs in this process.
+pub const STILL_CLOSING: &str = "your last lobby is still closing; try again in a moment";
+
+/// Holds `GAME_SERVER` while its `Steam` (and so its game server) lives.
+pub struct InUse(());
+
+impl InUse {
+    /// The process's game-server slot, or `STILL_CLOSING` while another holds it.
+    pub fn take() -> Result<InUse, String> {
+        GAME_SERVER.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).map(|_| InUse(())).map_err(|_| STILL_CLOSING.into())
+    }
+
+    /// Another game server holds the slot.
+    pub fn busy() -> bool {
+        GAME_SERVER.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for InUse {
+    fn drop(&mut self) {
+        GAME_SERVER.store(false, Ordering::Release);
+    }
+}
+
 pub struct Steam {
     server: Server,
     state: Arc<Mutex<State>>,
     hasher: RandomState,
     stop: Arc<AtomicBool>,
     pump: Option<JoinHandle<()>>,
+    /// last: released after `server` is gone (fields drop in order)
+    _in_use: InUse,
 }
 
 fn lock(m: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -67,6 +98,12 @@ impl Steam {
     /// (open `query_port` in the firewall): with the shared one and no UDP game socket (Steam P2P) the master server
     /// lists nothing.
     pub fn start_on(port: u16, query_port: u16) -> Result<Steam, String> {
+        Self::start_with(InUse::take()?, port, query_port)
+    }
+
+    /// `start_on` with the process's game-server slot already taken (a lobby takes it on the game's thread, at once).
+    pub fn start_with(in_use: InUse, port: u16, query_port: u16) -> Result<Steam, String> {
+        // `in_use` is the first local: dropped last on every failure below, after the server handle
         // SAFETY: Windows' environment block is locked by the OS; on other systems call this before spawning threads
         unsafe {
             std::env::set_var("SteamAppId", APP_ID.to_string());
@@ -93,7 +130,7 @@ impl Steam {
                 }
             })
             .map_err(|e| format!("Steam thread: {e}"))?;
-        let steam = Steam { server, state, hasher: RandomState::new(), stop, pump: Some(pump) };
+        let steam = Steam { server, state, hasher: RandomState::new(), stop, pump: Some(pump), _in_use: in_use };
         let until = Instant::now() + Duration::from_secs(20);
         while !lock(&steam.state).on {
             if Instant::now() > until {

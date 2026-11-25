@@ -1,6 +1,10 @@
 //! Discord Rich Presence over the local Discord app's IPC pipe (`discord-ipc-0` to `-9`): the game, the mode and the play
 //! time on the player's profile. Own thread, one update at most every GAP; no Discord SDK, no network (only the Discord
 //! app on this PC is spoken to). Discord not running: nothing happens and the pipe is tried again every RETRY.
+//!
+//! An open lobby (friends only or public) sets a join secret, its world's `steam:<id>`, and a party (the room code, players
+//! of max): Discord then shows Join on the profile. A friend's Join reaches their running game as ACTIVITY_JOIN with that
+//! secret (`Handle::take_joins`), which joins it like an invite.
 
 use serde_json::{Value, json};
 use std::io::{self, Read, Write};
@@ -25,8 +29,6 @@ pub enum Game {
 pub enum Mode {
     Offline,
     Official,
-    // the lobbies come with a later branch
-    #[allow(dead_code)]
     P2p,
 }
 
@@ -37,8 +39,19 @@ pub struct Info {
     pub mode: Mode,
     /// The current map's name, once the game's own text can be read cheaply (nothing is committed): none shows the region only.
     pub place: Option<String>,
-    /// Where a "Join" button will come from (P2P lobbies, a later branch): set, it goes out as the activity's join secret.
+    /// An open lobby's world (`steam:<id>`): set, it goes out as the activity's join secret, so Discord shows Join.
     pub join_secret: Option<String>,
+    /// The lobby's party: (id, players, max), which Discord wants beside a join secret.
+    pub party: Option<(String, u32, u32)>,
+}
+
+/// What an open lobby shows on Discord.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lobby {
+    pub secret: String,
+    pub party: String,
+    pub size: u32,
+    pub max: u32,
 }
 
 /// The settings that decide what is sent.
@@ -75,9 +88,10 @@ pub fn activity(info: &Info, cfg: &Config, start: u64) -> Option<Value> {
         }
         .into();
     }
-    if let Some(secret) = &info.join_secret {
-        // Discord also wants a party (id and size) for the Join button; the lobby branch adds it
+    if let (Some(secret), Some((id, size, max))) = (&info.join_secret, &info.party) {
+        // Join needs both: the secret, and a party with room in it
         a["secrets"] = json!({ "join": secret });
+        a["party"] = json!({ "id": id, "size": [size, max] });
     }
     Some(a)
 }
@@ -115,15 +129,67 @@ fn handshake(s: &mut (impl Read + Write)) -> io::Result<()> {
     if r["evt"] == "READY" { Ok(()) } else { Err(io::Error::other(format!("no READY: {r}"))) }
 }
 
-/// SET_ACTIVITY (none clears it) and Discord's answer: an ERROR event is an error.
-fn set_activity(s: &mut (impl Read + Write), pid: u32, nonce: u64, activity: Option<&Value>) -> io::Result<()> {
+/// A frame Discord sent on its own: a friend's Join (ACTIVITY_JOIN) goes to joins, anything else is dropped.
+fn event(frame: &Value, joins: &Mutex<Vec<String>>) {
+    if frame["evt"] == "ACTIVITY_JOIN" {
+        if let Some(secret) = frame["data"]["secret"].as_str() {
+            joins.lock().unwrap().push(secret.to_owned());
+        }
+    }
+}
+
+/// Discord's answer to the command with `nonce` (events before it go to `event`): an ERROR event is an error.
+fn answer(s: &mut impl Read, nonce: u64, joins: &Mutex<Vec<String>>) -> io::Result<()> {
+    loop {
+        let (_, r) = read_frame(s)?;
+        if r["nonce"].as_str() != Some(nonce.to_string().as_str()) {
+            event(&r, joins);
+            continue;
+        }
+        return if r["evt"] == "ERROR" { Err(io::Error::other(format!("Discord refused it: {}", r["data"]["message"]))) } else { Ok(()) };
+    }
+}
+
+/// SET_ACTIVITY (none clears it) and Discord's answer.
+fn set_activity(s: &mut (impl Read + Write), pid: u32, nonce: u64, activity: Option<&Value>, joins: &Mutex<Vec<String>>) -> io::Result<()> {
     let args = match activity {
         Some(a) => json!({ "pid": pid, "activity": a }),
         None => json!({ "pid": pid }),
     };
     write_frame(s, OP_FRAME, &json!({ "cmd": "SET_ACTIVITY", "args": args, "nonce": nonce.to_string() }))?;
-    let (_, r) = read_frame(s)?;
-    if r["evt"] == "ERROR" { Err(io::Error::other(format!("Discord refused it: {}", r["data"]["message"]))) } else { Ok(()) }
+    answer(s, nonce, joins)
+}
+
+/// Asks Discord for friends' Joins (ACTIVITY_JOIN), once per connection while a lobby is open.
+fn subscribe_joins(s: &mut (impl Read + Write), nonce: u64, joins: &Mutex<Vec<String>>) -> io::Result<()> {
+    write_frame(s, OP_FRAME, &json!({ "cmd": "SUBSCRIBE", "evt": "ACTIVITY_JOIN", "args": {}, "nonce": nonce.to_string() }))?;
+    answer(s, nonce, joins)
+}
+
+/// A connection that can say whether Discord sent something (read without blocking).
+pub trait Pipe: Read + Write {
+    fn waiting(&self) -> bool;
+}
+
+#[cfg(windows)]
+impl Pipe for std::fs::File {
+    fn waiting(&self) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        let mut avail = 0u32;
+        // SAFETY: a valid pipe handle; only the count of bytes waiting is asked
+        let ok = unsafe { windows_sys::Win32::System::Pipes::PeekNamedPipe(self.as_raw_handle() as _, std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut avail, std::ptr::null_mut()) };
+        ok != 0 && avail > 0
+    }
+}
+
+#[cfg(unix)]
+impl Pipe for std::os::unix::net::UnixStream {
+    fn waiting(&self) -> bool {
+        let _ = self.set_nonblocking(true);
+        let got = self.peek(&mut [0u8]).is_ok_and(|n| n > 0);
+        let _ = self.set_nonblocking(false);
+        got
+    }
 }
 
 /// The first of Discord's pipes that opens.
@@ -145,7 +211,8 @@ struct Timing {
 
 /// The presence thread's loop, until `stop` is dropped. `open` gives a fresh connection to Discord or none, `note` hears
 /// what happened (for the log).
-fn run<S: Read + Write>(
+#[allow(clippy::too_many_arguments)]
+fn run<S: Pipe>(
     open: impl Fn() -> Option<S>,
     shared: Arc<Mutex<Info>>,
     settings: impl Fn() -> Config,
@@ -153,9 +220,12 @@ fn run<S: Read + Write>(
     timing: Timing,
     stop: mpsc::Receiver<()>,
     note: impl Fn(&str),
+    joins: Arc<Mutex<Vec<String>>>,
 ) {
     let pid = std::process::id();
     let (mut conn, mut shown, mut nonce): (Option<S>, Option<Value>, u64) = (None, None, 0);
+    // this connection asked for friends' Joins
+    let mut subscribed = false;
     loop {
         let want = activity(&shared.lock().unwrap().clone(), &settings(), start);
         let mut wait = timing.gap;
@@ -163,15 +233,23 @@ fn run<S: Read + Write>(
         if want.is_some() || conn.is_some() {
             if conn.is_none() {
                 conn = open().and_then(|mut s| handshake(&mut s).ok().map(|_| s));
-                shown = None;
+                (shown, subscribed) = (None, false);
                 match conn {
                     Some(_) => note("discord: connected"),
                     None => wait = timing.retry,
                 }
             }
+            // every game, hosting or not: Discord sends a Join to the game of the player who pressed it
+            if let Some(s) = conn.as_mut().filter(|_| !subscribed) {
+                nonce += 1;
+                subscribed = true; // once a connection; a refusal leaves the status working
+                if let Err(e) = subscribe_joins(s, nonce, &joins) {
+                    note(&format!("discord: Join not available: {e}"));
+                }
+            }
             if let Some(s) = conn.as_mut().filter(|_| want != shown) {
                 nonce += 1;
-                match set_activity(s, pid, nonce, want.as_ref()) {
+                match set_activity(s, pid, nonce, want.as_ref(), &joins) {
                     Ok(()) => {
                         note(if want.is_some() { "discord: activity accepted" } else { "discord: activity cleared" });
                         shown = want;
@@ -184,8 +262,26 @@ fn run<S: Read + Write>(
                 }
             }
         }
-        if let Err(RecvTimeoutError::Disconnected) = stop.recv_timeout(wait) {
-            return;
+        // until the next update: what Discord sends meanwhile (a friend's Join) is read as it comes
+        let until = std::time::Instant::now() + wait;
+        loop {
+            if let Some(s) = conn.as_mut().filter(|s| s.waiting()) {
+                match read_frame(s) {
+                    Ok((_, frame)) => event(&frame, &joins),
+                    Err(e) => {
+                        note(&format!("discord: {e}; trying again later"));
+                        conn = None;
+                    }
+                }
+                continue;
+            }
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            if let Err(RecvTimeoutError::Disconnected) = stop.recv_timeout(left.min(Duration::from_millis(250))) {
+                return;
+            }
         }
     }
 }
@@ -193,23 +289,40 @@ fn run<S: Read + Write>(
 /// The running status: `set_mode` from the game thread (a lock, no I/O); dropping it ends the thread.
 pub struct Handle {
     shared: Arc<Mutex<Info>>,
+    joins: Arc<Mutex<Vec<String>>>,
     _stop: mpsc::Sender<()>,
 }
 
 impl Handle {
     pub fn start(game: Game, settings: impl Fn() -> Config + Send + 'static, note: impl Fn(&str) + Send + 'static) -> Handle {
-        let shared = Arc::new(Mutex::new(Info { game, mode: Mode::Offline, place: None, join_secret: None }));
+        let shared = Arc::new(Mutex::new(Info { game, mode: Mode::Offline, place: None, join_secret: None, party: None }));
+        let joins = Arc::<Mutex<Vec<String>>>::default();
         let (stop_tx, stop) = mpsc::channel();
         let (s, begun) = (shared.clone(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
         // no thread, no status: the game does not care
         let _ = std::thread::Builder::new()
             .name("discord".into())
-            .spawn(move || run(open_pipe, s, settings, begun, Timing { gap: GAP, retry: RETRY }, stop, note));
-        Handle { shared, _stop: stop_tx }
+            .spawn({
+                let joins = joins.clone();
+                move || run(open_pipe, s, settings, begun, Timing { gap: GAP, retry: RETRY }, stop, note, joins)
+            });
+        Handle { shared, joins, _stop: stop_tx }
     }
 
     pub fn set_mode(&self, mode: Mode) {
         self.shared.lock().unwrap().mode = mode;
+    }
+
+    /// The open lobby friends may join from Discord, or none.
+    pub fn set_lobby(&self, lobby: Option<Lobby>) {
+        let mut i = self.shared.lock().unwrap();
+        i.join_secret = lobby.as_ref().map(|l| l.secret.clone());
+        i.party = lobby.map(|l| (l.party, l.size, l.max));
+    }
+
+    /// The secrets of friends' Joins since the last call (what to join).
+    pub fn take_joins(&self) -> Vec<String> {
+        std::mem::take(&mut *self.joins.lock().unwrap())
     }
 }
 
@@ -228,11 +341,82 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU16, Ordering::SeqCst};
 
     fn info(mode: Mode) -> Info {
-        Info { game: Game::X, mode, place: None, join_secret: None }
+        Info { game: Game::X, mode, place: None, join_secret: None, party: None }
     }
     const ON: Config = Config { status: true, location: true };
     const WAIT: Duration = Duration::from_secs(5);
 
+    impl Pipe for TcpStream {
+        fn waiting(&self) -> bool {
+            let _ = self.set_nonblocking(true);
+            let got = self.peek(&mut [0u8]).is_ok_and(|n| n > 0);
+            let _ = self.set_nonblocking(false);
+            got
+        }
+    }
+
+    /// An open lobby (friends only or public) shows Join: its world as the secret, the room code and players as the party.
+    #[test]
+    fn a_lobby_sets_the_join_secret_and_party() {
+        let i = Info { join_secret: Some("steam:900".into()), party: Some(("K7MQ2X".into(), 2, 4)), ..info(Mode::P2p) };
+        let a = activity(&i, &ON, 0).unwrap();
+        assert_eq!(a["secrets"]["join"], "steam:900");
+        assert_eq!((a["party"]["id"].as_str(), &a["party"]["size"]), (Some("K7MQ2X"), &json!([2, 4])));
+        // a secret without a party (or the reverse) shows no Join
+        let half = activity(&Info { party: None, ..i.clone() }, &ON, 0).unwrap();
+        assert!(half.get("secrets").is_none() && half.get("party").is_none());
+    }
+
+    /// Discord delivers ACTIVITY_JOIN to the game of the player who pressed Join, which hosts nothing: every game asks for
+    /// Joins once per connection, and the Join (whenever Discord sends it, also between an update and its answer)
+    /// reaches `joins`.
+    #[test]
+    fn a_friends_join_from_discord_arrives() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let l2 = l.try_clone().unwrap();
+        std::thread::spawn(move || {
+            let Ok((mut s, _)) = l2.accept() else { return };
+            while let Ok((op, v)) = read_frame(&mut s) {
+                let _ = tx.send(v.clone());
+                if op == OP_HANDSHAKE {
+                    let _ = write_frame(&mut s, OP_FRAME, &json!({ "cmd": "DISPATCH", "evt": "READY" }));
+                    continue;
+                }
+                let join = json!({ "cmd": "DISPATCH", "evt": "ACTIVITY_JOIN", "data": { "secret": "steam:900" } });
+                if v["cmd"] == "SET_ACTIVITY" {
+                    // an event before the answer: it must not be taken for it
+                    let _ = write_frame(&mut s, OP_FRAME, &join);
+                }
+                let _ = write_frame(&mut s, OP_FRAME, &json!({ "cmd": v["cmd"], "evt": null, "data": {}, "nonce": v["nonce"] }));
+                if v["cmd"] == "SUBSCRIBE" {
+                    std::thread::sleep(Duration::from_millis(50));
+                    let _ = write_frame(&mut s, OP_FRAME, &json!({ "cmd": "DISPATCH", "evt": "ACTIVITY_JOIN", "data": { "secret": "steam:901" } }));
+                }
+            }
+        });
+        // the joiner: offline, no lobby, no secret of its own
+        let shared = Arc::new(Mutex::new(info(Mode::Offline)));
+        let joins = Arc::<Mutex<Vec<String>>>::default();
+        let (stop, stopped) = mpsc::channel();
+        let (s, j) = (shared.clone(), joins.clone());
+        let port = l.local_addr().unwrap().port();
+        let t = std::thread::spawn(move || {
+            let timing = Timing { gap: Duration::from_millis(20), retry: Duration::from_millis(40) };
+            run(move || TcpStream::connect(("127.0.0.1", port)).ok(), s, || ON, 1, timing, stopped, |_| {}, j);
+        });
+        let cmds: Vec<String> = std::iter::from_fn(|| rx.recv_timeout(WAIT).ok()).take(3).map(|v| v["cmd"].as_str().unwrap_or("").to_owned()).collect();
+        assert_eq!(cmds, ["", "SUBSCRIBE", "SET_ACTIVITY"], "handshake, then Joins asked for once, then the status");
+        let until = std::time::Instant::now() + WAIT;
+        while joins.lock().unwrap().len() < 2 && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut got = joins.lock().unwrap().clone();
+        got.sort();
+        assert_eq!(got, ["steam:900", "steam:901"]);
+        drop(stop);
+        t.join().unwrap();
+    }
     #[test]
     fn text_for_each_mode_and_game() {
         let a = |g, m| activity(&Info { game: g, ..info(m) }, &ON, 100).unwrap();
@@ -243,7 +427,7 @@ mod tests {
         assert_eq!((x["assets"]["large_image"].as_str(), x["assets"]["small_image"].as_str()), (Some("logo"), Some("x")));
         assert_eq!(a(Game::Y, Mode::Offline)["assets"]["small_image"], "y");
         assert_eq!(x["timestamps"]["start"], 100);
-        assert!(x.get("secrets").is_none(), "no Join in this branch");
+        assert!(x.get("secrets").is_none() && x.get("party").is_none(), "no lobby, no Join");
     }
 
     #[test]
@@ -314,7 +498,7 @@ mod tests {
                 p => TcpStream::connect(("127.0.0.1", p)).ok(),
             };
             let timing = Timing { gap: Duration::from_millis(20), retry: Duration::from_millis(40) };
-            run(open, s, cfg, 77, timing, rx, |_| {});
+            run(open, s, cfg, 77, timing, rx, |_| {}, Arc::default());
         });
         (shared, tx, t)
     }
@@ -330,6 +514,8 @@ mod tests {
         let (shared, stop, t) = spawn_run(port_of(&l), || ON);
         let (op, hello) = rx.recv_timeout(WAIT).unwrap();
         assert_eq!((op, &hello["v"], hello["client_id"].as_str()), (OP_HANDSHAKE, &json!(1), Some(APP_ID)));
+        let (op, sub) = rx.recv_timeout(WAIT).unwrap();
+        assert_eq!((op, sub["cmd"].as_str(), sub["evt"].as_str()), (OP_FRAME, Some("SUBSCRIBE"), Some("ACTIVITY_JOIN")), "Joins asked for first");
         let (op, set) = rx.recv_timeout(WAIT).unwrap();
         assert_eq!((op, set["cmd"].as_str()), (OP_FRAME, Some("SET_ACTIVITY")));
         assert_eq!(set["args"]["pid"], std::process::id());
@@ -355,6 +541,7 @@ mod tests {
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "off: no connection, no frame");
         on.store(true, SeqCst);
         assert_eq!(rx.recv_timeout(WAIT).unwrap().0, OP_HANDSHAKE);
+        assert_eq!(rx.recv_timeout(WAIT).unwrap().1["cmd"], "SUBSCRIBE");
         assert!(rx.recv_timeout(WAIT).unwrap().1["args"]["activity"].is_object());
         on.store(false, SeqCst);
         let (_, clear) = rx.recv_timeout(WAIT).unwrap();
@@ -366,15 +553,17 @@ mod tests {
     #[test]
     fn reconnects_after_discord_restarts() {
         let (tx, rx) = mpsc::channel();
-        let l = fake_discord_quitting(tx, false, 2);
+        let l = fake_discord_quitting(tx, false, 3);
         let (shared, stop, t) = spawn_run(port_of(&l), || ON);
         assert_eq!(rx.recv_timeout(WAIT).unwrap().0, OP_HANDSHAKE);
         rx.recv_timeout(WAIT).unwrap();
+        rx.recv_timeout(WAIT).unwrap();
         // Discord quit (the connection is gone) and is back (the listener answers again); the mode changed meanwhile
         shared.lock().unwrap().mode = Mode::P2p;
-        let got: Vec<_> = std::iter::from_fn(|| rx.recv_timeout(WAIT).ok()).take(2).collect();
+        let got: Vec<_> = std::iter::from_fn(|| rx.recv_timeout(WAIT).ok()).take(3).collect();
         assert_eq!(got[0].0, OP_HANDSHAKE, "a new handshake");
-        assert_eq!(got[1].1["args"]["activity"]["details"], "Pok\u{e9}mon X \u{b7} P2P world", "the status as it is now");
+        assert_eq!(got[1].1["cmd"], "SUBSCRIBE", "Joins asked for again on the new connection");
+        assert_eq!(got[2].1["args"]["activity"]["details"], "Pok\u{e9}mon X \u{b7} P2P world", "the status as it is now");
         drop(stop);
         t.join().unwrap();
     }
@@ -398,8 +587,9 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let l = fake_discord(tx, true);
         let (_, stop, t) = spawn_run(port_of(&l), || ON);
-        let ops: Vec<u32> = std::iter::from_fn(|| rx.recv_timeout(WAIT).ok()).take(4).map(|f| f.0).collect();
-        assert_eq!(ops, [OP_HANDSHAKE, OP_FRAME, OP_HANDSHAKE, OP_FRAME], "each refusal reconnects");
+        let ops: Vec<u32> = std::iter::from_fn(|| rx.recv_timeout(WAIT).ok()).take(6).map(|f| f.0).collect();
+        // a refused SUBSCRIBE keeps the connection; a refused SET_ACTIVITY reconnects
+        assert_eq!(ops, [OP_HANDSHAKE, OP_FRAME, OP_FRAME, OP_HANDSHAKE, OP_FRAME, OP_FRAME], "each refusal reconnects");
         drop(stop);
         t.join().unwrap();
     }

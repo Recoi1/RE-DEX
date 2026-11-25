@@ -347,6 +347,72 @@ fn vaniville_jitter() {
     smooth(&seen.a_log);
 }
 
+/// In-game lobbies over the dev path (TCP on this PC, dev ids, the room code in `XR_FAKE_ROOMS` instead of a Steam
+/// lobby): A plays offline, flies to Vaniville, then hosts a lobby from its running game (the overlay's Host lobby,
+/// `XR_MP_HOST`) and joins it itself; the harness reads the room code from A's log and starts B with `--lobby CODE` (the
+/// start screen's Join). Each sees the other; A removes B (`XR_MP_KICK`), B is told why and leaves the world, A's puppet
+/// of B goes; A's lobby closes when A's game ends. No redex-world.exe: the server is A's own.
+#[test]
+#[ignore = "two games for minutes; run with --ignored (see the file's doc)"]
+fn lobby_host_join_by_code_and_kick() {
+    let Some((cci, data, full, trainer2)) = setup() else { return };
+    let out = std::env::var("XR_MP_OUT").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir().join("redex_pair")).join("lobby");
+    let (a, b, rooms) = (out.join("a"), out.join("b"), out.join("rooms"));
+    data_dir(&a, &data, &Save::Full, &full, &trainer2);
+    data_dir(&b, &data, &Save::Trainer2, &full, &trainer2);
+    let _ = std::fs::remove_dir_all(&rooms);
+    let dev = |name: &str| ["--realtime", "--dev-id", "--name", name].map(String::from);
+    let mut ga = game(&cci, &a, "mp-lobby-a.txt", &[]).args(dev("PlayerA")).env("XR_FAKE_ROOMS", &rooms).env("XR_MP_HOST", "3201:4:code:Test lobby").env("XR_MP_KICK", "5650").spawn().unwrap();
+    let end = Instant::now() + Duration::from_secs(15 * 60);
+    let code = loop {
+        let l = log(&a);
+        if let Some(c) = l.lines().find_map(|x| x.split_once(", room code ").map(|(_, c)| c.trim().to_owned())) {
+            break c;
+        }
+        if Instant::now() > end || ga.try_wait().unwrap().is_some() {
+            let _ = ga.kill();
+            panic!("A never hosted\n{}", tail(&l));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    println!("A hosts lobby {code}");
+    // typed as a player would: lower case, with the dash
+    let typed = format!("{}-{}", &code[..3], &code[3..]).to_lowercase();
+    let mut gb = game(&cci, &b, "mp-lobby-b.txt", &[]).args(dev("PlayerB")).args(["--lobby", &typed]).env("XR_FAKE_ROOMS", &rooms).spawn().unwrap();
+    let (mut ca, mut cb) = (None, None);
+    while ca.is_none() || cb.is_none() {
+        if Instant::now() > end {
+            let _ = (ga.kill(), gb.kill());
+            panic!("the lobby pair ran over 15 minutes\nA:\n{}\nB:\n{}", tail(&log(&a)), tail(&log(&b)));
+        }
+        ca = ca.or(ga.try_wait().unwrap().map(|s| s.code()));
+        cb = cb.or(gb.try_wait().unwrap().map(|s| s.code()));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let (la, lb) = (log(&a), log(&b));
+    for (who, code, l) in [("A", ca, &la), ("B", cb, &lb)] {
+        assert_eq!(code, Some(Some(0)), "{who} exited {code:?}\n{}", tail(l));
+        for bad in ["panic", "guest memory fault", "WARNING: puppets", "spawn of session"] {
+            assert!(!l.contains(bad), "{who}'s log has {bad:?}\n{}", tail(l));
+        }
+        assert!(count(l, "puppets: spawn session") >= 1, "{who} never saw the other player\n{}", tail(l));
+        assert!(l.contains("checkpoint met"), "{who} never met the other\n{}", tail(l));
+    }
+    // A: offline until it hosted, from the running game (after it landed), on its own server; it removed B
+    let at = |l: &str, what: &str| l.find(what).unwrap_or_else(|| panic!("no {what:?} in\n{}", tail(l)));
+    assert!(!la[..at(&la, "lobby: starting")].contains("world: joining"), "A was offline before it hosted");
+    assert!(at(&la, "checkpoint landed") < at(&la, "lobby: starting \"Test lobby\", 4 players, Code"));
+    assert!(at(&la, "lobby: hosting on 127.0.0.1:") < at(&la, "world: joining 127.0.0.1:"), "A joined its own lobby");
+    assert!(la.contains("): removed"), "A's kick\n{}", tail(&la));
+    assert!(at(&la, "): removed") < at(&la, "checkpoint kicked"), "B's puppet went after the kick");
+    assert!(la.contains("lobby: closed (the game is ending)"));
+    // B: found the lobby by its code, joined, was told why it was removed and left the world
+    assert!(lb.contains(&format!("lobby: room code {code} is 127.0.0.1:")), "{}", tail(&lb));
+    assert!(lb.contains("world: left the world: the host removed you from this lobby; playing offline"), "{}", tail(&lb));
+    assert!(at(&lb, "the host removed you") < at(&lb, "checkpoint removed"));
+    assert!(!rooms.join(&code).exists(), "the room code went with the lobby");
+}
+
 /// the server is killed with both players on the map and started again 3 s later.
 #[test]
 #[ignore = "two games for minutes; run with --ignored (see the file's doc)"]
@@ -403,7 +469,7 @@ fn a_skin_joins_and_a_data_mod_does_not() {
 // (XR_MP_WHISPER / XR_MP_REPORT: a headless game has no menu). The scripts are driven by these tests (they have
 // checkpoints but no expects: the asserts are here). Needs the Y game too, else the tests skip:
 //   XR_CCI_Y (default: Pokemon Y (USA) ... Decrypted.3ds beside XR_CCI), XR_DATA_Y (a data dir with
-//   build/y-usa-v0.2.0/xgame.dll, default <XR_DATA>/../y-online), XR_SAVE_Y (a Y `user` dir: the new game saved in
+//   build/y-usa-v0.2.0/xgame.dll, default <XR_DATA>/../play-online/y-online), XR_SAVE_Y (a Y `user` dir: the new game saved in
 //   the Vaniville house, default <XR_DATA>/../work/xy-cross/ysave/user). Y's biker is the X 100% save placed in Y's folder.
 
 const LOOK: &str = "4864090101cb08034100000000000000";

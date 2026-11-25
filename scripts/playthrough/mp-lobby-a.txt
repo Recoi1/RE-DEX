@@ -1,0 +1,25 @@
+# In-game lobby, player A (the host): the 100% save flies to Vaniville playing offline, then hosts a lobby from the
+# running game (XR_MP_HOST, the overlay's Host lobby) and publishes its room code; B joins by the code. Once they have
+# met the host removes B (XR_MP_KICK) and B's puppet goes.
+400 A
+440 A
+480 A
+520 A
+560 A
+600 A
+640 A
+1100 DOWN 40   # out of the Laverre Pokemon Center
+1450 X
+1600 TOUCH:80,60
+1750 TOUCH:80,40
+1900 TOUCH:262,104
+2000 TOUCH:170,104
+2200 TOUCH:213,180   # Vaniville Town
+2300 A
+3200 checkpoint landed
+3210 wait_until puppets>=1 7200   # B joined the lobby by its room code
+3211 checkpoint met
+5700 checkpoint before_kick   # (XR_MP_KICK at 5650) B is through Mom's send-off and has met A too
+5701 wait_until puppets=0 1200    # the host removed B
+5702 checkpoint kicked
+6000 checkpoint end

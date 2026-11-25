@@ -11,7 +11,7 @@ path = "src/main.rs"
 [features]
 # the MP test harness: --dev-id and the local wireless room flags, and dev inputs (headless, scripts, save states,
 # fake peers) allowed in a world. Never in a release: make-release builds without it
-mp-tests = ["xr-net/mp-tests", "xr-frontend/test-hooks"]
+mp-tests = ["xr-net/mp-tests", "xr-frontend/test-hooks", "redex-world/mp-tests"]
 
 [[test]]
 name = "two_instances"
@@ -22,11 +22,14 @@ name = "central"
 required-features = ["mp-tests"]
 
 [dependencies]
+# in-game lobbies: the world server runs in the game's process (lobby.rs)
+redex-world = { path = "../redex-world" }
+getrandom = "0.3"
 libloading = "0.8"
 png = "0.18.1"
 serde_json = "1"
 sha2 = "0.10"
-windows-sys = { version = "0.59", features = ["Win32_System_Memory", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_LibraryLoader", "Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Memory", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_LibraryLoader", "Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Threading", "Win32_System_Pipes", "Win32_UI_WindowsAndMessaging"] }
 xr-arm = { path = "../xr-arm" }
 xr-hle = { path = "../xr-hle" }
 xr-net = { path = "../xr-net" }
@@ -42,5 +45,4 @@ xr-mem = { path = "../xr-mem" }
 
 [dev-dependencies]
 rcgen = "0.13"
-redex-world = { path = "../redex-world" }
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
