@@ -53,8 +53,20 @@ impl Toolchain {
         let m = std::fs::metadata(&self.recomp).ok();
         let len = m.as_ref().map_or(0, |m| m.len());
         let at = m.and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
-        format!("xr-recomp {} {len} {at}\nabi {}", env!("CARGO_PKG_VERSION"), abi_version())
+        // the hook list is data next to xr-recomp, so a release that only changes it must still rebuild games
+        format!("xr-recomp {} {len} {at} {:016x}\nabi {}", env!("CARGO_PKG_VERSION"), hooks_hash(&self.functions), abi_version())
     }
+}
+
+/// FNV-1a over every `<functions>/*/hooks.txt`, in name order
+fn hooks_hash(functions: &std::path::Path) -> u64 {
+    let mut files: Vec<_> = std::fs::read_dir(functions).into_iter().flatten().flatten().map(|e| e.path().join("hooks.txt")).filter(|p| p.is_file()).collect();
+    files.sort();
+    let mut h = 0xcbf29ce484222325u64;
+    for b in files.iter().flat_map(|f| std::fs::read(f).unwrap_or_default()) {
+        h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+    }
+    h
 }
 
 /// XR_ABI_VERSION from the header xr-recomp compiles the game against
@@ -212,7 +224,12 @@ mod tests {
         let a = t.stamp();
         assert!(a.ends_with(&format!("abi {}", abi_version())) && abi_version() > 0, "{a}");
         std::fs::write(&t.recomp, b"a newer one").unwrap();
-        assert_ne!(a, t.stamp());
+        let b = t.stamp();
+        assert_ne!(a, b);
+        // a new hook list alone also changes it
+        std::fs::create_dir_all(dir.join("x")).unwrap();
+        std::fs::write(dir.join("x").join("hooks.txt"), b"0x00100000\n").unwrap();
+        assert_ne!(b, t.stamp());
         let _ = std::fs::remove_dir_all(dir);
     }
 

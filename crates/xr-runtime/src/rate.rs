@@ -476,13 +476,9 @@ pub fn tick(g: &mut impl Calls, dll: Option<Dll>, battle: bool, rate: u32) -> u6
             g.u8(o + SUBSCREEN_ON) == Some(0) || g.u8(o + SUBSCREEN_LOCK) != Some(0) || g.u32(o + SUBSCREEN_SHOWN).is_none_or(|n| n < SLIDE_IN)
         });
     let busy = busy || event;
-    // battles at 60 (120 and 240 not yet: they stay at 30); XR_RATE_BATTLE=1/0 (test override) at any rate / never.
-    // The field only without a battle (DllField stays loaded in one)
-    let battle_on = match std::env::var("XR_RATE_BATTLE").as_deref() {
-        Ok("0") => false,
-        Ok(_) => true,
-        Err(_) => rate == 60,
-    };
+    // battles at the rate; XR_RATE_BATTLE=0 (test override) keeps them at 30. The field only without a battle
+    // (DllField stays loaded in one)
+    let battle_on = std::env::var("XR_RATE_BATTLE").as_deref() != Ok("0");
     let want = rate > 30 && ((player.is_some() && !busy && !battle) || (battle && battle_on && BATTLE_READY.load(Ordering::Relaxed)));
     if trace() {
         let flags = dll.and_then(|d| g.u32(d.data + field::SNAPSHOT + SNAP_FLAGS)).unwrap_or(0);

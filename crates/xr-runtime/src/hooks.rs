@@ -18,7 +18,7 @@ use xr_net::x::puppet::Puppets;
 
 /// hooks.txt's lines, in order (`hooks_txt_matches` checks the file). New hooks go at the end: a DLL built with the
 /// list's first k (k >= REQUIRED) still runs with this redex (game.rs), it just never calls the hooks after them.
-pub const HOOKED: [u32; 20] = [TICK, SAVE, CREATE, LOAD, NAME_LOOKUP, SCENE_ANIMS, MOTION, ENV_DRIFT, RAIL_MOVE, ANIM_SET, LAYOUT_ANIMS, REQUESTS, BATTLE_PART, TASKS, SEQUENCE, FACE, BATTLE_UI, BATTLE_CLIENT, BATTLE_MAIN, BATTLE_PROC];
+pub const HOOKED: [u32; 21] = [TICK, SAVE, CREATE, LOAD, NAME_LOOKUP, SCENE_ANIMS, MOTION, ENV_DRIFT, RAIL_MOVE, ANIM_SET, LAYOUT_ANIMS, REQUESTS, BATTLE_PART, TASKS, SEQUENCE, FACE, BATTLE_UI, BATTLE_CLIENT, BATTLE_MAIN, BATTLE_PROC, INPUT];
 /// The hooks every DLL with hooks must have (the multiplayer ones, TICK to LOAD); the ones after are speed-ups.
 pub const REQUIRED: usize = 4;
 /// code.bin 0x15F860: the main loop (code.bin 0x1066D8) calls it once per pass, outside every proc's update.
@@ -95,10 +95,11 @@ pub const BATTLE_MAIN: u32 = MODULE_HOOK | 0x15EA4;
 /// 0x393D84): its phase at +0x40 (0 start, 1 the battle, 2 the end: the battle's teardown in steps that count
 /// updates). In a battle over 30 the end runs one pass in S (0, "not done yet", on the other passes).
 pub const BATTLE_PROC: u32 = MODULE_HOOK | 0x32F54;
-/// DllBattle+0x15EA4 (X v1.0 at 0x6BB024): the battle's main update. It calls the state function of its state machine
-/// (a member function pointer at [+0x820]+0, +4) and of its four clients ([+0x828..+0x834] +0x30, +0x34), each a step
-/// of the battle's flow that counts updates (waits, the move's phases), then the scene. In a battle over 30 the state
-/// functions run one pass in S: on the other passes they are swapped for one that returns 0 ("not done yet").
+/// code.bin 0x3570C0 (X and Y alike): the input devices' update (buttons, d-pad, sticks, touch: each reads the hardware
+/// and works out what was pressed since its last update), called by the main loop through its vtable (code.bin
+/// 0x106710) before TICK. In a battle over 30 it runs on the passes the battle's steps run (one in S), so a press is
+/// seen on a pass that reads it: run every pass, a press would show on one pass only, mostly one the battle skips.
+pub const INPUT: u32 = 0x0035_70C0;
 /// code.bin 0x3006F8: the ARM run-time's signed division with remainder (r0 / r1 -> r0, r1).
 const DIVIDE: u32 = 0x0030_06F8;
 
@@ -155,6 +156,7 @@ fn hook_of(pc: u32) -> XrFn {
         BATTLE_CLIENT => Some(battle_client),
         BATTLE_MAIN => Some(battle_main),
         BATTLE_PROC => Some(battle_proc),
+        INPUT => Some(input),
         _ => None,
     }
 }
@@ -787,6 +789,19 @@ unsafe fn battle_module(c: *mut XrCpu, key: u32) {
     crate::rate::SCALE.store(1, Ordering::Relaxed);
     unsafe { original_native(c, f, e) };
     crate::rate::SCALE.store(s, Ordering::Relaxed);
+}
+
+/// The input devices' update (see INPUT): in a battle over 30 only before a pass the battle runs (TICK counts the pass
+/// after this call).
+unsafe extern "C" fn input(c: *mut XrCpu) {
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    if let Some(s) = crate::rate::battle_scale() {
+        if (crate::rate::PASSES.load(Ordering::Relaxed) + 1) % u64::from(s) != 0 {
+            return;
+        }
+    }
+    unsafe { original_native(c, INPUT, e) };
 }
 
 /// Runs the hooked function `f` (one that returns nothing the caller uses) on one pass in S in a battle over 30.

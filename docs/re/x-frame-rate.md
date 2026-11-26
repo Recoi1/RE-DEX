@@ -79,7 +79,7 @@ put the step back (rate.rs `cut_*`, while the field runs at S; at 30 they only r
   update, not every other frame) and stops within a 30 Hz update's share of 30's spot, and a door's fade to the next map
   takes 99 frames at 60 against 101 at 30.
 
-## Battles (at 60 under the setting; 120 and 240 stay at 30 for now; XR_RATE_BATTLE=1/0 forces on/off)
+## Battles (at the setting's rate; XR_RATE_BATTLE=0 keeps them at 30)
 
 - Tools: XR_THUMBS=1 writes each refresh's console time and both screens in grey 8x8 blocks to logs/thumbs.bin;
   matching each 30 Hz frame with the 60 Hz run's best match in time gives the lag along the battle (a falling lag: 60
@@ -116,9 +116,15 @@ put the step back (rate.rs `cut_*`, while the field runs at S; at 30 they only r
   menu, a won battle (Tackle, HP, the foe's faint, EXP, the end) keeps 30's timing within 4 frames at 60; the intro
   within 2 at 60, 120 and 240 (event frames at 120 and 240 count refreshes: rate/60 to a console frame).
 - Not right yet: layout animations cut to 1/S change the picture only on whole frames, so the menus (the command
-  menu's slide) still move in 30 Hz steps; the timeline (hook 14) counts whole frames and stays one pass in S. At 120
-  and 240 a scripted press in the battle's menu is not taken (also with XR_RATE_BATTLE off), so the move turn there
-  is not measured.
+  menu's slide) still move in 30 Hz steps; the timeline (hook 14) counts whole frames and stays one pass in S.
+- Presses (hook 20): the input devices' update (code.bin 0x3570C0, from the main loop through its vtable, before
+  TICK) works out a press on the first pass that sees the button down, and only for that pass; the battle's menus read
+  it on their one pass in S, so most presses were lost (at 60 one in two; the scripts' presses happened to land on the
+  battle's passes there, at 120 and 240 never). In a battle at the rate the update runs only before the battle's
+  passes. From the battle's start through the intro, a move turn, the faint, EXP and back to the field: within 3 to
+  5.5 frames of 30 at 120 and 240, 1 to 2.5 frames ahead of 60 (presses are taken sooner); no faults.
+- Still at 60, 120 and 240: a 14-frame stretch at the battle's end (30's frames 5843 to 5857 of the mixed run, after
+  the last EXP press) moves twice as fast, its events still within 3 frames.
 - A battle runs at the rate only between its loads and its end: the proc in its battle phase (+0x40 = 1) and the
   scene's state machine (DllBattle 0x71A210, state u8 +0x694) past its first state's loads (that state, DllBattle
   0x6E446C, counts steps at +0x6B8; 0x14 is the intro). Run at the rate, the setup's waits ran at twice the pace;

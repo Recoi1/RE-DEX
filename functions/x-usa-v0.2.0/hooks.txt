@@ -21,3 +21,4 @@ DllBattle+0x10C08 virtual  # 16: the battle's command screens' steps (DllBattle 
 DllBattle+0x44E8 virtual  # 17: the battle client's update (DllBattle 0x6A9668 in X): in a battle over 30 it runs one pass in S (xr-runtime hooks.rs)
 DllBattle+0x15EA4 virtual  # 18: the battle's main update (DllBattle 0x6BB024 in X): in a battle over 30 its state functions run one pass in S (xr-runtime hooks.rs)
 DllBattle+0x32F54 virtual  # 19: the battle's proc (DllBattle 0x6D80D4 in X): in a battle over 30 its end runs one pass in S (xr-runtime hooks.rs)
+0x003570C0 virtual  # 20: the input devices' update (called through its vtable): in a battle over 30 it runs one pass in S, on the battle's passes (xr-runtime hooks.rs)
