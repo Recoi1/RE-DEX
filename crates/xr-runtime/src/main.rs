@@ -684,6 +684,9 @@ Playing offline."));
     let input_log = std::env::var_os("XR_INPUTLOG").is_some();
     let console_clock = std::env::var("XR_SCRIPT_CLOCK").is_ok_and(|v| v == "console");
     let mut clock_cycles = 0u64;
+    // XR_THUMBS=1 (dev, the Frame rate's timing): each refresh's console time in cycles and both screens shrunk to grey
+    // 8x8 blocks (top 50x30, bottom 40x30), appended to logs/thumbs.bin, to line runs at two rates up in time
+    let mut thumbs = std::env::var_os("XR_THUMBS").and_then(|_| std::fs::File::create(logs.join("thumbs.bin")).ok()).map(|f| (std::io::BufWriter::new(f), 0u64));
     let peek_at: Vec<u64> = std::env::var("XR_PEEK_AT").unwrap_or_default().split(',').filter_map(|v| v.trim().parse().ok()).collect();
     let pace = realtime.then(std::time::Instant::now);
     if let Some(p) = &state_load {
@@ -1054,6 +1057,27 @@ Playing offline."));
                 } else {
                     t += 1;
                 }
+            }
+            if let Some((f, at)) = thumbs.as_mut() {
+                use std::io::Write;
+                *at += m.system().frame_cycles;
+                let mut out = at.to_le_bytes().to_vec();
+                for (s, w) in [(zakuro_common::Screen::Top, 400usize), (zakuro_common::Screen::Bottom, 320)] {
+                    let px = m.screen(s);
+                    for by in 0..30 {
+                        for bx in 0..w / 8 {
+                            let mut sum = 0u32;
+                            for y in by * 8..by * 8 + 8 {
+                                for x in bx * 8..bx * 8 + 8 {
+                                    let i = (y * w + x) * 4;
+                                    sum += px.get(i..i + 3).map_or(0, |p| u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]));
+                                }
+                            }
+                            out.push((sum / 192) as u8);
+                        }
+                    }
+                }
+                let _ = f.write_all(&out);
             }
             if let Some(start) = pace {
                 // 60 frames a second from the start, so a slow frame is made up and the run does not drift

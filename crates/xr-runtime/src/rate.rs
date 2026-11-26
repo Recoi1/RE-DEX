@@ -28,6 +28,12 @@ const FLAG_BUSY: u32 = 0x100;
 /// 0x6D32D4 clears it as one starts, through 0x729E9C), 1 otherwise.
 const PFO_SUBSCREEN: u32 = 0x16C;
 const SUBSCREEN_ON: u32 = 0x91;
+/// The touch screen's u8 lock (0xF from the end of a battle until its menu shows; 0 in the field), its u32 count of
+/// updates since the menu showed (its slide in reads it).
+const SUBSCREEN_LOCK: u32 = 0x94;
+const SUBSCREEN_SHOWN: u32 = 0x9C;
+/// Updates the touch screen's menu takes to slide in once shown (8 at 30, with a margin).
+const SLIDE_IN: u32 = 12;
 /// Move model: u16 the current action (then u16 its direction), u32 its state (1 playing, 2 ended).
 const ACTION: u32 = 0x8FC;
 const ACTION_STATE: u32 = 0x900;
@@ -155,12 +161,16 @@ pub static MOTION_CALLS: AtomicU64 = AtomicU64::new(0);
 /// Main-loop passes while the rate runs (the motion hook's battle cadence).
 pub static PASSES: AtomicU64 = AtomicU64::new(0);
 pub static FIELD_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The battle is past its setup (hooks.rs: the proc in its battle phase, the scene's state machine past its setup)
+/// and before its end: only then does it run at the rate. Setup and end stay at the game's 30 (they wait on loads,
+/// which the main thread's extra passes would slow).
+pub static BATTLE_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// XR_RATE_HOOKS=MASK (debug): which animation hooks cut (1 scene animations, 2 motions, 4 environment drifts; all
-/// by default).
+/// XR_RATE_HOOKS=MASK (debug): which animation hooks cut (1 scene animations, 2 motions, 4 environment drifts, 8
+/// animation sets, 16 layout animations, 32 the battle's command screens' steps, 64 the battle client; all by default).
 pub fn hook_on(bit: u32) -> bool {
     static MASK: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *MASK.get_or_init(|| std::env::var("XR_RATE_HOOKS").ok().and_then(|v| v.parse().ok()).unwrap_or(7)) & bit != 0
+    *MASK.get_or_init(|| std::env::var("XR_RATE_HOOKS").ok().and_then(|v| v.parse().ok()).unwrap_or(127)) & bit != 0
 }
 
 /// A scene node's animation lists, (list offset, step offset in each animation) (code.bin 0x2ECD20).
@@ -210,6 +220,34 @@ pub fn cut_drifts(g: &mut impl Calls, table: u32, s: u32) -> Vec<(u32, u32)> {
     saved
 }
 
+/// Cuts an animation set's speeds to 1/S (code.bin 0x369F08: count at +4, list at +8, each animation's speed at
+/// +0x30, skipped as the game skips it without its +0x1C); what was there, to put back.
+pub fn cut_anim_set(g: &mut impl Calls, set: u32, s: u32) -> Vec<(u32, u32)> {
+    let mut saved = Vec::new();
+    let (Some(n), Some(list)) = (g.u32(set.wrapping_add(4)), g.u32(set.wrapping_add(8))) else { return saved };
+    for i in 0..n.min(256) {
+        if let Some(a) = g.u32(list.wrapping_add(4 * i)).filter(|&a| a != 0 && g.u32(a.wrapping_add(0x1C)).is_some_and(|r| r != 0)) {
+            cut(g, a.wrapping_add(0x30), s, &mut saved);
+        }
+    }
+    saved
+}
+
+/// Cuts a layout's animation speeds to 1/S (code.bin 0x14DEC4: count at +0xAC, 0x2C-byte entries at [+0xA8], the
+/// speed at +0x1C of each one the game steps: flags +0, +1, +2 set and an animation at +8); what was there, to put back.
+pub fn cut_layout_anims(g: &mut impl Calls, work: u32, s: u32) -> Vec<(u32, u32)> {
+    let mut saved = Vec::new();
+    let (Some(n), Some(list)) = (g.u32(work.wrapping_add(0xAC)), g.u32(work.wrapping_add(0xA8))) else { return saved };
+    for i in 0..n.min(256) {
+        let at = list.wrapping_add(0x2C * i);
+        let on = g.u32(at).is_some_and(|f| f & 0xFF != 0 && f & 0xFF00 != 0 && f & 0xFF_0000 != 0) && g.u32(at.wrapping_add(8)).is_some_and(|a| a != 0);
+        if on {
+            cut(g, at.wrapping_add(0x1C), s, &mut saved);
+        }
+    }
+    saved
+}
+
 fn cut(g: &mut impl Calls, at: u32, s: u32, saved: &mut Vec<(u32, u32)>) {
     if let Some(bits) = g.u32(at) {
         let v = f32::from_bits(bits);
@@ -225,6 +263,186 @@ pub fn put_back(g: &mut impl Calls, saved: &[(u32, u32)]) {
     for &(at, bits) in saved.iter().rev() {
         g.write(at, &bits.to_le_bytes());
     }
+}
+
+/// S while a battle runs at the rate, None otherwise.
+pub fn battle_scale() -> Option<u32> {
+    let s = SCALE.load(Ordering::Relaxed);
+    (s > 1 && !FIELD_ON.load(Ordering::Relaxed)).then_some(s)
+}
+
+/// DllBattle call sites (return address minus DllBattle's code segment, X v1.0) whose object steps a speed of its
+/// own each update, and where that speed is: the trainer object's frame (DllBattle 0x6DB5B0: +0x1A4 += +0x1AC).
+const BATTLE_TRAINER_SITE: u32 = 0x6DB5D0;
+/// Where DllBattle's code segment sits in X v1.0 (its sites above are given at that address).
+const BATTLE_CODE: u32 = 0x6A5180;
+
+/// A DllBattle site's object (`hooks::battle_part`): its speed cut to 1/S.
+pub fn battle_site(g: &mut impl Calls, site: u32, obj: u32, s: u32) {
+    if site == BATTLE_TRAINER_SITE - BATTLE_CODE {
+        cut_kept(g, obj.wrapping_add(0x1AC), s);
+    }
+}
+
+/// Speeds this module cut and left cut: (address, the value written).
+static KEPT: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+
+/// Cuts a speed the game sets once and steps by every update to 1/S, and leaves it cut: a value that is not the one
+/// written here is the game's (a new speed) and is cut again.
+fn cut_kept(g: &mut impl Calls, at: u32, s: u32) {
+    let (Some(bits), Ok(mut kept)) = (g.u32(at), KEPT.lock()) else { return };
+    if kept.iter().any(|&(a, v)| a == at && v == bits) {
+        return;
+    }
+    let v = f32::from_bits(bits);
+    if !v.is_finite() || v == 0.0 {
+        return;
+    }
+    let ours = (v / s as f32).to_bits();
+    g.write(at, &ours.to_le_bytes());
+    kept.retain(|&(a, _)| a != at);
+    if kept.len() > 256 {
+        kept.remove(0);
+    }
+    kept.push((at, ours));
+}
+
+/// DllBattle's tasks that move something smoothly (X v1.0 addresses): the camera moves 0x71C4AC and 0x71F1E4, the
+/// models' moves 0x71D7B8 and 0x71DEC0. Each reads interpolators (BATTLE_INTERPS) once an update and ends when they
+/// are done; over 30 they run every pass with the interpolators' steps cut to 1/S.
+const BATTLE_MOVES: [u32; 4] = [0x71C4AC, 0x71F1E4, 0x71D7B8, 0x71DEC0];
+/// DllBattle's interpolators, by the function at their vtable's +0xC (the step, which returns the value): the vector
+/// (step +0x28 of +0x2C, its three scalars at +0x34..+0x3C) and two scalars (step +0x10 of +0x14).
+const BATTLE_VECTOR: u32 = 0x7718FC;
+const BATTLE_SCALARS: [u32; 2] = [0x77170C, 0x771780];
+/// A `bx lr` in DllBattle: a task's function while its list passes without it.
+const BATTLE_NOOP: u32 = 0x77177C;
+
+/// A task list's pass in a battle over 30 (hooks.rs `tasks`; list: first node +0x1C, its end +0x14; a node's next +8,
+/// its data +0x10, its function +0x14): the move tasks' interpolators are cut to 1/S (once each); on a pass that is not
+/// one in S (`all` false) every other task's function is swapped for a no-op, so only the moves go on. Returns the
+/// swapped nodes for `put_back_tasks`.
+pub fn battle_tasks(g: &mut impl Calls, list: u32, code: u32, s: u32, all: bool) -> Vec<(u32, u32)> {
+    let at = |a: u32| a.wrapping_sub(BATTLE_CODE).wrapping_add(code);
+    let mut swapped = Vec::new();
+    let end = list.wrapping_add(0x14);
+    let mut node = g.u32(list.wrapping_add(0x1C)).unwrap_or(end);
+    for _ in 0..1024 {
+        if node == end || node == 0 {
+            break;
+        }
+        let (Some(f), Some(data)) = (g.u32(node.wrapping_add(0x14)), g.u32(node.wrapping_add(0x10))) else { break };
+        if BATTLE_MOVES.iter().any(|&m| at(m) == f) {
+            for k in 0..6 {
+                if let Some(p) = g.u32(data.wrapping_add(4 * k)) {
+                    cut_interp(g, p, code, s, true);
+                }
+            }
+        } else if !all {
+            g.write(node.wrapping_add(0x14), &at(BATTLE_NOOP).to_le_bytes());
+            swapped.push((node, f));
+        }
+        node = g.u32(node.wrapping_add(8)).unwrap_or(end);
+    }
+    swapped
+}
+
+/// Puts back the task functions `battle_tasks` swapped (those still swapped).
+pub fn put_back_tasks(g: &mut impl Calls, swapped: &[(u32, u32)], code: u32) {
+    let noop = BATTLE_NOOP.wrapping_sub(BATTLE_CODE).wrapping_add(code);
+    for &(node, f) in swapped {
+        if g.u32(node.wrapping_add(0x14)) == Some(noop) {
+            g.write(node.wrapping_add(0x14), &f.to_le_bytes());
+        }
+    }
+}
+
+/// A DllBattle function that returns 0 (a state function's "not done yet").
+const BATTLE_ZERO: u32 = 0x6A6FBC;
+
+/// The battle main update's state functions off for a pass (hooks.rs `battle_main`; `this` its r0): each member function
+/// pointer (function or vtable offset, then this-adjust * 2 + virtual) the update would call becomes BATTLE_ZERO with
+/// the same adjust. Returns (address, the game's word, ours) for `put_back_states`.
+pub fn battle_states_off(g: &mut impl Calls, this: u32, code: u32) -> Vec<(u32, u32, u32)> {
+    let zero = BATTLE_ZERO.wrapping_sub(BATTLE_CODE).wrapping_add(code);
+    let mut pmfs = Vec::new();
+    // the state machine: called unless both words say none (then the update ends the machine; left alone)
+    if let Some(sm) = g.u32(this.wrapping_add(0x820)).filter(|&a| a != 0) {
+        let (f, adj) = (g.u32(sm).unwrap_or(0), g.u32(sm.wrapping_add(4)).unwrap_or(0));
+        let done = g.u8(sm.wrapping_add(0x11D)) == Some(2);
+        if !done && (f != 0 || adj & 1 != 0) {
+            pmfs.push(sm);
+        }
+    }
+    for i in 0..4 {
+        if let Some(cl) = g.u32(this.wrapping_add(0x828 + 4 * i)).filter(|&a| a != 0) {
+            pmfs.push(cl.wrapping_add(0x30));
+        }
+    }
+    let mut saved = Vec::new();
+    // the scene's message windows ([this+0x14] the scene, its +0x190 their manager, DllBattle 0x748BCC): the text
+    // printer, its waits and its counters step once an update; their update is skipped while the manager's +0x34 is 0
+    let scene = g.u32(this.wrapping_add(0x14)).filter(|&v| v != 0 && v & 3 == 0);
+    let wm = scene.and_then(|v| g.u32(v.wrapping_add(0x190))).filter(|&w| w != 0 && w & 3 == 0);
+    if let Some(at) = wm.map(|w| w.wrapping_add(0x34)) {
+        if let Some(word) = g.u32(at).filter(|w| w & 0xFF != 0) {
+            g.write(at, &(word & !0xFF).to_le_bytes());
+            saved.push((at, word, word & !0xFF));
+        }
+    }
+    for at in pmfs {
+        let (Some(f), Some(adj)) = (g.u32(at), g.u32(at.wrapping_add(4))) else { continue };
+        g.write(at, &zero.to_le_bytes());
+        g.write(at.wrapping_add(4), &(adj & !1).to_le_bytes());
+        saved.push((at, f, zero));
+        saved.push((at.wrapping_add(4), adj, adj & !1));
+    }
+    saved
+}
+
+/// Puts back what `battle_states_off` swapped, where it is still ours.
+pub fn put_back_states(g: &mut impl Calls, saved: &[(u32, u32, u32)]) {
+    for &(at, game, ours) in saved {
+        if g.u32(at) == Some(ours) {
+            g.write(at, &game.to_le_bytes());
+        }
+    }
+}
+
+/// Cuts a DllBattle interpolator's step to 1/S (its step and length times S), if `p` is one (and its scalars too).
+fn cut_interp(g: &mut impl Calls, p: u32, code: u32, s: u32, subs: bool) {
+    let at = |a: u32| a.wrapping_sub(BATTLE_CODE).wrapping_add(code);
+    let Some(step) = g.u32(p).and_then(|vt| g.u32(vt.wrapping_add(0xC))) else { return };
+    if step == at(BATTLE_VECTOR) {
+        stretch_count(g, p.wrapping_add(0x28), s);
+        if subs {
+            for o in [0x34, 0x38, 0x3C] {
+                if let Some(q) = g.u32(p.wrapping_add(o)).filter(|&q| q != 0) {
+                    cut_interp(g, q, code, s, false);
+                }
+            }
+        }
+    } else if BATTLE_SCALARS.iter().any(|&f| at(f) == step) {
+        stretch_count(g, p.wrapping_add(0x10), s);
+    }
+}
+
+/// A count (u32 step at `at`, u32 length at +4) times S, once: a length that is not the one written here is the game's.
+// shortcut: a new length equal to one written here is taken as already cut; fine for the battle's short moves.
+fn stretch_count(g: &mut impl Calls, at: u32, s: u32) {
+    let n_at = at.wrapping_add(4);
+    let (Some(i), Some(n), Ok(mut kept)) = (g.u32(at), g.u32(n_at), KEPT.lock()) else { return };
+    if kept.iter().any(|&(a, v)| a == n_at && v == n) || n == 0 || n > 0x0100_0000 {
+        return;
+    }
+    let ours = n * s;
+    g.write(at, &(i.min(n) * s).to_le_bytes());
+    g.write(n_at, &ours.to_le_bytes());
+    kept.retain(|&(a, _)| a != n_at);
+    if kept.len() > 256 {
+        kept.remove(0);
+    }
+    kept.push((n_at, ours));
 }
 
 /// The rate the game's logic runs at: XR_FRAME_RATE (headless runs) over the setting.
@@ -252,11 +470,24 @@ pub fn tick(g: &mut impl Calls, dll: Option<Dll>, battle: bool, rate: u32) -> u6
         .and_then(|d| g.u32(d.data + field::SNAPSHOT + field::SNAP_PLAYER_OBJ))
         .and_then(|pfo| g.u32(pfo + PFO_SUBSCREEN))
         .filter(|&o| o != 0)
-        .is_none_or(|o| g.u8(o + SUBSCREEN_ON) == Some(0));
+        .is_none_or(|o| {
+            // after a battle: the touch screen's menu waits locked, then slides in (its own steps, not cut): at 30
+            // shortcut: the slide's length (SLIDE_IN updates) is measured on the field's menu; other menus would need theirs
+            g.u8(o + SUBSCREEN_ON) == Some(0) || g.u8(o + SUBSCREEN_LOCK) != Some(0) || g.u32(o + SUBSCREEN_SHOWN).is_none_or(|n| n < SLIDE_IN)
+        });
     let busy = busy || event;
-    // XR_RATE_BATTLE=1 (work in progress): battles too; the field only without a battle (DllField stays loaded in one)
-    let want = rate > 30 && ((player.is_some() && !busy && !battle) || (battle && std::env::var_os("XR_RATE_BATTLE").is_some()));
+    // battles at 60 (120 and 240 not yet: they stay at 30); XR_RATE_BATTLE=1/0 (test override) at any rate / never.
+    // The field only without a battle (DllField stays loaded in one)
+    let battle_on = match std::env::var("XR_RATE_BATTLE").as_deref() {
+        Ok("0") => false,
+        Ok(_) => true,
+        Err(_) => rate == 60,
+    };
+    let want = rate > 30 && ((player.is_some() && !busy && !battle) || (battle && battle_on && BATTLE_READY.load(Ordering::Relaxed)));
     if trace() {
+        let flags = dll.and_then(|d| g.u32(d.data + field::SNAPSHOT + SNAP_FLAGS)).unwrap_or(0);
+        let sub = dll.and_then(|d| g.u32(d.data + field::SNAPSHOT + field::SNAP_PLAYER_OBJ)).and_then(|pfo| g.u32(pfo + PFO_SUBSCREEN)).unwrap_or(0);
+        crate::log::log(&format!("rate: pass sub {sub:08X} mode {mode} req {req} flags {flags:08X} event {event} battle {battle} player {} forced {} motion calls {}", player.is_some(), st.forced, MOTION_CALLS.load(Ordering::Relaxed)));
         trace_player(g, dll);
     }
     if want && mode == 1 && req == NO_REQUEST && !trace_only() {
@@ -396,6 +627,17 @@ pub fn tick(g: &mut impl Calls, dll: Option<Dll>, battle: bool, rate: u32) -> u6
     } else {
         st.counters = Default::default();
     }
+    // XR_RATE_SLOW=ADDR,... (hex, debug): u32 counters of updates counted one in S while the rate runs
+    if active {
+        static SLOW: Mutex<Vec<(u32, Counter)>> = Mutex::new(Vec::new());
+        let mut v = SLOW.lock().unwrap();
+        if v.is_empty() {
+            *v = std::env::var("XR_RATE_SLOW").unwrap_or_default().split(',').filter_map(|a| u32::from_str_radix(a.trim(), 16).ok()).map(|a| (a, Counter::default())).collect();
+        }
+        for (a, c) in v.iter_mut() {
+            slow(g, *a, true, s, c);
+        }
+    }
     let mut next = Vec::with_capacity(slots.len());
     for slot in &slots {
         let a = slot.addr;
@@ -510,7 +752,7 @@ fn turn(t: u16, s: u16) -> u16 {
 }
 
 /// XR_RATE_TRACE=1: every move model's action counts and the player controller's changes, each update, to the log.
-fn trace() -> bool {
+pub(crate) fn trace() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("XR_RATE_TRACE").is_some())
 }

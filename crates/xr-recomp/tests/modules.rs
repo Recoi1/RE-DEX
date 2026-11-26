@@ -52,7 +52,7 @@ fn modules_place_lookup_and_call_natively() {
     for (k, (m, f)) in mods.iter().zip(flags).enumerate() {
         src += &module_sources(k as u32, m, f, 1).0.concat();
     }
-    src += &lookup_c(base, base + 0x20, &funcs, "", &mods, &[]);
+    src += &lookup_c(base, base + 0x20, &funcs, "", &mods, &[], &[]);
     src += &format!(
         r#"
 #include <stdio.h>

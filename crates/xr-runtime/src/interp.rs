@@ -79,6 +79,10 @@ fn run(c: *mut XrCpu, until_pc: u32, until_sp: u32) {
                 s.cpu.cpsr.thumb = ret & 1 != 0;
                 continue;
             }
+            // a CRO's import stub (`ldr pc, [pc, #-4]`) passes the call on: its target is still the call's
+            if s.memory.slice_mut(pc & !3, 4).is_some_and(|b| b == 0xE51F_F004u32.to_le_bytes()) {
+                call = Some(ret);
+            }
         }
         // until_pc/until_sp is the caller's real frame return (ABI v4 ret_lr/ret_sp), so a match is the return
         if pc == until_pc && sp == until_sp {
@@ -132,6 +136,27 @@ fn run(c: *mut XrCpu, until_pc: u32, until_sp: u32) {
         // only an instruction that ran can be the call (an idled loop or an SVC leaves lr as it was)
         if matches!(stepped, Stepped::Ran) && s.cpu.regs[15] != next && s.cpu.regs[14] == next | t {
             call = Some(next | t);
+            calls::seen(s, next | t);
+        }
+    }
+}
+
+/// XR_CALLS=1 (reverse engineering): logs each interpreted call (target, return site) the first time it is made, with
+/// the frame; XR_CALLS_FROM=N only from frame N on (what a scene's new step first calls: docs/re/).
+mod calls {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    pub fn seen(s: &xr_hle::System, ret: u32) {
+        static ON: OnceLock<Option<u64>> = OnceLock::new();
+        let Some(from) = *ON.get_or_init(|| std::env::var_os("XR_CALLS").map(|_| std::env::var("XR_CALLS_FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0))) else { return };
+        if s.frames < from {
+            return;
+        }
+        static SEEN: Mutex<Option<HashSet<(u32, u32)>>> = Mutex::new(None);
+        let to = s.cpu.regs[15] | s.cpu.cpsr.thumb as u32;
+        if SEEN.lock().unwrap().get_or_insert_with(HashSet::new).insert((to, ret)) {
+            crate::log::log(&format!("call 0x{to:08X} from 0x{:08X} frame {} r0 {:08X} r1 {:08X}", ret.wrapping_sub(4), s.frames, s.cpu.regs[0], s.cpu.regs[1]));
         }
     }
 }

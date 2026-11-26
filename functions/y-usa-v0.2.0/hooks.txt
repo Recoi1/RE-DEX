@@ -1,10 +1,23 @@
 # guest function start addresses that native code may replace; one per line (`virtual` after one the game also calls
-# through pointers: xr_lookup hands out its hook too)
+# through pointers: xr_lookup hands out its hook too); `Module+0xOFF virtual` is a CRO module's function at OFF from
+# its code segment, reached through pointers only
 0x0015F860  # 0: the main loop's per-frame call (code.bin 0x1066D8 calls it each pass, between procs): xr-net's puppet tick
 0x00433B20  # 1: the field save (writes FieldMoveModelSave): xr-net sweeps the puppets around it
 0x003D41D8  # 2: move-model Create: with the pool full xr-net deletes a puppet first (a full pool hangs the game)
 0x003D6DF0  # 3: the zone NPC loader (from code.bin 0x3B8B88): puppets wait for it, so they allocate after the zone's NPCs
 0x004CE1B4  # 4: a name's hash looked up in a table (Amie's hot spot): done natively, clock-exact (xr-runtime hooks.rs name_lookup)
 0x002ECD20 virtual  # 5: a scene node's animations go on a step each update (also called through its vtable): the Frame rate over 30 cuts the steps (xr-runtime rate.rs)
-0x0039664C  # 6: a model's motion goes on by its speed each update: the Frame rate over 30 cuts the speed (xr-runtime rate.rs)
+0x0039664C virtual  # 6: a model's motion goes on by its speed each update (CROs call it through their import stubs): the Frame rate over 30 cuts the speed (xr-runtime rate.rs)
 0x0045B734  # 7: the environment's 8 slow drifts go on by their speeds each update: the Frame rate over 30 cuts them (xr-runtime rate.rs)
+0x003D0458 virtual  # 8: a move model's step along its rail (Lumiose; called from DllField's import stub): the Frame rate over 30 cuts it (xr-runtime hooks.rs)
+0x00369F08 virtual  # 9: an animation set's animations go on by their speeds each update (through its vtable; the battle's camera among them): the Frame rate over 30 cuts them (xr-runtime rate.rs)
+0x0014DEC4 virtual  # 10: a layout's animations go on by their speeds each update (the menus' and the battle's screens): the Frame rate over 30 cuts them (xr-runtime rate.rs)
+0x00111F3C  # 11: the main loop's request queue hands on one request a pass (DllBattle waits for it to empty): in a battle over 30 it runs one pass in S (xr-runtime hooks.rs)
+0x0037E398 virtual  # 12: called by DllBattle's trainer object (import stub) before it steps its frame: in a battle over 30 its speed is cut (xr-runtime rate.rs)
+0x0038FEC0 virtual  # 13: a task list runs its tasks (DllBattle's sequence, waits and countdowns): in a battle over 30 it runs one pass in S (xr-runtime hooks.rs)
+0x003AD190 virtual  # 14: a timeline goes on a frame (the battle scene's sequences): in a battle over 30 it runs one pass in S (xr-runtime hooks.rs)
+0x00441BC0 virtual  # 15: a battle Pokemon's face (blinks): in a battle over 30 it runs one pass in S (xr-runtime hooks.rs)
+DllBattle+0x10C08 virtual  # 16: the battle's command screens' steps (DllBattle 0x6B5D88 in X): in a battle over 30 they run one pass in S (xr-runtime hooks.rs)
+DllBattle+0x44E8 virtual  # 17: the battle client's update (DllBattle 0x6A9668 in X): in a battle over 30 it runs one pass in S (xr-runtime hooks.rs)
+DllBattle+0x15EA4 virtual  # 18: the battle's main update (DllBattle 0x6BB024 in X): in a battle over 30 its state functions run one pass in S (xr-runtime hooks.rs)
+DllBattle+0x32F54 virtual  # 19: the battle's proc (DllBattle 0x6D80D4 in X): in a battle over 30 its end runs one pass in S (xr-runtime hooks.rs)

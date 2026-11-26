@@ -18,7 +18,7 @@ use xr_net::x::puppet::Puppets;
 
 /// hooks.txt's lines, in order (`hooks_txt_matches` checks the file). New hooks go at the end: a DLL built with the
 /// list's first k (k >= REQUIRED) still runs with this redex (game.rs), it just never calls the hooks after them.
-pub const HOOKED: [u32; 8] = [TICK, SAVE, CREATE, LOAD, NAME_LOOKUP, SCENE_ANIMS, MOTION, ENV_DRIFT];
+pub const HOOKED: [u32; 20] = [TICK, SAVE, CREATE, LOAD, NAME_LOOKUP, SCENE_ANIMS, MOTION, ENV_DRIFT, RAIL_MOVE, ANIM_SET, LAYOUT_ANIMS, REQUESTS, BATTLE_PART, TASKS, SEQUENCE, FACE, BATTLE_UI, BATTLE_CLIENT, BATTLE_MAIN, BATTLE_PROC];
 /// The hooks every DLL with hooks must have (the multiplayer ones, TICK to LOAD); the ones after are speed-ups.
 pub const REQUIRED: usize = 4;
 /// code.bin 0x15F860: the main loop (code.bin 0x1066D8) calls it once per pass, outside every proc's update.
@@ -40,12 +40,65 @@ pub const NAME_LOOKUP: u32 = 0x004C_E1B4;
 /// With the Frame rate over 30 each step is cut to 1/S for the call (rate.rs).
 pub const SCENE_ANIMS: u32 = 0x002E_CD20;
 /// code.bin 0x39664C (X and Y alike): a model's motion goes on: frame (+0x18) + speed (+0x24), the speed set again
-/// each update by the game. With the Frame rate over 30 the speed is cut to 1/S for the call.
+/// each update by the game; `virtual`, so the CROs' calls (DllBattle's trainers) reach the hook too. With the Frame rate over 30 the speed is cut to 1/S for the call.
 pub const MOTION: u32 = 0x0039_664C;
 /// code.bin 0x45B734 (X and Y alike): the environment's 8 slow drifts (r0 the table: each 0x24 bytes, an
 /// angle at +0x18 and a second value at +0x1C both going on by the speed at +0x20 each update). With the Frame rate
 /// over 30 the speeds are cut to 1/S for the call.
 pub const ENV_DRIFT: u32 = 0x0045_B734;
+/// code.bin 0x3D0458 (X and Y alike): a move model goes a step along its rail (r0 the move model, s0 and s1 the step's
+/// two parts), Lumiose's rail walks (DllField's rail actions call it once an update, through their import stub). With
+/// the Frame rate over 30 in the field the step is cut to 1/S.
+pub const RAIL_MOVE: u32 = 0x003D_0458;
+/// code.bin 0x369F08 (X and Y alike): an animation set's animations go on (r0 the set: u32 count at +4, the list at
+/// +8; each animation's f32 frame +0x28 goes on by its speed +0x30, wrapped or held in +0x34..+0x38), called through
+/// its class's vtable (the battle's camera and stage animations among them). With the Frame rate over 30 each speed
+/// is cut to 1/S for the call.
+pub const ANIM_SET: u32 = 0x0036_9F08;
+/// code.bin 0x14DEC4 (X and Y alike): a layout's animations go on (r0 the layout work: u32 count at +0xAC, entries of
+/// 0x2C bytes at [+0xA8], each with flags at +0..+3, the animation at [+8] (frame at its +0x10) and its f32 speed at
+/// +0x1C), the menus' and the battle's screens. With the Frame rate over 30 each speed is cut to 1/S for the call.
+pub const LAYOUT_ANIMS: u32 = 0x0014_DEC4;
+/// code.bin 0x111F3C: the main loop's request queue hands one queued request on each pass (r0 the queue: count at
+/// +0xC; DllBattle queues its scene's requests there and waits for the queue to empty). In a battle with the Frame
+/// rate over 30 it runs one pass in S, so the queue empties when it would at 30.
+pub const REQUESTS: u32 = 0x0011_1F3C;
+/// code.bin 0x37E398: called through DllBattle's import stub by, among others, the battle's trainer object each
+/// update (DllBattle `BATTLE_TRAINER_SITE`, r4 the object), before it steps its own frame (+0x1A4) by its speed
+/// (+0x1AC). In a battle with the Frame rate over 30 that speed is cut to 1/S (rate.rs `cut_kept`).
+pub const BATTLE_PART: u32 = 0x0037_E398;
+/// code.bin 0x38FEC0: a task list runs its tasks (r0 the list; each task's function at +0x14 called with the list and
+/// the task). DllBattle's scene runs its sequence, its waits and countdowns this way (DllBattle 0x721104, 0x71BD58,
+/// ...). In a battle with the Frame rate over 30 a list runs one pass in S.
+pub const TASKS: u32 = 0x0038_FEC0;
+/// code.bin 0x3AD190: a timeline goes on a frame (+0x14 the frame, +0x18 the last; the commands due run first), the
+/// battle scene's sequences (DllBattle 0x6E9EF4, once an update). In a battle over 30 it runs one pass in S.
+pub const SEQUENCE: u32 = 0x003A_D190;
+/// code.bin 0x441BC0: a battle Pokemon's face (blinks: +0x330 counts down 2 an update, its +0x3ED set). In a battle
+/// over 30 it runs one pass in S.
+pub const FACE: u32 = 0x0044_1BC0;
+/// A CRO module's function in hooks.txt (`Module+0xOFF virtual`, OFF from the module's code segment): this bit and OFF.
+pub const MODULE_HOOK: u32 = 0x8000_0000;
+/// DllBattle+0x10C08 (X v1.0 at 0x6B5D88): the battle's command screens' steps (their waits count updates), called
+/// through a pointer by the battle's main update (DllBattle 0x6BB024). In a battle over 30 it runs one pass in S.
+pub const BATTLE_UI: u32 = MODULE_HOOK | 0x10C08;
+/// DllBattle+0x44E8 (X v1.0 at 0x6A9668): the battle client's update (the battle's logic, its menus and their
+/// layouts), called through a pointer by the battle's main update. In a battle over 30 it runs one pass in S, at the
+/// game's own steps (the animation hooks do not cut inside it).
+pub const BATTLE_CLIENT: u32 = MODULE_HOOK | 0x44E8;
+/// DllBattle+0x15EA4 (X v1.0 at 0x6BB024): the battle's main update. It calls the state function of its state machine
+/// (a member function pointer at [+0x820]+0, +4) and of its four clients ([+0x828..+0x834] +0x30, +0x34), each a step
+/// of the battle's flow that counts updates (waits, the move's phases), then the scene. In a battle over 30 the state
+/// functions run one pass in S: on the other passes they are swapped for one that returns 0 ("not done yet").
+pub const BATTLE_MAIN: u32 = MODULE_HOOK | 0x15EA4;
+/// DllBattle+0x32F54 (X v1.0 at 0x6D80D4): the battle's proc, called each pass by the game's proc runner (code.bin
+/// 0x393D84): its phase at +0x40 (0 start, 1 the battle, 2 the end: the battle's teardown in steps that count
+/// updates). In a battle over 30 the end runs one pass in S (0, "not done yet", on the other passes).
+pub const BATTLE_PROC: u32 = MODULE_HOOK | 0x32F54;
+/// DllBattle+0x15EA4 (X v1.0 at 0x6BB024): the battle's main update. It calls the state function of its state machine
+/// (a member function pointer at [+0x820]+0, +4) and of its four clients ([+0x828..+0x834] +0x30, +0x34), each a step
+/// of the battle's flow that counts updates (waits, the move's phases), then the scene. In a battle over 30 the state
+/// functions run one pass in S: on the other passes they are swapped for one that returns 0 ("not done yet").
 /// code.bin 0x3006F8: the ARM run-time's signed division with remainder (r0 / r1 -> r0, r1).
 const DIVIDE: u32 = 0x0030_06F8;
 
@@ -90,6 +143,18 @@ fn hook_of(pc: u32) -> XrFn {
         SCENE_ANIMS => Some(scene_anims),
         MOTION => Some(motion),
         ENV_DRIFT => Some(env_drift),
+        RAIL_MOVE => Some(rail_move),
+        ANIM_SET => Some(anim_set),
+        LAYOUT_ANIMS => Some(layout_anims),
+        REQUESTS => Some(requests),
+        BATTLE_PART => Some(battle_part),
+        TASKS => Some(tasks),
+        SEQUENCE => Some(sequence),
+        FACE => Some(face),
+        BATTLE_UI => Some(battle_ui),
+        BATTLE_CLIENT => Some(battle_client),
+        BATTLE_MAIN => Some(battle_main),
+        BATTLE_PROC => Some(battle_proc),
         _ => None,
     }
 }
@@ -100,8 +165,19 @@ pub fn hook_for(pc: u32) -> XrFn {
     static GENERATED: OnceLock<XrFn> = OnceLock::new();
     match pc {
         NAME_LOOKUP => generated(NAME_LOOKUP, &GENERATED).and(hook_of(pc)),
+        // DllBattle's hooked functions, by their offset in its code
+        _ if pc >= 0x0060_0000 && pc < 0x0100_0000 => match battle_code() {
+            Some(code) if pc >= code && pc - code < MODULE_HOOK && HOOKED.contains(&(MODULE_HOOK | (pc - code))) => hook_of(MODULE_HOOK | (pc - code)),
+            _ => hook_of(pc),
+        },
         _ => hook_of(pc),
     }
+}
+
+/// DllBattle's code segment while it is loaded.
+fn battle_code() -> Option<u32> {
+    let st = unsafe { exec().st() };
+    st.sys.cro.modules.iter().rev().find(|m| m.name == "DllBattle").and_then(|m| m.segments.first().copied())
 }
 
 /// The hooked call's frame (its return address and sp), taken at the hook's entry.
@@ -527,7 +603,7 @@ unsafe extern "C" fn motion(c: *mut XrCpu) {
     }
     let s = crate::rate::SCALE.load(Ordering::Relaxed);
     if s <= 1 || !crate::rate::hook_on(2) {
-        return unsafe { original(c, MOTION, e) };
+        return unsafe { original_native(c, MOTION, e) };
     }
     // a speed under 0.5 takes the motion's in-between path, which allocates a buffer the first time: in a battle that
     // allocation fails (and the game writes through null). There the speed is cut to 1/2 at most and the motion runs
@@ -539,7 +615,11 @@ unsafe extern "C" fn motion(c: *mut XrCpu) {
     let obj = unsafe { (*c).r[0] };
     let mut g = unsafe { GuestCalls::new(c, e) };
     let saved = crate::rate::cut_motion(&mut g, obj, if field { s } else { 2 });
-    unsafe { original(c, MOTION, e) };
+    if crate::rate::trace() {
+        use xr_net::Guest;
+        log::log(&format!("rate: motion 0x{obj:08X} lr 0x{:08X} frame {:?} speed {:?} len {:?}", e.ret_lr, g.f32(obj + 0x18), g.f32(obj + 0x24), g.f32(obj + 0x20)));
+    }
+    unsafe { original_native(c, MOTION, e) };
     crate::rate::put_back(&mut unsafe { GuestCalls::new(c, e) }, &saved);
 }
 
@@ -556,6 +636,187 @@ unsafe extern "C" fn env_drift(c: *mut XrCpu) {
     let saved = crate::rate::cut_drifts(&mut g, table, s);
     unsafe { original(c, ENV_DRIFT, e) };
     crate::rate::put_back(&mut unsafe { GuestCalls::new(c, e) }, &saved);
+}
+
+/// The rail step cut to 1/S while the field runs at S (see RAIL_MOVE).
+unsafe extern "C" fn rail_move(c: *mut XrCpu) {
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    static SEEN: std::sync::Once = std::sync::Once::new();
+    SEEN.call_once(|| log::log("frame rate: the rail step hook runs (code.bin 0x3D0458)"));
+    let s = crate::rate::SCALE.load(Ordering::Relaxed);
+    if s > 1 && crate::rate::FIELD_ON.load(Ordering::Relaxed) {
+        // safe: s0 and s1 are the step's arguments, the callee's to change anyway
+        unsafe { (*c).v.s[0] /= s as f32; (*c).v.s[1] /= s as f32 };
+    }
+    unsafe { original_native(c, RAIL_MOVE, e) };
+}
+
+/// The animation set's speeds cut to 1/S while the hooked call runs, then put back (see ANIM_SET).
+unsafe extern "C" fn anim_set(c: *mut XrCpu) {
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    static SEEN: std::sync::Once = std::sync::Once::new();
+    SEEN.call_once(|| log::log("frame rate: the animation set hook runs (code.bin 0x369F08)"));
+    let s = crate::rate::SCALE.load(Ordering::Relaxed);
+    if s <= 1 || !crate::rate::hook_on(8) {
+        return unsafe { original_native(c, ANIM_SET, e) };
+    }
+    let set = unsafe { (*c).r[0] };
+    let mut g = unsafe { GuestCalls::new(c, e) };
+    let saved = crate::rate::cut_anim_set(&mut g, set, s);
+    unsafe { original_native(c, ANIM_SET, e) };
+    crate::rate::put_back(&mut unsafe { GuestCalls::new(c, e) }, &saved);
+}
+
+/// The layout's animation speeds cut to 1/S while the hooked call runs, then put back (see LAYOUT_ANIMS).
+unsafe extern "C" fn layout_anims(c: *mut XrCpu) {
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    static SEEN: std::sync::Once = std::sync::Once::new();
+    SEEN.call_once(|| log::log("frame rate: the layout animation hook runs (code.bin 0x14DEC4)"));
+    let s = crate::rate::SCALE.load(Ordering::Relaxed);
+    if s <= 1 || !crate::rate::hook_on(16) {
+        return unsafe { original_native(c, LAYOUT_ANIMS, e) };
+    }
+    let work = unsafe { (*c).r[0] };
+    let mut g = unsafe { GuestCalls::new(c, e) };
+    let saved = crate::rate::cut_layout_anims(&mut g, work, s);
+    unsafe { original_native(c, LAYOUT_ANIMS, e) };
+    crate::rate::put_back(&mut unsafe { GuestCalls::new(c, e) }, &saved);
+}
+
+/// The request queue's pass, one pass in S in a battle over 30 (see REQUESTS).
+unsafe extern "C" fn requests(c: *mut XrCpu) {
+    unsafe { one_in_s(c, REQUESTS) }
+}
+
+/// A task list's pass in a battle over 30 (see TASKS): its moves every pass at 1/S, the rest one pass in S.
+unsafe extern "C" fn tasks(c: *mut XrCpu) {
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    let (Some(s), Some(code)) = (crate::rate::battle_scale(), battle_code()) else { return unsafe { original_native(c, TASKS, e) } };
+    let all = crate::rate::PASSES.load(Ordering::Relaxed) % u64::from(s) == 0;
+    let list = unsafe { (*c).r[0] };
+    let swapped = crate::rate::battle_tasks(&mut unsafe { GuestCalls::new(c, e) }, list, code, s, all);
+    unsafe { original_native(c, TASKS, e) };
+    crate::rate::put_back_tasks(&mut unsafe { GuestCalls::new(c, e) }, &swapped, code);
+}
+
+/// A timeline's frame, one pass in S in a battle over 30 (see SEQUENCE).
+unsafe extern "C" fn sequence(c: *mut XrCpu) {
+    unsafe { one_in_s(c, SEQUENCE) }
+}
+
+/// A battle Pokemon's face, one pass in S in a battle over 30 (see FACE).
+unsafe extern "C" fn face(c: *mut XrCpu) {
+    unsafe { one_in_s(c, FACE) }
+}
+
+/// The battle's command screens, one pass in S in a battle over 30 (see BATTLE_UI).
+unsafe extern "C" fn battle_ui(c: *mut XrCpu) {
+    unsafe { battle_module(c, BATTLE_UI) }
+}
+
+/// The battle client, one pass in S in a battle over 30 (see BATTLE_CLIENT).
+unsafe extern "C" fn battle_client(c: *mut XrCpu) {
+    unsafe { battle_module(c, BATTLE_CLIENT) }
+}
+
+/// The battle's proc (see BATTLE_PROC): its end one pass in S in a battle over 30.
+unsafe extern "C" fn battle_proc(c: *mut XrCpu) {
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    let Some(code) = battle_code() else { return };
+    let f = code + (BATTLE_PROC & !MODULE_HOOK);
+    let this = unsafe { (*c).r[0] };
+    let phase = { use xr_net::Guest; unsafe { GuestCalls::new(c, e) }.u32(this.wrapping_add(0x40)) };
+    if phase != Some(1) {
+        crate::rate::BATTLE_READY.store(false, Ordering::Relaxed);
+    }
+    let skip = phase == Some(2) && crate::rate::battle_scale().is_some_and(|s| crate::rate::PASSES.load(Ordering::Relaxed) % u64::from(s) != 0);
+    if skip {
+        unsafe { (*c).r[0] = 0 };
+        return;
+    }
+    unsafe { original_native(c, f, e) }
+}
+
+/// The battle's main update (see BATTLE_MAIN): its state functions one pass in S in a battle over 30.
+unsafe extern "C" fn battle_main(c: *mut XrCpu) {
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    let Some(code) = battle_code() else { return };
+    let f = code + (BATTLE_MAIN & !MODULE_HOOK);
+    {
+        // ready once the scene's state machine (DllBattle 0x71A210: state u8 +0x694 of the scene [this+0x14]) is past
+        // its loads: its first state (DllBattle 0x6E446C, step u32 +0x6B8) at the intro's step 0x14 or later
+        use xr_net::Guest;
+        let mut g = unsafe { GuestCalls::new(c, e) };
+        let scene = g.u32(unsafe { (*c).r[0] }.wrapping_add(0x14)).filter(|&v| v != 0);
+        let ready = scene.is_some_and(|v| g.u8(v.wrapping_add(0x694)) != Some(0) || g.u32(v.wrapping_add(0x6B8)).is_some_and(|n| n >= 0x14));
+        crate::rate::BATTLE_READY.store(ready, Ordering::Relaxed);
+    }
+    let off = crate::rate::battle_scale().filter(|&s| crate::rate::PASSES.load(Ordering::Relaxed) % u64::from(s) != 0);
+    if off.is_none() {
+        return unsafe { original_native(c, f, e) };
+    }
+    let this = unsafe { (*c).r[0] };
+    let swapped = crate::rate::battle_states_off(&mut unsafe { GuestCalls::new(c, e) }, this, code);
+    static SEEN: std::sync::Once = std::sync::Once::new();
+    SEEN.call_once(|| log::log(&format!("frame rate: the battle's main update hook runs ({} words off)", swapped.len())));
+    unsafe { original_native(c, f, e) };
+    crate::rate::put_back_states(&mut unsafe { GuestCalls::new(c, e) }, &swapped);
+}
+
+/// A DllBattle function hooked by its offset (`key`): runs on one pass in S in a battle over 30, with the animation
+/// hooks' cuts off inside it (it steps at the game's 30).
+unsafe fn battle_module(c: *mut XrCpu, key: u32) {
+    // only DllBattle reaches these (through xr_lookup while it is placed)
+    let Some(code) = battle_code() else { return };
+    let f = code + (key & !MODULE_HOOK);
+    let bit = if key == BATTLE_UI { 32 } else { 64 };
+    let Some(s) = crate::rate::battle_scale().filter(|_| crate::rate::hook_on(bit)) else { return unsafe { original_native(c, f, entry(c)) } };
+    if crate::rate::PASSES.load(Ordering::Relaxed) % u64::from(s) != 0 {
+        // a state function of the battle's: 0 is "not done yet", what it returns while it waits
+        unsafe { (*c).r[0] = 0 };
+        return;
+    }
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    crate::rate::SCALE.store(1, Ordering::Relaxed);
+    unsafe { original_native(c, f, e) };
+    crate::rate::SCALE.store(s, Ordering::Relaxed);
+}
+
+/// Runs the hooked function `f` (one that returns nothing the caller uses) on one pass in S in a battle over 30.
+unsafe fn one_in_s(c: *mut XrCpu, f: u32) {
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    if let Some(s) = crate::rate::battle_scale() {
+        if crate::rate::PASSES.load(Ordering::Relaxed) % u64::from(s) != 0 {
+            return;
+        }
+    }
+    unsafe { original_native(c, f, e) };
+}
+
+/// DllBattle's own per-update steps that reach code.bin first (see BATTLE_PART): cut to 1/S in a battle over 30.
+unsafe extern "C" fn battle_part(c: *mut XrCpu) {
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    if let Some(s) = crate::rate::battle_scale() {
+        let st = unsafe { exec().st() };
+        let code = st.sys.cro.modules.iter().rev().find(|m| m.name == "DllBattle").and_then(|m| m.segments.first().copied());
+        if let Some(code) = code {
+            static SEEN: std::sync::Once = std::sync::Once::new();
+            SEEN.call_once(|| log::log(&format!("frame rate: the battle site hook runs (DllBattle code at 0x{code:08X})")));
+            let r4 = unsafe { (*c).r[4] };
+            let mut g = unsafe { GuestCalls::new(c, e) };
+            crate::rate::battle_site(&mut g, e.ret_lr.wrapping_sub(code), r4, s);
+        }
+    }
+    unsafe { original_native(c, BATTLE_PART, e) };
 }
 
 unsafe extern "C" fn load(c: *mut XrCpu) {
@@ -652,7 +913,11 @@ mod tests {
                 .lines()
                 .map(|l| l.split('#').next().unwrap().trim())
                 .filter(|l| !l.is_empty())
-                .map(|l| u32::from_str_radix(l.split_whitespace().next().unwrap().trim_start_matches("0x"), 16).unwrap())
+                .map(|l| {
+                    let w = l.split_whitespace().next().unwrap();
+                    let (module, a) = w.split_once('+').map_or((false, w), |(_, off)| (true, off));
+                    u32::from_str_radix(a.trim_start_matches("0x"), 16).unwrap() | if module { super::MODULE_HOOK } else { 0 }
+                })
                 .collect();
             assert_eq!(listed, super::HOOKED, "{path}");
         }
