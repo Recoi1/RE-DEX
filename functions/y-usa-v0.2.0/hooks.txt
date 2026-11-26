@@ -1,6 +1,10 @@
-# guest function start addresses that native code may replace; one per line
+# guest function start addresses that native code may replace; one per line (`virtual` after one the game also calls
+# through pointers: xr_lookup hands out its hook too)
 0x0015F860  # 0: the main loop's per-frame call (code.bin 0x1066D8 calls it each pass, between procs): xr-net's puppet tick
 0x00433B20  # 1: the field save (writes FieldMoveModelSave): xr-net sweeps the puppets around it
 0x003D41D8  # 2: move-model Create: with the pool full xr-net deletes a puppet first (a full pool hangs the game)
 0x003D6DF0  # 3: the zone NPC loader (from code.bin 0x3B8B88): puppets wait for it, so they allocate after the zone's NPCs
 0x004CE1B4  # 4: a name's hash looked up in a table (Amie's hot spot): done natively, clock-exact (xr-runtime hooks.rs name_lookup)
+0x002ECD20 virtual  # 5: a scene node's animations go on a step each update (also called through its vtable): the Frame rate over 30 cuts the steps (xr-runtime rate.rs)
+0x0039664C  # 6: a model's motion goes on by its speed each update: the Frame rate over 30 cuts the speed (xr-runtime rate.rs)
+0x0045B734  # 7: the environment's 8 slow drifts go on by their speeds each update: the Frame rate over 30 cuts them (xr-runtime rate.rs)

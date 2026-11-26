@@ -86,6 +86,9 @@ pub struct DspState {
     #[serde(skip)]
     pub output: Vec<[i16; 2]>,
     pub(crate) aac: super::dsp_aac::Aac,
+    /// XR_AUDIO_NO_BGM: where the music is (made again after a saved state, as the game decodes on)
+    #[serde(skip)]
+    pub(crate) music: super::dsp_bgm::Music,
 }
 
 /// the most output kept for a frontend that isn't taking it, about a second's worth
@@ -355,8 +358,9 @@ pub fn advance(system: &mut System) {
     };
     let read = super::dsp_voices::current_region(&mut system.memory, voices);
     let dsp = &mut system.services.dsp;
-    let mixes = dsp.voices.tick(&mut system.memory, voices);
-    let frame = dsp.mixer.tick(&mut system.memory, mixer, read, mixes);
+    let music = super::dsp_bgm::no_bgm().then_some(&dsp.music.pcm);
+    let (mixes, host) = dsp.voices.tick(&mut system.memory, voices, music);
+    let frame = dsp.mixer.tick(&mut system.memory, mixer, read, mixes, host);
     dsp.output.extend_from_slice(&frame);
     if dsp.output.len() > MAX_OUTPUT {
         let excess = dsp.output.len() - MAX_OUTPUT;

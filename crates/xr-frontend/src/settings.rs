@@ -625,6 +625,9 @@ pub struct Settings {
     /// Responsive movement, w/ Smooth motion on: the trainer and the field camera drawn ahead from the input in the
     /// pictures in between (render side only); off they're Smooth motion's, bit for bit. Experimental: off by default
     pub responsive_movement: bool,
+    /// Frame rate (experimental): the updates a second the game's logic runs at where RE:DEX can run it faster at
+    /// the game's own speed (the field for now), 30 the game's own; 60, 120 or 240 turn Smooth motion off
+    pub frame_rate: u32,
     /// window size, times the console's
     pub scale: u32,
     /// where the window was and its size, the frame's top left and the inside's width and height in pixels, for next time
@@ -704,6 +707,21 @@ pub struct Settings {
     pub ui_sounds: bool,
 }
 
+/// The Frame rate choices.
+pub const FRAME_RATES: [u32; 4] = [30, 60, 120, 240];
+
+impl Settings {
+    /// the Frame rate the game runs at: the setting's, or 30 for a value no choice has
+    pub fn frame_rate(&self) -> u32 {
+        if FRAME_RATES.contains(&self.frame_rate) { self.frame_rate } else { 30 }
+    }
+
+    /// the Smooth motion that runs: none with a Frame rate over 30, whose pictures are the game's own
+    pub fn smooth_motion(&self) -> SmoothMotion {
+        if self.frame_rate() > 30 { SmoothMotion::Off } else { self.frame_interpolation }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
@@ -716,6 +734,7 @@ impl Default for Settings {
             frame_interpolation: SmoothMotion::Off,
             smooth_motion: None,
             responsive_movement: false,
+            frame_rate: 30,
             scale: 2,
             window: None,
             layout: Screens::Stacked,

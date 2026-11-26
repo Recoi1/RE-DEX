@@ -11,11 +11,16 @@
 //! t = 1, and each is compared byte for byte with the game's own (logged).
 //! The screens are drawn on a device of the run's own and shown straight from it, as a window's are. Display only:
 //! nothing here writes game memory.
+//! The sound of the same frames goes to `DIR/audio.wav` (the frames whose script frame is in FROM..TO, from the first
+//! frame in on; finished once the script clock passes TO, or at the run's end), and each row's `audio_sample` is that
+//! file's length in samples after its frame: a frame's sound is the samples since the row before's. The run's whole
+//! `logs/audio.wav` is written beside it as always; neither is kept in memory.
 
 use std::io::Write;
 use std::path::PathBuf;
 
 use crate::exec::Machine;
+use crate::wav::Wav;
 use zakuro_common::Screen;
 
 pub struct Inbetweens {
@@ -31,6 +36,8 @@ pub struct Inbetweens {
     same: (u32, u32),
     /// pictures saved so far
     saved: u64,
+    /// the sound of the frames in FROM..TO, till finished
+    audio: Option<Wav>,
 }
 
 impl Inbetweens {
@@ -41,7 +48,8 @@ impl Inbetweens {
         let file = std::fs::File::create(dir.join("inbetweens.csv")).map_err(|e| format!("{dir:?}: {e}"))?;
         let mut csv = std::io::BufWriter::new(file);
         let head: Vec<String> = (0..16).map(|i| format!("vp{i}")).chain(["x", "y", "z"].map(String::from)).collect();
-        writeln!(csv, "frame,gap,steps,{}", head.join(",")).map_err(|e| e.to_string())?;
+        writeln!(csv, "frame,gap,steps,{},audio_sample", head.join(",")).map_err(|e| e.to_string())?;
+        let audio = Some(Wav::create(&dir.join("audio.wav"))?);
         Ok(Some(Inbetweens {
             dir,
             from: number("XR_INBETWEENS_FROM").unwrap_or(0),
@@ -53,6 +61,7 @@ impl Inbetweens {
             last: None,
             same: (0, 0),
             saved: 0,
+            audio,
         }))
     }
 
@@ -77,9 +86,16 @@ impl Inbetweens {
         crate::log::log(&format!("XR_INBETWEENS: pictures in between for {} Hz into {}", self.hz, self.dir.display()));
     }
 
-    /// after script frame t (frame n run) ran: a new top picture's pictures in between and its own, w/ the camera and
-    /// the player
-    pub fn frame(&mut self, m: &mut Machine, t: u64, n: u64) {
+    /// the dump's sound done: its WAV's header says how long it is
+    pub fn finish(&mut self) {
+        if let Some(mut w) = self.audio.take() {
+            w.finish("XR_INBETWEENS: audio.wav");
+        }
+    }
+
+    /// after script frame t (frame n run) ran, w/ the sound it made: a new top picture's pictures in between and its
+    /// own, w/ the camera and the player
+    pub fn frame(&mut self, m: &mut Machine, t: u64, n: u64, sound: &[[i16; 2]]) {
         let s = m.system();
         // every 600 frames: what the pictures in between take and K (the VRAM guard's soak)
         if n % 600 == 0 {
@@ -92,11 +108,18 @@ impl Inbetweens {
         if std::env::var_os("ZAKURO_INTERP_TRACE").is_some_and(|v| v == "window") {
             zakuro_gpu::set_interpolation_trace((self.from..=self.to).contains(&t));
         }
+        if t > self.to {
+            self.finish();
+        }
         if t < self.from || t > self.to {
             return;
         }
         if self.saved >= self.max {
+            self.finish();
             crate::log::stop(0, &format!("XR_INBETWEENS: {} pictures saved (XR_INBETWEENS_MAX), the run ends", self.saved));
+        }
+        if let Some(w) = &mut self.audio {
+            w.push(sound);
         }
         if self.last.replace(s.cadence.pictures) == Some(s.cadence.pictures) {
             return;
@@ -152,7 +175,8 @@ impl Inbetweens {
             Some(pos) => pos.iter().map(|v| v.to_string()).collect(),
             None => vec![String::new(); 3],
         };
-        let _ = writeln!(self.csv, "{n},{},{},{},{}", motion.gap, motion.steps, vp.join(","), pos.join(","));
+        let samples = self.audio.as_ref().map_or(0, |w| w.samples);
+        let _ = writeln!(self.csv, "{n},{},{},{},{},{samples}", motion.gap, motion.steps, vp.join(","), pos.join(","));
         let _ = self.csv.flush();
     }
 }

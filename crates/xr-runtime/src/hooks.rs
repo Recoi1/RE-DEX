@@ -18,7 +18,7 @@ use xr_net::x::puppet::Puppets;
 
 /// hooks.txt's lines, in order (`hooks_txt_matches` checks the file). New hooks go at the end: a DLL built with the
 /// list's first k (k >= REQUIRED) still runs with this redex (game.rs), it just never calls the hooks after them.
-pub const HOOKED: [u32; 5] = [TICK, SAVE, CREATE, LOAD, NAME_LOOKUP];
+pub const HOOKED: [u32; 8] = [TICK, SAVE, CREATE, LOAD, NAME_LOOKUP, SCENE_ANIMS, MOTION, ENV_DRIFT];
 /// The hooks every DLL with hooks must have (the multiplayer ones, TICK to LOAD); the ones after are speed-ups.
 pub const REQUIRED: usize = 4;
 /// code.bin 0x15F860: the main loop (code.bin 0x1066D8) calls it once per pass, outside every proc's update.
@@ -35,6 +35,17 @@ pub const LOAD: u32 = 0x003D_6DF0;
 /// code.bin 0x4CE1B4 (X and Y alike): a name's hash looked up in a table by a linear search that divides for the
 /// table's length on every step (code.bin 0x3006F8). Amie spends most of its CPU in the two; see `name_lookup`.
 pub const NAME_LOOKUP: u32 = 0x004C_E1B4;
+/// code.bin 0x2ECD20 (X and Y alike): a scene node's animations go on a step each update (r1 the node: its +0xDC list
+/// steps by +0x25C into +0x254, its +0xCC list by +0x16C into +0x164, then its children, +0xBC, through 0x2D2B5C).
+/// With the Frame rate over 30 each step is cut to 1/S for the call (rate.rs).
+pub const SCENE_ANIMS: u32 = 0x002E_CD20;
+/// code.bin 0x39664C (X and Y alike): a model's motion goes on: frame (+0x18) + speed (+0x24), the speed set again
+/// each update by the game. With the Frame rate over 30 the speed is cut to 1/S for the call.
+pub const MOTION: u32 = 0x0039_664C;
+/// code.bin 0x45B734 (X and Y alike): the environment's 8 slow drifts (r0 the table: each 0x24 bytes, an
+/// angle at +0x18 and a second value at +0x1C both going on by the speed at +0x20 each update). With the Frame rate
+/// over 30 the speeds are cut to 1/S for the call.
+pub const ENV_DRIFT: u32 = 0x0045_B734;
 /// code.bin 0x3006F8: the ARM run-time's signed division with remainder (r0 / r1 -> r0, r1).
 const DIVIDE: u32 = 0x0030_06F8;
 
@@ -58,6 +69,8 @@ pub fn try_puppets() -> Option<MutexGuard<'static, Option<Puppets>>> {
 
 /// Passes of the per-frame hook: 0 after many frames means xgame.dll was built without the hooks.
 pub static TICKS: AtomicU64 = AtomicU64::new(0);
+/// Cycles of refreshes not yet counted as a puppet tick (see `tick`).
+static PUPPET_CYCLES: AtomicU64 = AtomicU64::new(0);
 /// The game function a puppet call is in right now (0: none): the main loop logs it when TICKS stops moving.
 pub static IN_CALL: AtomicU32 = AtomicU32::new(0);
 
@@ -74,6 +87,9 @@ fn hook_of(pc: u32) -> XrFn {
         CREATE => Some(create),
         LOAD => Some(load),
         NAME_LOOKUP => Some(name_lookup),
+        SCENE_ANIMS => Some(scene_anims),
+        MOTION => Some(motion),
+        ENV_DRIFT => Some(env_drift),
         _ => None,
     }
 }
@@ -123,6 +139,17 @@ unsafe fn original(c: *mut XrCpu, f: u32, e: Entry) {
     unsafe { interp::interp_entry(c, f, e.ret_lr, e.ret_sp) };
 }
 
+/// Runs a `virtual` hook's function itself: `xr_lookup` hands out the hook for its address (hooks.txt), so not through
+/// it; interpreted when XR_INTERP_ALL is on or the DLL has no such function.
+unsafe fn original_native(c: *mut XrCpu, f: u32, e: Entry) {
+    static INTERP_ALL: OnceLock<bool> = OnceLock::new();
+    let all = *INTERP_ALL.get_or_init(|| std::env::var_os("XR_INTERP_ALL").is_some());
+    match exec().lookup_native(f).filter(|_| !all) {
+        Some(native) => unsafe { crate::bridge::enter_native(c, native, e.ret_lr, e.ret_sp) },
+        None => unsafe { original(c, f, e) },
+    }
+}
+
 /// The name of the guest thread running now (for the log).
 fn thread_name() -> String {
     let k = &unsafe { exec().st() }.sys.kernel;
@@ -149,6 +176,10 @@ unsafe extern "C" fn tick(c: *mut XrCpu) {
     let _hook = unsafe { InHook::new(c) };
     let e = unsafe { entry(c) };
     unsafe { original(c, TICK, e) };
+    let rate = crate::rate::rate(&unsafe { exec().st() }.sys);
+    let battle = unsafe { exec().st() }.sys.cro.modules.iter().any(|m| m.name == "DllBattle");
+    let cycles = crate::rate::tick(&mut unsafe { GuestCalls::new(c, e) }, dll_field(), battle, rate);
+    unsafe { exec().st() }.sys.frame_cycles = cycles;
     if TICKS.fetch_add(1, Ordering::Relaxed) == 0 {
         log::log(&format!("puppets: the per-frame hook runs on guest thread '{}'", thread_name()));
     }
@@ -190,6 +221,15 @@ unsafe extern "C" fn tick(c: *mut XrCpu) {
     if crate::preview::ON.load(Ordering::Relaxed) {
         crate::preview::tick(&mut unsafe { GuestCalls::new(c, e) }, dll_field());
     }
+    // puppets keep a console frame's pace (their speeds and waits are per 60 Hz tick): over 60 the refreshes are
+    // shorter, and only the ones that finish a console frame's worth of cycles tick them
+    // shortcut: puppets move 60 times a second at a Frame rate of 120 or 240; per-tick speeds scaled by the
+    // refresh's cycles would make them as smooth as the rest
+    let due = PUPPET_CYCLES.fetch_add(cycles, Ordering::Relaxed) + cycles;
+    if due < xr_hle::CYCLES_PER_FRAME {
+        return;
+    }
+    PUPPET_CYCLES.store(due - xr_hle::CYCLES_PER_FRAME, Ordering::Relaxed);
     // the main loop never holds the lock across a frame; a failed try is a tick missed, not a wait
     let Some(mut lock) = try_puppets() else { return };
     if let Some(p) = lock.as_mut() {
@@ -461,6 +501,63 @@ unsafe extern "C" fn name_lookup(c: *mut XrCpu) {
     }
 }
 
+/// The scene node's animation steps cut to 1/S while the hooked call runs, then put back (see SCENE_ANIMS).
+unsafe extern "C" fn scene_anims(c: *mut XrCpu) {
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    static SEEN: std::sync::Once = std::sync::Once::new();
+    SEEN.call_once(|| log::log("frame rate: the scene animation hook runs (code.bin 0x2ECD20)"));
+    let s = crate::rate::SCALE.load(Ordering::Relaxed);
+    if s <= 1 || !crate::rate::hook_on(1) {
+        return unsafe { original_native(c, SCENE_ANIMS, e) };
+    }
+    let node = unsafe { (*c).r[1] };
+    let mut g = unsafe { GuestCalls::new(c, e) };
+    let saved = crate::rate::cut_steps(&mut g, node, s);
+    unsafe { original_native(c, SCENE_ANIMS, e) };
+    crate::rate::put_back(&mut unsafe { GuestCalls::new(c, e) }, &saved);
+}
+
+/// The motion's speed cut to 1/S while the hooked call runs, then put back (see MOTION).
+unsafe extern "C" fn motion(c: *mut XrCpu) {
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    if crate::rate::MOTION_CALLS.fetch_add(1, Ordering::Relaxed) == 0 {
+        log::log("frame rate: the motion hook runs (code.bin 0x39664C)");
+    }
+    let s = crate::rate::SCALE.load(Ordering::Relaxed);
+    if s <= 1 || !crate::rate::hook_on(2) {
+        return unsafe { original(c, MOTION, e) };
+    }
+    // a speed under 0.5 takes the motion's in-between path, which allocates a buffer the first time: in a battle that
+    // allocation fails (and the game writes through null). There the speed is cut to 1/2 at most and the motion runs
+    // on every (S / 2)th pass only
+    let field = crate::rate::FIELD_ON.load(Ordering::Relaxed);
+    if !field && crate::rate::PASSES.load(Ordering::Relaxed) % u64::from(s / 2) != 0 {
+        return;
+    }
+    let obj = unsafe { (*c).r[0] };
+    let mut g = unsafe { GuestCalls::new(c, e) };
+    let saved = crate::rate::cut_motion(&mut g, obj, if field { s } else { 2 });
+    unsafe { original(c, MOTION, e) };
+    crate::rate::put_back(&mut unsafe { GuestCalls::new(c, e) }, &saved);
+}
+
+/// The environment's drift speeds cut to 1/S while the hooked call runs, then put back (see ENV_DRIFT).
+unsafe extern "C" fn env_drift(c: *mut XrCpu) {
+    let _hook = unsafe { InHook::new(c) };
+    let e = unsafe { entry(c) };
+    let s = crate::rate::SCALE.load(Ordering::Relaxed);
+    if s <= 1 || !crate::rate::hook_on(4) {
+        return unsafe { original(c, ENV_DRIFT, e) };
+    }
+    let table = unsafe { (*c).r[0] };
+    let mut g = unsafe { GuestCalls::new(c, e) };
+    let saved = crate::rate::cut_drifts(&mut g, table, s);
+    unsafe { original(c, ENV_DRIFT, e) };
+    crate::rate::put_back(&mut unsafe { GuestCalls::new(c, e) }, &saved);
+}
+
 unsafe extern "C" fn load(c: *mut XrCpu) {
     let _hook = unsafe { InHook::new(c) };
     let e = unsafe { entry(c) };
@@ -555,7 +652,7 @@ mod tests {
                 .lines()
                 .map(|l| l.split('#').next().unwrap().trim())
                 .filter(|l| !l.is_empty())
-                .map(|l| u32::from_str_radix(l.trim_start_matches("0x"), 16).unwrap())
+                .map(|l| u32::from_str_radix(l.split_whitespace().next().unwrap().trim_start_matches("0x"), 16).unwrap())
                 .collect();
             assert_eq!(listed, super::HOOKED, "{path}");
         }

@@ -120,11 +120,29 @@ fn decode(system: &mut System, request: &[u8; MESSAGE]) -> [u8; MESSAGE] {
         return answer;
     }
 
+    // XR_AUDIO_NO_BGM: whose music this is, from the RomFS the title reads (dsp_bgm.rs)
+    let bgm = super::dsp_bgm::no_bgm().then(|| {
+        let s = &mut system.services;
+        let romfs = s.fs.files.values().find_map(|f| match &f.backing {
+            super::fs::FileBacking::RomImage { image, offset, .. } if f.path == "romfs:/" => Some((image.clone(), *offset)),
+            _ => None,
+        })?;
+        let music = &mut s.dsp.music;
+        music.tracks.get_or_insert_with(|| {
+            let tracks = super::dsp_bgm::Music::tracks_of(romfs.0.data(), romfs.1);
+            log::info!("XR_AUDIO_NO_BGM: {} music files in the RomFS, {} of them background music", tracks.len(), tracks.iter().filter(|t| t.bgm).count());
+            tracks
+        });
+        music.of(romfs.0.data(), &data)
+    });
     for (channel, target) in channels.iter().zip([left, right]) {
         if target < FCRAM {
             continue;
         }
         let bytes: Vec<u8> = channel.iter().flat_map(|sample| sample.to_le_bytes()).collect();
+        if let Some(bgm) = bgm {
+            system.services.dsp.music.pcm.set(target, bytes.len() as u32, bgm);
+        }
         let address = super::gsp::physical_to_virtual(system, target);
         system.write_from_service(address, &bytes);
     }

@@ -43,7 +43,9 @@ mod log;
 mod mem;
 mod preview;
 mod progress;
+mod rate;
 mod script;
+mod wav;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -575,6 +577,12 @@ Playing offline."));
     let config = xr_hle::Config { hardware_renderer: window.hardware.unwrap_or(false), resolution: window.resolution.unwrap_or(1), ..config };
     // XR_INBETWEENS=DIR: Smooth motion's pictures in between saved (see inbetweens.rs)
     let mut inbetweens = inbetweens::Inbetweens::from_env()?;
+    // XR_AUDIO_NO_BGM=1 (headless captures): the sound w/o the game's background music, its effects, cries, fanfares and
+    // ambience kept (xr-hle's dsp_bgm.rs); only what is heard changes, never the game
+    if std::env::var_os("XR_AUDIO_NO_BGM").is_some_and(|v| v == "1") {
+        xr_hle::services::dsp_bgm::set_no_bgm(true);
+        log::log("XR_AUDIO_NO_BGM: the background music is left out of the sound");
+    }
     let config = if inbetweens.is_some() { inbetweens::Inbetweens::config(config)? } else { config };
     let mut m = exec::Machine::boot(&cci, &build, config)?;
     if let Some(i) = &inbetweens {
@@ -650,7 +658,7 @@ Playing offline."));
     m.system().cadence.on = framestats || inbetweens.is_some();
     // n counts frames; t is the script's clock: the same as n, except that with `autobattle` it waits while a battle is
     // on and the battle gets A (FIGHT, text) and, when the move screen is up, a touch at the move, every 40 frames
-    let (mut n, mut t, mut sound, mut seen, mut next) = (0u64, 0u64, Vec::new(), Vec::<(String, String)>::new(), 0);
+    let (mut n, mut t, mut sound, mut seen, mut next) = (0u64, 0u64, wav::Wav::create(&logs.join("audio.wav"))?, Vec::<(String, String)>::new(), 0);
     // autobattle: moves picked so far, this turn's touch, the frame a heal sequence started
     // and the HP last read on the move screen (the command screen's camera hides the HP box)
     // (healing: the frame a heal, PP or replacement sequence started, and which; pp_at: picks at the last PP one)
@@ -674,6 +682,8 @@ Playing offline."));
     // `catch`: this battle's foe (species, from its battle record), the balls thrown at it, catches made this run
     let (mut foe, mut throws, mut catches) = (None::<u16>, 0u32, 0u32);
     let input_log = std::env::var_os("XR_INPUTLOG").is_some();
+    let console_clock = std::env::var("XR_SCRIPT_CLOCK").is_ok_and(|v| v == "console");
+    let mut clock_cycles = 0u64;
     let peek_at: Vec<u64> = std::env::var("XR_PEEK_AT").unwrap_or_default().split(',').filter_map(|v| v.trim().parse().ok()).collect();
     let pace = realtime.then(std::time::Instant::now);
     if let Some(p) = &state_load {
@@ -758,7 +768,7 @@ Playing offline."));
                             if wanted && throws < 5 {
                                 healing = Some((n, 3));
                                 throws += 1;
-                                log::log(&format!("autobattle: catch: ball {throws} at species {}", foe.unwrap_or(0)));
+                                log::log(&format!("autobattle: catch: ball {throws} at species {} at frame {n} (script frame {t})", foe.unwrap_or(0)));
                             } else if a.heal.as_ref().is_some_and(|h| {
                                 last_hp.is_some_and(|hp| hp < h.1) || blind >= 3 && (!a.newer() || last_hp.is_some_and(|hp| hp < h.1 + 30))
                             }) {
@@ -1034,7 +1044,17 @@ Playing offline."));
                 }
             }
             let waiting = waits.get(next_wait).is_some_and(|w| w.at <= t);
-            t += (!battle && !waiting) as u64;
+            // XR_SCRIPT_CLOCK=console: the script's frames are console refreshes of time, so a Frame rate over 60 (its
+            // refreshes shorter) runs a script at the same pace in time as 30 does
+            if !battle && !waiting {
+                if console_clock {
+                    clock_cycles += m.system().frame_cycles;
+                    t += clock_cycles / xr_hle::CYCLES_PER_FRAME;
+                    clock_cycles %= xr_hle::CYCLES_PER_FRAME;
+                } else {
+                    t += 1;
+                }
+            }
             if let Some(start) = pace {
                 // 60 frames a second from the start, so a slow frame is made up and the run does not drift
                 let due = start + std::time::Duration::from_secs_f64(n as f64 / 60.0);
@@ -1047,9 +1067,10 @@ Playing offline."));
             save_screens(&mut m, &logs, "");
             log::stop(4, &format!("autobattle: {n} frames ran and the script clock is still at {t} of {} (a battle that never ends?)", frames.unwrap_or(0)));
         }
-        sound.extend(m.take_audio());
+        let audio = m.take_audio();
+        sound.push(&audio);
         if let Some(i) = inbetweens.as_mut().filter(|_| outcome == FrameOutcome::Completed) {
-            i.frame(&mut m, t, n);
+            i.frame(&mut m, t, n, &audio);
         }
         let done = frames.is_some_and(|f| t >= f);
         status(&mut m, n, done || outcome != FrameOutcome::Completed);
@@ -1111,7 +1132,10 @@ Playing offline."));
             }
         }
         if last {
-            save_sound(&sound, &logs.join("audio.wav"));
+            sound.finish("audio");
+            if let Some(i) = inbetweens.as_mut() {
+                i.finish();
+            }
             if let Some(f) = &frame_times {
                 let rows = f.iter().enumerate().map(|(i, (us, net, on))| format!("{i},{us},{net},{}\n", *on as u8));
                 let _ = std::fs::write(logs.join("frametimes.csv"), std::iter::once("frame,us,net_us,online\n".to_string()).chain(rows).collect::<String>());
@@ -2664,30 +2688,6 @@ fn status(m: &mut exec::Machine, n: u64, last: bool) {
             s.status_line(),
             s.services_seen.iter().cloned().collect::<Vec<_>>().join(" ")
         ));
-    }
-}
-
-/// The game's sound (stereo, 32728 Hz) as a 16-bit WAV, and a log line saying how much of it is not silence.
-fn save_sound(sound: &[[i16; 2]], path: &std::path::Path) {
-    let loud = sound.iter().filter(|s| s != &&[0, 0]).count();
-    let peak = sound.iter().flatten().map(|s| s.unsigned_abs()).max().unwrap_or(0);
-    log::log(&format!("audio: {} samples, {loud} not silent, peak {peak}", sound.len()));
-    let rate = xr_hle::AUDIO_SAMPLE_RATE.round() as u32;
-    let data = (sound.len() * 4) as u32;
-    let mut wav = Vec::with_capacity(44 + data as usize);
-    for part in [&b"RIFF"[..], &(36 + data).to_le_bytes(), b"WAVEfmt ", &16u32.to_le_bytes(), &1u16.to_le_bytes(), &2u16.to_le_bytes()] {
-        wav.extend_from_slice(part);
-    }
-    for part in [rate.to_le_bytes(), (rate * 4).to_le_bytes()] {
-        wav.extend_from_slice(&part);
-    }
-    wav.extend_from_slice(&4u16.to_le_bytes());
-    wav.extend_from_slice(&16u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data.to_le_bytes());
-    wav.extend(sound.iter().flatten().flat_map(|s| s.to_le_bytes()));
-    if let Err(e) = std::fs::write(path, wav) {
-        log::log(&format!("{}: {e}", path.display()));
     }
 }
 

@@ -638,7 +638,8 @@ impl Default for Voices {
 
 impl Voices {
     /// one audio frame, take in what the title changed, play, report, return the three intermediate mixes the voices made
-    pub fn tick(&mut self, memory: &mut Memory, layout: Layout) -> [QuadFrame; 3] {
+    /// (w/ music, the PCM the background music was decoded to: the same mixes w/o the voices playing from it too)
+    pub fn tick(&mut self, memory: &mut Memory, layout: Layout, music: Option<&super::dsp_bgm::Tags>) -> ([QuadFrame; 3], Option<[QuadFrame; 3]>) {
         let read = current_region(memory, layout);
         let write = 1 - read;
         if log::log_enabled!(log::Level::Trace) {
@@ -653,6 +654,7 @@ impl Voices {
         let statuses = layout.statuses + write * REGION_STRIDE;
 
         let mut mixes = [[[0; FRAME_SAMPLES]; 4]; 3];
+        let mut host = music.map(|_| mixes);
         for (index, voice) in self.voices.iter_mut().enumerate() {
             let base = configurations + index as u32 * CONFIG_SIZE;
             let was_enabled = voice.enabled;
@@ -677,10 +679,17 @@ impl Voices {
             if voice.enabled {
                 voice.play_frame(memory);
             }
+            let bgm = music.zip(voice.playing).is_some_and(|(m, b)| m.at(b.address) == Some(true));
+            if let Some(host) = host.as_mut().filter(|_| !bgm) {
+                // mixed twice from the same gains: the fade a changed gain does is undone after the first
+                let ramp = voice.ramp;
+                voice.mix_into(host);
+                voice.ramp = ramp;
+            }
             voice.mix_into(&mut mixes);
             write_status(voice, memory, statuses + index as u32 * STATUS_SIZE);
         }
-        mixes
+        (mixes, host)
     }
 }
 

@@ -287,6 +287,11 @@ pub struct System {
     /// Responsive movement (the setting): the title's reader of its field draws the player and camera ahead in the
     /// pictures in between (render side only, see zakuro_gpu::Prediction)
     pub responsive: bool,
+    /// Frame rate (the setting, experimental): the updates a second the game's logic runs at where the title's code
+    /// supports it (xr-runtime rate.rs), 30 the game's own
+    pub frame_rate: u32,
+    /// cycles from one refresh to the next: CYCLES_PER_FRAME, shorter while a Frame rate over 60 runs the screens faster
+    pub frame_cycles: u64,
     pub cadence: Cadence,
     /// the dynamic module loader's state
     pub cro: cro::CroManager,
@@ -406,6 +411,8 @@ impl System {
             showing: [None, None, None],
             pacing: Pacing::default(),
             responsive: false,
+            frame_rate: 30,
+            frame_cycles: CYCLES_PER_FRAME,
             cadence: Cadence::default(),
             cro: cro::CroManager::default(),
             camera: None,
@@ -482,7 +489,7 @@ impl System {
                 StepOutcome::Faulted => return FrameOutcome::Faulted,
             }
         }
-        self.next_frame_boundary = self.cpu.cycles + CYCLES_PER_FRAME;
+        self.next_frame_boundary = self.cpu.cycles + self.frame_cycles;
         self.end_frame();
         FrameOutcome::Completed
     }
@@ -498,7 +505,7 @@ impl System {
 
         // fire the end of frame work on time even when a tool is stepping, else a title waiting on vblank never wakes
         if self.cpu.cycles >= self.next_frame_boundary {
-            self.next_frame_boundary = self.cpu.cycles + CYCLES_PER_FRAME;
+            self.next_frame_boundary = self.cpu.cycles + self.frame_cycles;
             self.end_frame();
         }
         if self.cpu.cycles >= self.next_audio_frame {
@@ -512,7 +519,7 @@ impl System {
 
         if self.kernel.current_thread.is_none() {
             // everything's blocked
-            let mut limit = deadline.unwrap_or(self.cpu.cycles + CYCLES_PER_FRAME);
+            let mut limit = deadline.unwrap_or(self.cpu.cycles + self.frame_cycles);
             // an audio thread waits on the DSP's interrupt, which only fires at an audio frame boundary, skipping one would lose it
             if self.services.dsp.running {
                 limit = limit.min(self.next_audio_frame);

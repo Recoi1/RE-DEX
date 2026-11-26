@@ -62,7 +62,8 @@ impl Default for Mixer {
 
 impl Mixer {
     /// mixes one frame from what the voices made (read is the region the title wrote last), returns what the speakers play
-    pub fn tick(&mut self, memory: &mut Memory, layout: Layout, read: u32, mixes: [QuadFrame; 3]) -> Frame {
+    /// (w/ host, the mixes w/o the background music: what goes to the host instead, the title still gets the whole)
+    pub fn tick(&mut self, memory: &mut Memory, layout: Layout, read: u32, mixes: [QuadFrame; 3], host: Option<[QuadFrame; 3]>) -> Frame {
         let write = 1 - read;
         self.parse_config(memory, layout.configuration + read * REGION_STRIDE);
 
@@ -79,14 +80,30 @@ impl Mixer {
             }
         }
 
+        let frame = self.down(&self.mixes);
+        write_frame(memory, layout.final_samples + write * REGION_STRIDE, &frame);
+        match host {
+            // an aux bus the title processes comes back as it made it, music and all
+            Some(mut host) => {
+                for aux in 0..2 {
+                    if self.aux[aux] {
+                        host[aux + 1] = self.mixes[aux + 1];
+                    }
+                }
+                self.down(&host)
+            }
+            None => frame,
+        }
+    }
+
+    fn down(&self, mixes: &[QuadFrame; 3]) -> Frame {
         let mut frame = [[0i16; 2]; FRAME_SAMPLES];
-        for (volume, mix) in self.volume.iter().zip(&self.mixes) {
+        for (volume, mix) in self.volume.iter().zip(mixes) {
             // a mix at no volume adds nothing
             if *volume != 0.0 {
                 downmix(&mut frame, mix, *volume, self.output);
             }
         }
-        write_frame(memory, layout.final_samples + write * REGION_STRIDE, &frame);
         frame
     }
 
@@ -385,7 +402,7 @@ mod tests {
                     std::array::from_fn(|sample| std::array::from_fn(|channel| mix[channel][sample]))
                 });
                 let [memory, reference_memory] = &mut memories;
-                let played = mixer.tick(memory, layout, read, mixes);
+                let played = mixer.tick(memory, layout, read, mixes, None);
                 let wanted = reference::tick(&mut expected, &mut kept, reference_memory, layout, read, interleaved);
                 assert_eq!(played, wanted, "case {case}, frame {frame}");
                 let mut regions = [vec![0; 0x3_0000], vec![0; 0x3_0000]];

@@ -11,7 +11,7 @@ use std::cell::UnsafeCell;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use xr_hle::kernel::thread::{ThreadId, ThreadStatus, THREAD_EXIT_MAGIC};
-use xr_hle::{Config, FrameOutcome, System, CYCLES_PER_AUDIO_FRAME, CYCLES_PER_FRAME};
+use xr_hle::{Config, FrameOutcome, System, CYCLES_PER_AUDIO_FRAME};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Turn {
@@ -25,6 +25,8 @@ pub struct Exec {
     waiters: Mutex<std::collections::HashMap<Turn, std::thread::Thread>>,
     state: UnsafeCell<State>,
     lookup: unsafe extern "C" fn(u32) -> XrFn,
+    /// `xr_lookup_native` (see game.rs), or `lookup` for a DLL without it
+    lookup_native: unsafe extern "C" fn(u32) -> XrFn,
 }
 
 // Safety: `state` is only touched by the baton holder, one host thread at a time; the hand-over goes through
@@ -176,6 +178,11 @@ impl Exec {
         }
     }
 
+    /// The function itself at `addr`, never a hook (hooks.rs runs a `virtual` hook's function through it).
+    pub fn lookup_native(&self, addr: u32) -> XrFn {
+        unsafe { (self.lookup_native)(addr) }
+    }
+
     pub fn lookup(&self, addr: u32) -> XrFn {
         // XR_INTERP_ALL=1 runs everything in the interpreter (about 60 fps in the field): tells a codegen bug from the rest
         static ALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -319,6 +326,7 @@ impl Machine {
         let game = Game::open(&build_dir.join("xgame.dll"), rt)?;
         let build = game.check(&code, title_id)?;
         let lookup = game.lookup_fn()?;
+        let lookup_native = game.lookup_native_fn().unwrap_or(lookup);
         let modules = game.modules()?;
         log::log(&format!("xgame.dll: {} native CRO modules", modules.by_name.len()));
         let _ = bridge::MODULES.set(modules);
@@ -327,7 +335,7 @@ impl Machine {
         std::mem::forget(game); // the DLL stays loaded for the life of the process
         let deadline = sys.next_frame_boundary;
         let state = State { sys, hosts: Vec::new(), host_tid: Vec::new(), deadline, camera: Default::default(), ahead: Default::default(), parked: Vec::new(), in_hook: Vec::new(), resume: Default::default() };
-        EXEC.set(Exec { turn: Mutex::new(Turn::Main), waiters: Mutex::default(), state: UnsafeCell::new(state), lookup })
+        EXEC.set(Exec { turn: Mutex::new(Turn::Main), waiters: Mutex::default(), state: UnsafeCell::new(state), lookup, lookup_native })
             .map_err(|_| "a Machine is already booted in this process".to_string())?;
         // GPU coherency phase 2 (XR_EAGER_GPU=1 keeps phase 1's write-back after every command list, for bisecting)
         if std::env::var_os("XR_EAGER_GPU").is_none() {
@@ -511,7 +519,7 @@ impl Machine {
         let st = unsafe { x.st() };
         camera_cut(st);
         let s = &mut st.sys;
-        s.next_frame_boundary = s.cpu.cycles + CYCLES_PER_FRAME;
+        s.next_frame_boundary = s.cpu.cycles + s.frame_cycles;
         s.end_frame();
         progress::services(&s.service_calls);
         if s.command_lists > 0 {

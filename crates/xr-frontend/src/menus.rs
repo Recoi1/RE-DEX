@@ -1166,7 +1166,8 @@ fn graphics(ui: &mut egui::Ui, settings: &mut Settings, booted: &Settings) {
             ui.label("Smooth motion (frame interpolation)");
             // it shows the in between pictures straight from the renderer's device, which only the GPU 3D on Vulkan has
             let can = booted.hardware_rasterizer && booted.renderer == Renderer::Vulkan;
-            ui.add_enabled_ui(can, |ui| {
+            let own_rate = settings.frame_rate() == 30;
+            ui.add_enabled_ui(can && own_rate, |ui| {
                 egui::ComboBox::from_id_salt("smooth motion")
                     .selected_text(settings.frame_interpolation.name())
                     .show_ui(ui, |ui| {
@@ -1183,10 +1184,23 @@ fn graphics(ui: &mut egui::Ui, settings: &mut Settings, booted: &Settings) {
                     )
             })
             .response
-            .on_disabled_hover_text("Needs the GPU 3D and Vulkan, restart after choosing them.");
+            .on_disabled_hover_text(if own_rate { "Needs the GPU 3D and Vulkan, restart after choosing them." } else { "Off while the Frame rate is over 30: those pictures are the game's own." });
+            ui.end_row();
+            ui.label("Frame rate (experimental)");
+            egui::ComboBox::from_id_salt("frame rate")
+                .selected_text(frame_rate_name(settings.frame_rate()))
+                .show_ui(ui, |ui| {
+                    for rate in crate::settings::FRAME_RATES {
+                        ui.selectable_value(&mut settings.frame_rate, rate, frame_rate_name(rate));
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "Runs the game itself faster where RE:DEX can keep it at its own speed: walking, running and the bike in the field,                      every picture a new one, no Smooth motion. Menus, battles and events stay at the game's 30 for now.                      Over 60 the screens refresh that often too. Experimental.",
+                );
             ui.end_row();
             ui.label("Responsive movement (experimental)");
-            ui.add_enabled_ui(can && settings.frame_interpolation != SmoothMotion::Off, |ui| {
+            ui.add_enabled_ui(can && settings.smooth_motion() != SmoothMotion::Off, |ui| {
                 toggle(ui, &mut settings.responsive_movement).on_hover_text(
                     "With Smooth motion: your trainer and the camera are drawn a little ahead from your d-pad, so walking, running and the bike start, turn and stop without Smooth motion's delay. \
                      Only the pictures in between change; the game itself is the same either way. \
@@ -1381,6 +1395,11 @@ pub fn key_name(key: KeyCode) -> String {
         }
     }
     name
+}
+
+/// a Frame rate choice's name
+fn frame_rate_name(rate: u32) -> String {
+    if rate == 30 { "Original (30)".into() } else { rate.to_string() }
 }
 
 #[cfg(test)]

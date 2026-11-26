@@ -679,7 +679,7 @@ impl<G: Game> App<G> {
             resolution: self.options.resolution.unwrap_or(self.settings.resolution).max(1),
             device: self.backend.as_ref().and_then(Backend::shared_device),
             texture_packs: self.settings.texture_packs,
-            interpolate: self.settings.frame_interpolation != SmoothMotion::Off,
+            interpolate: self.settings.smooth_motion() != SmoothMotion::Off,
             console_id: self.settings.console_id,
             slider_3d: self.settings.slider_3d(),
             ..config
@@ -702,8 +702,9 @@ impl<G: Game> App<G> {
     fn live(&self) -> Live {
         let settings = &self.settings;
         Live {
-            smooth_hz: smooth_hz(settings.frame_interpolation, self.monitor_hz, self.repeats && repeats_at(self.vblank)),
-            responsive: settings.responsive_movement && settings.frame_interpolation != SmoothMotion::Off,
+            smooth_hz: smooth_hz(settings.smooth_motion(), self.monitor_hz, self.repeats && repeats_at(self.vblank)),
+            responsive: settings.responsive_movement && settings.smooth_motion() != SmoothMotion::Off,
+            frame_rate: settings.frame_rate(),
             vblank: self.vblank,
             slider_3d: settings.slider_3d(),
             microphone: settings.microphone,
@@ -1075,8 +1076,8 @@ impl<G: Game> App<G> {
         // interpolation, the 3D slider, the mic and the volume, which the game's thread applies where they changed
         self.ask(Request::Live(self.live()));
         // another Smooth motion setting: the pace guard starts over (it learned the old one's load)
-        if self.pace.setting != self.settings.frame_interpolation {
-            self.pace = PaceGuard { setting: self.settings.frame_interpolation, ..PaceGuard::new() };
+        if self.pace.setting != self.settings.smooth_motion() {
+            self.pace = PaceGuard { setting: self.settings.smooth_motion(), ..PaceGuard::new() };
             self.ask(Request::Pace(self.pace.cap));
         }
         self.keyboard.set_keys(self.settings.keys.clone());
@@ -1193,7 +1194,7 @@ impl<G: Game> App<G> {
         // the picture goes up at the monitor's rate (w/ FIFO the display's vblank paces it, otherwise wait for it here),
         // the newest refresh's, or the same again while none came since
         let waits = self.backend.as_ref().is_some_and(Backend::waits_for_display);
-        let repeating = self.repeats && self.settings.frame_interpolation != SmoothMotion::Off && playing && repeats_at(self.vblank);
+        let repeating = self.repeats && self.settings.smooth_motion() != SmoothMotion::Off && playing && repeats_at(self.vblank);
         let shown = self.pictures.as_ref().map_or(u64::MAX, |pictures| pictures.frame);
         let mut sets = lock(&emulation.link.pictures);
         let next = |sets: &mut std::collections::VecDeque<emulation::Pictures>| emulation::next_of(sets, shown, |pictures| pictures.frame);

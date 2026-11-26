@@ -43,6 +43,8 @@ pub(crate) struct Live {
     pub smooth_hz: u32,
     /// Responsive movement (the setting, on w/ Smooth motion): the player and camera drawn ahead in the pictures in between
     pub responsive: bool,
+    /// Frame rate (the setting): the updates a second the game's logic runs at where it can
+    pub frame_rate: u32,
     /// the monitor's vblank, Smooth motion's pictures in between go at its vblanks where they fit
     pub vblank: Duration,
     pub slider_3d: f32,
@@ -443,7 +445,7 @@ impl<G: Game> Runner<G> {
                     log::info!("state hash {}", crate::state_hash(self.game.system()));
                     return Ok(());
                 }
-                next_frame += frame_time(limit);
+                next_frame += refresh_time(limit, self.game.system().frame_cycles);
                 if limit.is_none() {
                     // nothing to wait for, but the core goes to the window's and the sound's threads between refreshes
                     next_frame = Instant::now();
@@ -454,7 +456,8 @@ impl<G: Game> Runner<G> {
                 self.audio.as_ref().inspect(|audio| audio.hold());
                 next_frame += FRAME_TIME;
             }
-            self.publish(link, controls.stereo, if playing { frame_time(limit) } else { FRAME_TIME });
+            let refresh = if playing { refresh_time(limit, self.game.system().frame_cycles) } else { FRAME_TIME };
+            self.publish(link, controls.stereo, refresh);
             // multiplayer goes on while paused, like the window's frames did
             if let Some(view) = self.game.online() {
                 put_online(&mut lock(&link.online), view);
@@ -615,6 +618,7 @@ impl<G: Game> Runner<G> {
         }
         let system = self.game.system();
         system.responsive = live.responsive;
+        system.frame_rate = live.frame_rate;
         // games read the 3D slider every frame
         if system.config.slider_3d != live.slider_3d {
             system.set_slider_3d(live.slider_3d);
@@ -679,6 +683,11 @@ pub(crate) fn next_after<T: Clone>(queue: &mut VecDeque<T>, shown: u64, frame: i
         queue.pop_front();
     }
     if queue.len() > 1 { queue.pop_front() } else { queue.front().cloned() }
+}
+
+/// a refresh's time at the speed limit: a Frame rate over 60 runs the screens faster, each refresh that much shorter
+fn refresh_time(limit: Option<u32>, cycles: u64) -> Duration {
+    frame_time(limit) * cycles as u32 / xr_hle::CYCLES_PER_FRAME as u32
 }
 
 #[cfg(test)]

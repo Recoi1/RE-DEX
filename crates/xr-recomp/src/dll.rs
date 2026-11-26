@@ -203,7 +203,7 @@ pub fn check_patch_sites(cro: &Cro, m: &crotab::Module, funcs: &[FuncEntry]) -> 
 /// Thumb functions and `xr_lookup(start)` only ARM ones). Modules: the same per 2 bytes of each code segment, all in
 /// one table (module k's slots from `xr_mod_slot[k]`), searched for the placed modules only. The tables are zeroed
 /// bss filled by `xr_game_init` from compact lists, which keeps the DLL small.
-pub fn lookup_c(base: u32, seg_end: u32, funcs: &[FuncEntry], info: &str, mods: &[Module]) -> String {
+pub fn lookup_c(base: u32, seg_end: u32, funcs: &[FuncEntry], info: &str, mods: &[Module], virt: &[(u32, usize)]) -> String {
     let n = mods.len();
     let name = |f: &FuncEntry, k: Option<u32>| fn_name(f.start, f.mode, k);
     let mut s = String::from("#include \"xr_abi.h\"\nuint8_t* xr_mem;\nconst XrRuntime* xr_rt;\n");
@@ -272,7 +272,7 @@ XR_EXPORT uint32_t xr_game_init(const XrRuntime* rt) {\n\
     }\n\
     return XR_ABI_VERSION;\n\
 }\n\
-XR_EXPORT XrFn xr_lookup(uint32_t a) {\n\
+XR_EXPORT XrFn xr_lookup_native(uint32_t a) {\n\
     uint32_t s = (a - XR_TEXT_BASE) >> 1;\n\
     if (s < XR_TAB_N) return xr_tab_thumb[s] == (a & 1) ? xr_tab[s] : 0;\n\
     for (uint32_t i = 0; i < xr_placed_n; i++) {\n\
@@ -284,6 +284,18 @@ XR_EXPORT XrFn xr_lookup(uint32_t a) {\n\
     }\n\
     return 0;\n\
 }\n\
+";
+    // the hooks the game also reaches through pointers: xr_lookup hands out the hook (the runtime calls the function
+    // itself through xr_lookup_native)
+    s += "XR_EXPORT XrFn xr_lookup(uint32_t a) {\n";
+    if !virt.is_empty() {
+        s += "    if (xr_rt && xr_rt->hooks) switch (a) {\n";
+        for (addr, i) in virt {
+            s += &format!("        case 0x{addr:08X}u: if (xr_rt->hooks[{i}]) return xr_rt->hooks[{i}]; break;\n");
+        }
+        s += "    }\n";
+    }
+    s += "    return xr_lookup_native(a);\n}\n\
 XR_EXPORT void xr_unplace_module(uint32_t k) {\n\
     for (uint32_t i = 0; i < xr_placed_n; i++)\n\
         if (xr_placed[i] == k) { xr_placed[i] = xr_placed[--xr_placed_n]; return; }\n\
